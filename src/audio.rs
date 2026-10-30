@@ -7,34 +7,25 @@
 
 use std::fmt;
 
+use rand::rngs::SmallRng;
+use rand::{RngExt, SeedableRng};
+use thiserror::Error;
+
 use crate::config::{MAX_CHANNELS, Pcm};
 
 /// Full-scale magnitude of the PCM type, as a float.
 const SCALE: f32 = 32_768.0;
 
 /// Reasons a buffer cannot be constructed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum AudioError {
     /// `channels` was zero or above [`MAX_CHANNELS`].
+    #[error("channel count {0} is not in 1..={MAX_CHANNELS}")]
     BadChannelCount(u16),
     /// The sample count was not a whole number of frames.
+    #[error("{samples} samples is not a whole number of {channels}-channel frames")]
     RaggedFrames { samples: usize, channels: u16 },
 }
-
-impl fmt::Display for AudioError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BadChannelCount(c) => {
-                write!(f, "channel count {c} is not in 1..={MAX_CHANNELS}")
-            }
-            Self::RaggedFrames { samples, channels } => {
-                write!(f, "{samples} samples is not a whole number of {channels}-channel frames")
-            }
-        }
-    }
-}
-
-impl std::error::Error for AudioError {}
 
 /// Interleaved PCM audio at the engine's fixed sample rate.
 #[derive(Clone, PartialEq, Eq)]
@@ -125,32 +116,22 @@ fn check_channels(channels: u16) -> Result<(), AudioError> {
 
 /// Triangular (TPDF) dither in the range `-1.0..1.0` LSB.
 ///
-/// Uses a tiny xorshift generator so the engine stays dependency free. The
-/// seed is fixed, so conversion is deterministic for a given input.
+/// Backed by `rand`'s `SmallRng` with a fixed seed, so conversion is
+/// deterministic for a given input.
 struct Dither {
-    state: u32,
+    rng: SmallRng,
 }
 
 impl Default for Dither {
     fn default() -> Self {
-        Self { state: 0x9E37_79B9 }
+        Self { rng: SmallRng::seed_from_u64(0x9E37_79B9) }
     }
 }
 
 impl Dither {
-    fn uniform(&mut self) -> f32 {
-        let mut x = self.state;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.state = x;
-        // 24 bits of mantissa is all f32 can hold.
-        (x >> 8) as f32 / (1u32 << 24) as f32
-    }
-
     /// Sum of two uniforms, centred: triangular on `-1.0..1.0`.
     fn next(&mut self) -> f32 {
-        self.uniform() + self.uniform() - 1.0
+        self.rng.random::<f32>() + self.rng.random::<f32>() - 1.0
     }
 }
 

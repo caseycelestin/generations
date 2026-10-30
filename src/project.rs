@@ -1,34 +1,24 @@
 //! The pool of samples that makes up a project, and the lineage over it.
 
 use std::collections::HashMap;
-use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::sample::{Origin, Sample, SampleId};
 
 /// Reasons a project operation can fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ProjectError {
     /// No sample with this id exists in the project.
+    #[error("no sample with id {}", .0.raw())]
     UnknownSample(SampleId),
     /// The sample has children and cannot be removed on its own.
+    #[error("sample {} has children and cannot be removed", .0.raw())]
     HasChildren(SampleId),
 }
-
-impl fmt::Display for ProjectError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownSample(id) => write!(f, "no sample with id {}", id.raw()),
-            Self::HasChildren(id) => {
-                write!(f, "sample {} has children and cannot be removed", id.raw())
-            }
-        }
-    }
-}
-
-impl std::error::Error for ProjectError {}
 
 /// A self-contained collection of samples.
 ///
