@@ -38,6 +38,9 @@ pub enum ProjectError {
     /// No sample with this id exists in the project.
     #[error("no sample with id {}", .0.0)]
     UnknownSample(SampleId),
+    /// The sample has children and cannot be removed on its own.
+    #[error("sample {} has children and cannot be removed", .0.0)]
+    HasChildren(SampleId),
     #[error(transparent)]
     Storage(#[from] StorageError),
 }
@@ -71,6 +74,19 @@ impl Project {
             self.sample(p)?;
         }
         Ok(self.storage.add_sample(parent, audio)?)
+    }
+
+    /// Removes a sample that has no children.
+    ///
+    /// A sample with children is refused: later generations depend on it
+    /// and the lineage must stay readable. Removing a whole lineage is a
+    /// separate, explicit operation that does not exist yet.
+    pub fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
+        self.sample(id)?;
+        if self.storage.has_children(id)? {
+            return Err(ProjectError::HasChildren(id));
+        }
+        Ok(self.storage.remove_sample(id)?)
     }
 
     /// Everything stored about the sample with this id, except its audio.
@@ -128,6 +144,20 @@ mod tests {
 
         fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
             Ok(self.find(id).map(|(_, a)| a))
+        }
+
+        fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
+            Ok(self
+                .0
+                .borrow()
+                .samples
+                .iter()
+                .any(|(s, _)| s.parent == Some(id)))
+        }
+
+        fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
+            self.0.borrow_mut().samples.retain(|(s, _)| s.id != id);
+            Ok(())
         }
 
         fn add_sample(
@@ -225,6 +255,38 @@ mod tests {
         let bogus = SampleId(7);
         assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
         assert!(matches!(p.audio(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
+    }
+
+    #[test]
+    fn remove_refuses_a_sample_with_children() {
+        let (mut p, state) = project(false);
+        let root = p.add_sample(None, &tone()).unwrap();
+        let child = p.add_sample(Some(root), &tone()).unwrap();
+        assert!(matches!(
+            p.remove_sample(root),
+            Err(ProjectError::HasChildren(id)) if id == root
+        ));
+        p.remove_sample(child).unwrap();
+        p.remove_sample(root).unwrap();
+        assert!(structure(&state).is_empty());
+    }
+
+    #[test]
+    fn remove_of_unknown_sample_is_refused() {
+        let (mut p, _state) = project(false);
+        assert!(matches!(
+            p.remove_sample(SampleId(3)),
+            Err(ProjectError::UnknownSample(SampleId(3)))
+        ));
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_a_remove() {
+        let (mut p, _state) = project(false);
+        let a = p.add_sample(None, &tone()).unwrap();
+        p.remove_sample(a).unwrap();
+        let b = p.add_sample(None, &tone()).unwrap();
+        assert_ne!(a, b);
     }
 
     #[test]

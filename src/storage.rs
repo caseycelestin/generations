@@ -41,6 +41,13 @@ pub trait Storage {
     /// none.
     fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError>;
 
+    /// Whether any stored sample has this one as its parent.
+    fn has_children(&self, id: SampleId) -> Result<bool, StorageError>;
+
+    /// Removes the sample with this id and its audio. Removing an id that
+    /// is not stored is not an error. The counter does not move back.
+    fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError>;
+
     /// Stores a sample with its audio and returns its new id.
     ///
     /// Ids come from a counter that only goes up, so an id is never
