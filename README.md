@@ -38,16 +38,20 @@ the hardware unit all sit on top of. It is responsible for:
 
 ## Status
 
-Early. This is currently a freshly initialized Rust crate; the design above is
-the target, not the present state.
+Early. The engine opens a project on disk, imports audio, prints one effect
+(reverse) as a new generation, and keeps the lineage durable across a
+power-down. Nothing plays yet. See [docs/roadmap.md](docs/roadmap.md) for
+the plan and the decisions behind it, and `cargo doc --open` for the
+architecture.
 
 ## Building
 
-Requires a Rust toolchain (edition 2024).
+Requires a Rust toolchain (edition 2024). The crate is a library; the demo
+is an example.
 
 ```sh
-cargo build
-cargo run
+cargo test
+cargo run --example first_print -- /tmp/myproject
 ```
 
 ## License
