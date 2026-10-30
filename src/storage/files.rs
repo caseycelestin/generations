@@ -86,29 +86,33 @@ impl Entry {
 #[derive(Debug)]
 pub struct FileStorage {
     dir: PathBuf,
-    /// Whether a whole project is here: found and validated on open, or
-    /// created since.
-    has_project: bool,
 }
 
 impl FileStorage {
     /// Storage at `dir`.
     ///
-    /// If a project is stored there it is checked whole before this
-    /// returns; anything stored but broken is an error. If nothing is
-    /// stored, nothing is touched until [`Storage::create`].
+    /// If the directory holds nothing, an empty project is created there.
+    /// If it holds a project, the whole project is checked before this
+    /// returns. Anything stored but broken is an error.
     pub fn open(dir: &Path) -> Result<Self, StorageError> {
         let storage = Self {
             dir: dir.to_path_buf(),
-            has_project: false,
         };
-        let has_project = storage.manifest_path().exists();
-        if has_project {
+        if storage.manifest_path().exists() {
             storage.validate()?;
+        } else {
+            storage.create()?;
         }
-        Ok(Self {
-            has_project,
-            ..storage
+        Ok(storage)
+    }
+
+    fn create(&self) -> Result<(), StorageError> {
+        let samples = self.samples_dir();
+        fs::create_dir_all(&samples).map_err(|e| at(&samples, e))?;
+        self.write_manifest(&Manifest {
+            version: FORMAT_VERSION,
+            next_id: 0,
+            samples: BTreeMap::new(),
         })
     }
 
@@ -251,22 +255,6 @@ fn sync_dir(dir: &Path) -> Result<(), StorageError> {
 }
 
 impl Storage for FileStorage {
-    fn exists(&self) -> Result<bool, StorageError> {
-        Ok(self.has_project)
-    }
-
-    fn create(&mut self) -> Result<(), StorageError> {
-        let samples = self.samples_dir();
-        fs::create_dir_all(&samples).map_err(|e| at(&samples, e))?;
-        self.write_manifest(&Manifest {
-            version: FORMAT_VERSION,
-            next_id: 0,
-            samples: BTreeMap::new(),
-        })?;
-        self.has_project = true;
-        Ok(())
-    }
-
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
         Ok(self
             .read_manifest()?
@@ -337,9 +325,7 @@ mod tests {
     }
 
     fn created(dir: &Path) -> FileStorage {
-        let mut s = FileStorage::open(dir).unwrap();
-        s.create().unwrap();
-        s
+        FileStorage::open(dir).unwrap()
     }
 
     /// Reopens the directory, as the next run of the engine would.
@@ -348,14 +334,20 @@ mod tests {
     }
 
     #[test]
-    fn nothing_exists_until_created() {
+    fn open_on_an_empty_directory_creates_an_empty_project() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = FileStorage::open(dir.path()).unwrap();
-        assert!(!s.exists().unwrap());
-        s.create().unwrap();
-        assert!(s.exists().unwrap());
+        let s = FileStorage::open(dir.path()).unwrap();
         assert!(dir.path().join(MANIFEST).exists());
         assert!(dir.path().join(SAMPLES_DIR).is_dir());
+        assert!(s.sample(SampleId(0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn open_on_a_missing_directory_creates_it() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("project");
+        FileStorage::open(&dir).unwrap();
+        assert!(dir.join(MANIFEST).exists());
     }
 
     #[test]
@@ -372,7 +364,6 @@ mod tests {
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
-        assert!(s.exists().unwrap());
         assert_eq!(s.sample(rev).unwrap().unwrap().parent, Some(root));
         assert_eq!(s.sample(back).unwrap().unwrap().parent, Some(rev));
         assert_eq!(s.audio(root).unwrap().unwrap(), ramp(2, 16));
@@ -468,7 +459,7 @@ mod tests {
         let root = s.add_sample(None, &ramp(2, 4)).unwrap();
         s.add_sample(Some(root), &ramp(1, 4)).unwrap();
         drop(s);
-        assert!(reopen(dir.path()).unwrap().exists().unwrap());
+        reopen(dir.path()).unwrap();
     }
 
     #[test]

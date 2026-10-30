@@ -39,17 +39,12 @@ pub enum StorageError {
 }
 
 /// Durable storage for one project.
+///
+/// A storage always holds a whole project: opening one creates an empty
+/// project where there was nothing, validates what it finds otherwise, and
+/// refuses anything broken. So these operations never have to ask whether
+/// a project is there.
 pub trait Storage {
-    /// Whether a project is stored here.
-    ///
-    /// A backend validates what it finds when it is opened and refuses to
-    /// open on anything stored but broken, so this is only ever asked of
-    /// storage that holds nothing or a whole project.
-    fn exists(&self) -> Result<bool, StorageError>;
-
-    /// Marks this storage as holding a new, empty project.
-    fn create(&mut self) -> Result<(), StorageError>;
-
     /// Everything stored about the sample with this id except its audio,
     /// or `None` if there is none.
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
@@ -79,8 +74,10 @@ pub trait Storage {
 
 /// Storage for the project at `dir`.
 ///
-/// This is the one place that decides what a path means. Everything above
-/// it sees only the trait.
+/// Creates an empty project there if the directory holds nothing, opens
+/// on the project it finds otherwise, and refuses anything broken. This is
+/// the one place that decides what a path means; everything above it sees
+/// only the trait.
 pub fn open(dir: &Path) -> Result<Box<dyn Storage>, StorageError> {
     Ok(Box::new(files::FileStorage::open(dir)?))
 }
