@@ -1,5 +1,6 @@
-//! The first print, saved: import a ramp, reverse it, save the project to a
-//! directory, open it again and walk the lineage from the loaded copy.
+//! The first print, kept: create a project in a working directory, import a
+//! ramp and reverse it. Nothing is saved explicitly; every change is written
+//! through. Then reopen the directory and walk the lineage from that copy.
 //!
 //! Usage: `generations <project-dir>`. The directory is created if needed.
 
@@ -13,26 +14,25 @@ fn main() -> ExitCode {
         eprintln!("usage: generations <project-dir>");
         return ExitCode::FAILURE;
     };
-
-    let mut engine = Engine::new();
-    // A short mono ramp stands in for a real recording until step 4.
-    let ramp = AudioBuffer::new(1, (0..8).collect::<Vec<_>>()).expect("valid buffer");
-    let root = engine.import(ramp);
-    let printed = engine.print(root, effects::reverse).expect("root exists");
-
-    if let Err(e) = engine.save(&dir) {
-        eprintln!("save failed: {e}");
-        return ExitCode::FAILURE;
-    }
-    let engine = match Engine::open(&dir) {
-        Ok(e) => e,
+    match run(&dir) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("open failed: {e}");
-            return ExitCode::FAILURE;
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
         }
-    };
+    }
+}
 
-    // Walk the lineage from the print back to the root, on the loaded copy.
+fn run(dir: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = Engine::create(dir)?;
+    // A short mono ramp stands in for a real recording until step 4.
+    let ramp = AudioBuffer::new(1, (0..8).collect::<Vec<_>>())?;
+    let root = engine.import(ramp)?;
+    let printed = engine.print(root, effects::reverse)?;
+    drop(engine);
+
+    // Walk the lineage from the print back to the root, on a fresh open.
+    let engine = Engine::open(dir)?;
     let project = engine.project();
     let mut cur = Some(printed);
     while let Some(id) = cur {
@@ -45,5 +45,5 @@ fn main() -> ExitCode {
         );
         cur = s.parent();
     }
-    ExitCode::SUCCESS
+    Ok(())
 }

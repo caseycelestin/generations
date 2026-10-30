@@ -14,6 +14,6 @@ pub mod sample;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use disk::DiskError;
-pub use engine::Engine;
+pub use engine::{Engine, EngineError};
 pub use project::{Project, ProjectError};
 pub use sample::{Sample, SampleId};

@@ -82,19 +82,22 @@ Things a reader cannot recover from the code alone.
 - **Three storage tiers, one format.** On the device, saved projects live on
   the SD card, the working project lives on eMMC, and audio being played
   lives in RAM. The disk layer does not know about tiers: save and load
-  take a directory, and SD and eMMC are two paths. That is what the
-  incremental save is for: an autosave to eMMC after each print writes one
-  new WAV and a small manifest, and a later save to the card copies only
-  what the card is missing. Copying the directory between media is also a
-  valid save. Today load reads every WAV into RAM, so the loaded project is
-  the playback copy; when projects outgrow RAM the store below replaces
-  that, and `restore` takes whatever the store hands out instead of a
-  buffer. Saving a non-resident sample then becomes a file copy from eMMC
-  to SD, which the id-named, immutable WAVs make possible without decoding.
-- **Removing a sample with children is refused.** Later generations depend
-  on it. Removing a whole lineage will be a separate, explicit operation.
-- **The public surface is kept minimal.** Convenience methods are added when
-  a caller exists, not before.
+  take a directory, and SD and eMMC are two paths. Copying the directory
+  between media is also a valid save.
+- **The working directory is written through, never saved.** The engine
+  always has a working directory and brings it up to date after every
+  change, so a project survives a power-down without anyone pressing save.
+  The user never saves to eMMC; `Engine::save` is the copy to the card. The
+  incremental save is what makes this affordable: a print writes one new
+  WAV and a small manifest, and a save to the card copies only what the
+  card is missing. If a write-through fails, memory is ahead of disk until
+  the next one succeeds. There is no in-memory engine; one without a
+  working directory would be exactly the thing that loses work.
+- **Today the loaded project is the playback copy.** Load reads every WAV
+  into RAM. When projects outgrow RAM the store below replaces that, and
+  `restore` takes whatever the store hands out instead of a buffer. Saving
+  a non-resident sample then becomes a file copy from eMMC to SD, which the
+  id-named, immutable WAVs make possible without decoding.
 
 ## Planned architecture
 
