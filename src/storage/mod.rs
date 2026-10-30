@@ -27,6 +27,9 @@ pub enum StorageError {
     /// The stored project was written by a format this build does not read.
     #[error("stored format version {0} is not supported")]
     UnsupportedVersion(u32),
+    /// Something is stored here, and it is not a project at all.
+    #[error("storage holds something that is not a project: {0}")]
+    NotAProject(String),
     /// Something is stored here, but it is not a whole project.
     #[error("stored project is corrupt: {0}")]
     Corrupt(String),
@@ -74,8 +77,9 @@ pub trait Storage {
 
 /// Storage for the project at `dir`.
 ///
-/// Creates an empty project there if the directory holds nothing, opens
-/// on the project it finds otherwise, and refuses anything broken. This is
+/// Creates an empty project there if the directory is empty or missing,
+/// opens on the project it finds otherwise, and refuses anything else:
+/// a broken project, or files that are not a project at all. This is
 /// the one place that decides what a path means; everything above it sees
 /// only the trait.
 pub fn open(dir: &Path) -> Result<Box<dyn Storage>, StorageError> {

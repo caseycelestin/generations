@@ -91,19 +91,33 @@ pub struct FileStorage {
 impl FileStorage {
     /// Storage at `dir`.
     ///
-    /// If the directory holds nothing, an empty project is created there.
-    /// If it holds a project, the whole project is checked before this
-    /// returns. Anything stored but broken is an error.
+    /// If the directory is empty or missing, an empty project is created
+    /// there. If it holds a project, the whole project is checked before
+    /// this returns. Anything else is an error: a broken project, or files
+    /// that are not a project at all.
     pub fn open(dir: &Path) -> Result<Self, StorageError> {
         let storage = Self {
             dir: dir.to_path_buf(),
         };
         if storage.manifest_path().exists() {
             storage.validate()?;
-        } else {
+        } else if storage.dir_is_empty_or_missing()? {
             storage.create()?;
+        } else {
+            return Err(StorageError::NotAProject(format!(
+                "{} has files but no {MANIFEST}",
+                storage.dir.display()
+            )));
         }
         Ok(storage)
+    }
+
+    fn dir_is_empty_or_missing(&self) -> Result<bool, StorageError> {
+        match fs::read_dir(&self.dir) {
+            Ok(mut entries) => Ok(entries.next().is_none()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+            Err(e) => Err(at(&self.dir, e)),
+        }
     }
 
     fn create(&self) -> Result<(), StorageError> {
@@ -340,6 +354,18 @@ mod tests {
         assert!(dir.path().join(MANIFEST).exists());
         assert!(dir.path().join(SAMPLES_DIR).is_dir());
         assert!(s.sample(SampleId(0)).unwrap().is_none());
+    }
+
+    #[test]
+    fn open_refuses_a_directory_with_files_that_are_not_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("notes.txt"), "hi").unwrap();
+        assert!(matches!(
+            FileStorage::open(dir.path()),
+            Err(StorageError::NotAProject(_))
+        ));
+        // Nothing was created beside the stranger's files.
+        assert!(!dir.path().join(MANIFEST).exists());
     }
 
     #[test]
