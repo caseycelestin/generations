@@ -1,59 +1,79 @@
-//! The pool of samples that makes up a project, and the lineage over it.
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! A project: everything the device keeps for one piece of work.
+//!
+//! A [`Project`] is the rules over a [`Storage`]. It keeps no copy of the
+//! data: every read and write goes to storage, so changing the project is
+//! changing the disk and there is no save step. Today a project holds
+//! samples; patterns and settings arrive as their steps come.
 
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::sample::{Sample, SampleId};
+use crate::storage::{Storage, StorageError};
 
-/// Reasons a project operation can fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum ProjectError {
-    /// No sample with this id exists in the project.
-    #[error("no sample with id {}", .0.raw())]
-    UnknownSample(SampleId),
-    /// The sample has children and cannot be removed on its own.
-    #[error("sample {} has children and cannot be removed", .0.raw())]
-    HasChildren(SampleId),
+/// Identity of a sample within one project.
+///
+/// A sample does not exist until it is stored, so storage mints the id
+/// when it adds one, from a per-project counter. Ids are never reused and
+/// are not meaningful across projects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SampleId(pub u32);
+
+/// Everything stored about one sample except its audio, which is read
+/// separately with [`Project::audio`]. More fields arrive as the project
+/// grows.
+///
+/// "Generation" is not a type. It is the relationship between a sample and
+/// its parent: the sample one generation behind it. Lineage is the tree
+/// formed by those pointers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sample {
+    pub id: SampleId,
+    /// The sample one generation behind this one. `None` for a root.
+    pub parent: Option<SampleId>,
 }
 
-/// A self-contained collection of samples.
-///
-/// Samples live in one flat pool keyed by id. Lineage is a forest over the
-/// pool via each sample's parent pointer, so a chop of one sample into many
-/// is just many samples sharing a parent. Children are found by walking the
-/// pool; the parent pointer is the only stored relationship.
-#[derive(Debug, Default)]
+/// Reasons a project operation can fail.
+#[derive(Debug, Error)]
+pub enum ProjectError {
+    /// No sample with this id exists in the project.
+    #[error("no sample with id {}", .0.0)]
+    UnknownSample(SampleId),
+    /// The sample has children and cannot be removed on its own.
+    #[error("sample {} has children and cannot be removed", .0.0)]
+    HasChildren(SampleId),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
+
+/// One project, live on its storage.
 pub struct Project {
-    samples: HashMap<SampleId, Sample>,
-    next_id: u32,
+    storage: Box<dyn Storage>,
 }
 
 impl Project {
-    pub fn new() -> Self {
-        Self::default()
+    /// The project in `storage`, or a new empty one created there if
+    /// nothing is stored yet.
+    pub fn get_or_create(mut storage: Box<dyn Storage>) -> Result<Self, StorageError> {
+        if !storage.exists()? {
+            storage.create()?;
+        }
+        Ok(Self { storage })
     }
 
-    /// Adds a sample to the project.
+    /// Adds audio as a sample and returns its id.
     ///
     /// With no parent it starts a new lineage; with one it is the next
-    /// generation of that lineage. The caller has already produced `audio`;
-    /// the project only records where it sits in the tree.
-    pub fn add(
+    /// generation of that lineage. An unknown parent is refused and
+    /// nothing is stored.
+    pub fn add_sample(
         &mut self,
         parent: Option<SampleId>,
-        audio: AudioBuffer,
+        audio: &AudioBuffer,
     ) -> Result<SampleId, ProjectError> {
         if let Some(p) = parent {
-            self.require(p)?;
+            self.sample(p)?;
         }
-        let id = SampleId(self.next_id);
-        self.next_id += 1;
-        self.samples
-            .insert(id, Sample::new(id, parent, Arc::new(audio)));
-        Ok(id)
+        Ok(self.storage.add_sample(parent, audio)?)
     }
 
     /// Removes a sample that has no children.
@@ -61,126 +81,222 @@ impl Project {
     /// A sample with children is refused: later generations depend on it
     /// and the lineage must stay readable. Removing a whole lineage is a
     /// separate, explicit operation that does not exist yet.
-    pub fn remove(&mut self, id: SampleId) -> Result<Sample, ProjectError> {
-        self.require(id)?;
-        if self.has_children(id) {
+    pub fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
+        self.sample(id)?;
+        if self.storage.has_children(id)? {
             return Err(ProjectError::HasChildren(id));
         }
-        Ok(self.samples.remove(&id).expect("checked above"))
+        Ok(self.storage.remove_sample(id)?)
     }
 
-    pub fn get(&self, id: SampleId) -> Option<&Sample> {
-        self.samples.get(&id)
+    /// Everything stored about the sample with this id, except its audio.
+    pub fn sample(&self, id: SampleId) -> Result<Sample, ProjectError> {
+        self.storage
+            .sample(id)?
+            .ok_or(ProjectError::UnknownSample(id))
     }
 
-    /// Every sample, in no particular order.
-    pub fn iter(&self) -> impl Iterator<Item = &Sample> {
-        self.samples.values()
-    }
-
-    fn has_children(&self, id: SampleId) -> bool {
-        self.samples.values().any(|s| s.parent() == Some(id))
-    }
-
-    fn require(&self, id: SampleId) -> Result<&Sample, ProjectError> {
-        self.samples.get(&id).ok_or(ProjectError::UnknownSample(id))
+    /// The audio of the sample with this id, read from storage.
+    pub fn audio(&self, id: SampleId) -> Result<AudioBuffer, ProjectError> {
+        self.storage
+            .audio(id)?
+            .ok_or(ProjectError::UnknownSample(id))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use super::*;
 
-    fn tone(n: usize) -> AudioBuffer {
-        AudioBuffer::new(1, (0..n).map(|i| i as i16).collect::<Vec<_>>()).unwrap()
+    /// What the stub storage remembers.
+    #[derive(Default)]
+    struct State {
+        exists: bool,
+        next_id: u32,
+        samples: Vec<(Sample, AudioBuffer)>,
     }
 
-    /// Walks parents from `id` back to the root, using only the public API.
-    fn lineage(p: &Project, id: SampleId) -> Vec<SampleId> {
-        let mut chain = vec![id];
-        let mut cur = p.get(id).unwrap();
-        while let Some(parent) = cur.parent() {
-            chain.push(parent);
-            cur = p.get(parent).unwrap();
+    /// In-memory storage for tests, shared with the test through `Rc` so
+    /// it can be inspected after the project takes ownership.
+    struct Memory(Rc<RefCell<State>>);
+
+    impl Storage for Memory {
+        fn exists(&self) -> Result<bool, StorageError> {
+            Ok(self.0.borrow().exists)
         }
-        chain
+
+        fn create(&mut self) -> Result<(), StorageError> {
+            let mut s = self.0.borrow_mut();
+            assert!(
+                !s.exists,
+                "create called on storage that already holds a project"
+            );
+            s.exists = true;
+            Ok(())
+        }
+
+        fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
+            Ok(self.find(id).map(|(s, _)| s))
+        }
+
+        fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
+            Ok(self.find(id).map(|(_, a)| a))
+        }
+
+        fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
+            Ok(self
+                .0
+                .borrow()
+                .samples
+                .iter()
+                .any(|(s, _)| s.parent == Some(id)))
+        }
+
+        fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
+            self.0.borrow_mut().samples.retain(|(s, _)| s.id != id);
+            Ok(())
+        }
+
+        fn add_sample(
+            &mut self,
+            parent: Option<SampleId>,
+            audio: &AudioBuffer,
+        ) -> Result<SampleId, StorageError> {
+            let mut s = self.0.borrow_mut();
+            let id = SampleId(s.next_id);
+            s.next_id += 1;
+            s.samples.push((Sample { id, parent }, audio.clone()));
+            Ok(id)
+        }
     }
 
-    fn children(p: &Project, id: SampleId) -> Vec<SampleId> {
-        let mut ids: Vec<_> = p
+    impl Memory {
+        fn find(&self, id: SampleId) -> Option<(Sample, AudioBuffer)> {
+            self.0
+                .borrow()
+                .samples
+                .iter()
+                .find(|(s, _)| s.id == id)
+                .cloned()
+        }
+    }
+
+    fn project(exists: bool) -> (Project, Rc<RefCell<State>>) {
+        let state = Rc::new(RefCell::new(State {
+            exists,
+            ..State::default()
+        }));
+        let p = Project::get_or_create(Box::new(Memory(state.clone()))).unwrap();
+        (p, state)
+    }
+
+    fn tone() -> AudioBuffer {
+        AudioBuffer::new(1, vec![0, 1, 2, 3]).unwrap()
+    }
+
+    fn structure(state: &Rc<RefCell<State>>) -> Vec<(SampleId, Option<SampleId>)> {
+        state
+            .borrow()
+            .samples
             .iter()
-            .filter(|s| s.parent() == Some(id))
-            .map(Sample::id)
-            .collect();
-        ids.sort();
-        ids
+            .map(|(s, _)| (s.id, s.parent))
+            .collect()
     }
 
     #[test]
-    fn add_without_parent_creates_a_root() {
-        let mut p = Project::new();
-        let id = p.add(None, tone(4)).unwrap();
-        let s = p.get(id).unwrap();
-        assert_eq!(s.id(), id);
-        assert_eq!(s.parent(), None);
-        assert_eq!(s.audio().frames(), 4);
+    fn empty_storage_gets_a_project_created_in_it() {
+        let (_p, state) = project(false);
+        assert!(state.borrow().exists);
     }
 
     #[test]
-    fn adding_builds_a_tree_and_going_back_branches() {
-        let mut p = Project::new();
-        let root = p.add(None, tone(4)).unwrap();
-        let g1 = p.add(Some(root), tone(4)).unwrap();
-        let g2 = p.add(Some(g1), tone(4)).unwrap();
-        // Go back to g1 and print something else.
-        let g2b = p.add(Some(g1), tone(4)).unwrap();
-
-        assert_eq!(p.iter().count(), 4);
-        assert_eq!(lineage(&p, g2), vec![g2, g1, root]);
-        assert_eq!(lineage(&p, g2b), vec![g2b, g1, root]);
-        assert_eq!(children(&p, g1), vec![g2, g2b]);
-        assert!(children(&p, g2).is_empty());
+    fn existing_project_is_opened_without_creating() {
+        let (_p, state) = project(true);
+        assert!(state.borrow().exists);
     }
 
     #[test]
-    fn chop_is_many_children_of_one_parent() {
-        let mut p = Project::new();
-        let brk = p.add(None, tone(8)).unwrap();
-        let slices: Vec<_> = (0..8).map(|_| p.add(Some(brk), tone(1)).unwrap()).collect();
-        assert_eq!(children(&p, brk), slices);
-        for s in slices {
-            assert_eq!(p.get(s).unwrap().parent(), Some(brk));
-        }
+    fn add_without_parent_stores_a_root() {
+        let (mut p, state) = project(false);
+        let id = p.add_sample(None, &tone()).unwrap();
+        assert_eq!(structure(&state), vec![(id, None)]);
     }
 
     #[test]
-    fn add_with_unknown_parent_fails() {
-        let mut p = Project::new();
-        let bogus = SampleId(99);
+    fn add_with_parent_stores_the_next_generation() {
+        let (mut p, state) = project(false);
+        let root = p.add_sample(None, &tone()).unwrap();
+        let child = p.add_sample(Some(root), &tone()).unwrap();
+        assert_ne!(root, child);
+        assert_eq!(structure(&state), vec![(root, None), (child, Some(root))]);
+    }
+
+    #[test]
+    fn a_stored_sample_reads_back() {
+        let (mut p, _state) = project(false);
+        let root = p.add_sample(None, &tone()).unwrap();
+        let child = p.add_sample(Some(root), &tone()).unwrap();
         assert_eq!(
-            p.add(Some(bogus), tone(1)).unwrap_err(),
-            ProjectError::UnknownSample(bogus)
+            p.sample(child).unwrap(),
+            Sample {
+                id: child,
+                parent: Some(root)
+            }
         );
-        assert_eq!(p.iter().count(), 0);
+        assert_eq!(p.audio(child).unwrap(), tone());
     }
 
     #[test]
-    fn remove_refuses_samples_with_children() {
-        let mut p = Project::new();
-        let root = p.add(None, tone(1)).unwrap();
-        let child = p.add(Some(root), tone(1)).unwrap();
-        assert_eq!(p.remove(root).unwrap_err(), ProjectError::HasChildren(root));
-        assert!(p.remove(child).is_ok());
-        assert!(p.remove(root).is_ok());
-        assert_eq!(p.iter().count(), 0);
+    fn reading_an_unknown_sample_is_refused() {
+        let (p, _state) = project(false);
+        let bogus = SampleId(7);
+        assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
+        assert!(matches!(p.audio(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
     }
 
     #[test]
-    fn ids_are_never_reused() {
-        let mut p = Project::new();
-        let a = p.add(None, tone(1)).unwrap();
-        p.remove(a).unwrap();
-        let b = p.add(None, tone(1)).unwrap();
+    fn remove_refuses_a_sample_with_children() {
+        let (mut p, state) = project(false);
+        let root = p.add_sample(None, &tone()).unwrap();
+        let child = p.add_sample(Some(root), &tone()).unwrap();
+        assert!(matches!(
+            p.remove_sample(root),
+            Err(ProjectError::HasChildren(id)) if id == root
+        ));
+        p.remove_sample(child).unwrap();
+        p.remove_sample(root).unwrap();
+        assert!(structure(&state).is_empty());
+    }
+
+    #[test]
+    fn remove_of_unknown_sample_is_refused() {
+        let (mut p, _state) = project(false);
+        assert!(matches!(
+            p.remove_sample(SampleId(3)),
+            Err(ProjectError::UnknownSample(SampleId(3)))
+        ));
+    }
+
+    #[test]
+    fn ids_are_not_reused_after_a_remove() {
+        let (mut p, _state) = project(false);
+        let a = p.add_sample(None, &tone()).unwrap();
+        p.remove_sample(a).unwrap();
+        let b = p.add_sample(None, &tone()).unwrap();
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn add_with_unknown_parent_is_refused_and_stores_nothing() {
+        let (mut p, state) = project(false);
+        let bogus = SampleId(99);
+        assert!(matches!(
+            p.add_sample(Some(bogus), &tone()),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert!(structure(&state).is_empty());
     }
 }

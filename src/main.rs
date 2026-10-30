@@ -1,26 +1,16 @@
-//! The first print: import a ramp, reverse it, and walk the lineage back.
+//! Opens the project at the given directory. There is no storage backend
+//! yet, so this cannot run until one exists.
+//!
+//! Usage: `generations <project-dir>`.
 
-use generations::{AudioBuffer, Engine, effects};
+use std::path::PathBuf;
+
+use generations::Engine;
 
 fn main() {
-    let mut engine = Engine::new();
-
-    // A short mono ramp stands in for a real recording until step 4.
-    let ramp = AudioBuffer::new(1, (0..8).collect::<Vec<_>>()).expect("valid buffer");
-    let root = engine.import(ramp);
-    let printed = engine.print(root, effects::reverse).expect("root exists");
-
-    // Walk the lineage from the print back to the root.
-    let project = engine.project();
-    let mut cur = Some(printed);
-    while let Some(id) = cur {
-        let s = project.get(id).expect("in lineage");
-        println!(
-            "id {} parent {:?} samples {:?}",
-            id.raw(),
-            s.parent().map(|p| p.raw()),
-            s.audio().samples()
-        );
-        cur = s.parent();
-    }
+    let dir = std::env::args_os()
+        .nth(1)
+        .map(PathBuf::from)
+        .expect("usage: generations <project-dir>");
+    let _engine = Engine::open(&dir).expect("open project");
 }
