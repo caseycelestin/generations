@@ -1,10 +1,11 @@
-//! Where a project is kept between runs.
+//! Where a project is kept.
 //!
-//! A [`Project`] owns its storage and writes through it as it changes, so
-//! the project in memory is always the project on disk. Storage never
-//! learns what a project means; it keeps and returns [`ProjectData`].
-//! What is behind the trait (a directory today, perhaps a database later)
-//! is the implementation's private business.
+//! There is no in-memory copy of a project. A [`Project`] holds its storage
+//! and every read and write goes through it, so the project is the disk.
+//! Storage answers questions and does what it is told; the rules about
+//! what is allowed live in the project. What is behind the trait (a
+//! directory today, perhaps a database later) is the implementation's
+//! private business.
 //!
 //! [`Project`]: crate::project::Project
 
@@ -12,8 +13,6 @@ use std::error::Error;
 use std::path::Path;
 
 use thiserror::Error as ThisError;
-
-use crate::project::ProjectData;
 
 /// Reasons storage cannot do what was asked.
 #[derive(Debug, ThisError)]
@@ -25,8 +24,8 @@ pub enum StorageError {
 
 /// Durable storage for one project.
 pub trait Storage {
-    /// The stored project data, or `None` if nothing is stored here yet.
-    fn load(&mut self) -> Result<Option<ProjectData>, StorageError>;
+    /// Whether a project is stored here.
+    fn exists(&self) -> Result<bool, StorageError>;
 
     /// Marks this storage as holding a new, empty project.
     fn create(&mut self) -> Result<(), StorageError>;

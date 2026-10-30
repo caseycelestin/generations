@@ -13,5 +13,5 @@ pub mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use engine::Engine;
-pub use project::{Project, ProjectData};
+pub use project::Project;
 pub use storage::{Storage, StorageError};

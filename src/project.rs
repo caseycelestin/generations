@@ -1,23 +1,15 @@
 //! A project: everything the device keeps for one piece of work.
 //!
-//! A [`Project`] is the code representation of the data on disk, bound to
-//! the [`Storage`] it came from. Changing the project changes the disk;
-//! there is no save step. Today the data is empty; samples, patterns and
-//! settings arrive as their steps come.
+//! A [`Project`] is the rules over a [`Storage`]. It keeps no copy of the
+//! data: every read and write goes to storage, so changing the project is
+//! changing the disk and there is no save step. Today there are no rules
+//! and no data; samples, patterns and settings arrive as their steps come.
 
 use crate::storage::{Storage, StorageError};
 
-/// The data a project is made of. What storage keeps.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct ProjectData {}
-
-/// One project, live: its data and the storage that data is written to.
+/// One project, live on its storage.
 pub struct Project {
-    data: ProjectData,
-    #[expect(
-        dead_code,
-        reason = "written through once the project has data that changes"
-    )]
+    #[expect(dead_code, reason = "read and written once the project has data")]
     storage: Box<dyn Storage>,
 }
 
@@ -25,55 +17,61 @@ impl Project {
     /// The project in `storage`, or a new empty one created there if
     /// nothing is stored yet.
     pub fn get_or_create(mut storage: Box<dyn Storage>) -> Result<Self, StorageError> {
-        let data = match storage.load()? {
-            Some(data) => data,
-            None => {
-                storage.create()?;
-                ProjectData::default()
-            }
-        };
-        Ok(Self { data, storage })
-    }
-
-    /// The project's data.
-    pub fn data(&self) -> &ProjectData {
-        &self.data
+        if !storage.exists()? {
+            storage.create()?;
+        }
+        Ok(Self { storage })
     }
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
     use super::*;
 
-    /// Storage that remembers only whether a project was created in it.
-    #[derive(Default)]
-    pub(crate) struct Memory {
-        pub(crate) stored: Option<ProjectData>,
+    /// Storage that remembers only whether a project is in it, and refuses
+    /// to create one twice.
+    struct Memory {
+        exists: Rc<Cell<bool>>,
     }
 
     impl Storage for Memory {
-        fn load(&mut self) -> Result<Option<ProjectData>, StorageError> {
-            Ok(self.stored.take())
+        fn exists(&self) -> Result<bool, StorageError> {
+            Ok(self.exists.get())
         }
 
         fn create(&mut self) -> Result<(), StorageError> {
-            self.stored = Some(ProjectData::default());
+            assert!(
+                !self.exists.get(),
+                "create called on storage that already holds a project"
+            );
+            self.exists.set(true);
             Ok(())
         }
     }
 
-    #[test]
-    fn empty_storage_gets_a_new_project_created_in_it() {
-        let p = Project::get_or_create(Box::new(Memory::default())).unwrap();
-        assert_eq!(*p.data(), ProjectData::default());
+    fn memory(exists: bool) -> (Box<dyn Storage>, Rc<Cell<bool>>) {
+        let flag = Rc::new(Cell::new(exists));
+        (
+            Box::new(Memory {
+                exists: flag.clone(),
+            }),
+            flag,
+        )
     }
 
     #[test]
-    fn stored_data_is_the_project() {
-        let m = Memory {
-            stored: Some(ProjectData {}),
-        };
-        let p = Project::get_or_create(Box::new(m)).unwrap();
-        assert_eq!(*p.data(), ProjectData {});
+    fn empty_storage_gets_a_project_created_in_it() {
+        let (storage, exists) = memory(false);
+        Project::get_or_create(storage).unwrap();
+        assert!(exists.get());
+    }
+
+    #[test]
+    fn existing_project_is_opened_without_creating() {
+        let (storage, _exists) = memory(true);
+        Project::get_or_create(storage).unwrap();
     }
 }
