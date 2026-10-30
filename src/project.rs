@@ -35,19 +35,23 @@ impl Project {
         Self::default()
     }
 
-    /// Adds a root: audio that starts a new lineage, whether it came from a
-    /// file or an input. The project does not record which.
-    pub fn add_root(&mut self, audio: AudioBuffer) -> SampleId {
-        self.add(None, audio)
-    }
-
-    /// Adds a new generation printed from `parent`.
+    /// Adds a sample to the project.
     ///
-    /// The caller has already produced `audio`; the project only records
-    /// that it descends from `parent`.
-    pub fn print(&mut self, parent: SampleId, audio: AudioBuffer) -> Result<SampleId, ProjectError> {
-        self.require(parent)?;
-        Ok(self.add(Some(parent), audio))
+    /// With no parent it starts a new lineage; with one it is the next
+    /// generation of that lineage. The caller has already produced `audio`;
+    /// the project only records where it sits in the tree.
+    pub fn add(
+        &mut self,
+        parent: Option<SampleId>,
+        audio: AudioBuffer,
+    ) -> Result<SampleId, ProjectError> {
+        if let Some(p) = parent {
+            self.require(p)?;
+        }
+        let id = SampleId(self.next_id);
+        self.next_id += 1;
+        self.samples.insert(id, Sample::new(id, parent, Arc::new(audio)));
+        Ok(id)
     }
 
     /// Removes a sample that has no children.
@@ -125,13 +129,6 @@ impl Project {
         ids.into_iter()
     }
 
-    fn add(&mut self, parent: Option<SampleId>, audio: AudioBuffer) -> SampleId {
-        let id = SampleId(self.next_id);
-        self.next_id += 1;
-        self.samples.insert(id, Sample::new(id, parent, Arc::new(audio)));
-        id
-    }
-
     fn require(&self, id: SampleId) -> Result<&Sample, ProjectError> {
         self.samples.get(&id).ok_or(ProjectError::UnknownSample(id))
     }
@@ -146,9 +143,9 @@ mod tests {
     }
 
     #[test]
-    fn add_root_creates_a_root() {
+    fn add_without_parent_creates_a_root() {
         let mut p = Project::new();
-        let id = p.add_root(tone(4));
+        let id = p.add(None, tone(4)).unwrap();
         let s = p.get(id).unwrap();
         assert!(s.is_root());
         assert_eq!(p.generation(id).unwrap(), 0);
@@ -158,11 +155,11 @@ mod tests {
     #[test]
     fn printing_builds_a_tree_and_going_back_branches() {
         let mut p = Project::new();
-        let root = p.add_root(tone(4));
-        let g1 = p.print(root, tone(4)).unwrap();
-        let g2 = p.print(g1, tone(4)).unwrap();
+        let root = p.add(None, tone(4)).unwrap();
+        let g1 = p.add(Some(root), tone(4)).unwrap();
+        let g2 = p.add(Some(g1), tone(4)).unwrap();
         // Go back to g1 and print something else.
-        let g2b = p.print(g1, tone(4)).unwrap();
+        let g2b = p.add(Some(g1), tone(4)).unwrap();
 
         assert_eq!(p.len(), 4);
         assert_eq!(p.lineage(g2).unwrap(), vec![g2, g1, root]);
@@ -176,9 +173,9 @@ mod tests {
     #[test]
     fn chop_is_many_children_of_one_parent() {
         let mut p = Project::new();
-        let brk = p.add_root(tone(8));
+        let brk = p.add(None, tone(8)).unwrap();
         let slices: Vec<_> =
-            (0..8).map(|_| p.print(brk, tone(1)).unwrap()).collect();
+            (0..8).map(|_| p.add(Some(brk), tone(1)).unwrap()).collect();
         assert_eq!(p.children(brk).collect::<Vec<_>>(), slices);
         for s in slices {
             assert_eq!(p.parent(s).unwrap(), Some(brk));
@@ -186,18 +183,18 @@ mod tests {
     }
 
     #[test]
-    fn print_from_unknown_parent_fails() {
+    fn add_with_unknown_parent_fails() {
         let mut p = Project::new();
         let bogus = SampleId(99);
-        assert_eq!(p.print(bogus, tone(1)).unwrap_err(), ProjectError::UnknownSample(bogus));
+        assert_eq!(p.add(Some(bogus), tone(1)).unwrap_err(), ProjectError::UnknownSample(bogus));
         assert!(p.is_empty());
     }
 
     #[test]
     fn remove_refuses_samples_with_children() {
         let mut p = Project::new();
-        let root = p.add_root(tone(1));
-        let child = p.print(root, tone(1)).unwrap();
+        let root = p.add(None, tone(1)).unwrap();
+        let child = p.add(Some(root), tone(1)).unwrap();
         assert_eq!(p.remove(root).unwrap_err(), ProjectError::HasChildren(root));
         assert!(p.remove(child).is_ok());
         assert!(p.remove(root).is_ok());
@@ -207,9 +204,9 @@ mod tests {
     #[test]
     fn ids_are_never_reused() {
         let mut p = Project::new();
-        let a = p.add_root(tone(1));
+        let a = p.add(None, tone(1)).unwrap();
         p.remove(a).unwrap();
-        let b = p.add_root(tone(1));
+        let b = p.add(None, tone(1)).unwrap();
         assert_ne!(a, b);
     }
 }
