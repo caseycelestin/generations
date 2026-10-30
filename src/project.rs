@@ -203,6 +203,29 @@ mod tests {
     }
 
     #[test]
+    fn a_stored_sample_reads_back() {
+        let (mut p, _state) = project(false);
+        let root = p.add_sample(None, &tone()).unwrap();
+        let child = p.add_sample(Some(root), &tone()).unwrap();
+        assert_eq!(
+            p.sample(child).unwrap(),
+            Sample {
+                id: child,
+                parent: Some(root)
+            }
+        );
+        assert_eq!(p.audio(child).unwrap(), tone());
+    }
+
+    #[test]
+    fn reading_an_unknown_sample_is_refused() {
+        let (p, _state) = project(false);
+        let bogus = SampleId(7);
+        assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
+        assert!(matches!(p.audio(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
+    }
+
+    #[test]
     fn add_with_unknown_parent_is_refused_and_stores_nothing() {
         let (mut p, state) = project(false);
         let bogus = SampleId(99);
