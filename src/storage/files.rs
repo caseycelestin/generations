@@ -20,6 +20,7 @@
 //! the old manifest or the new one, never half of either. The directory is
 //! engine-owned; renaming a WAV by hand breaks the sample.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -53,23 +54,27 @@ fn at(path: &Path, source: impl std::error::Error + Send + Sync + 'static) -> St
 }
 
 /// The on-disk description of a project. Everything but the audio.
+///
+/// Samples are a map keyed by id, so an id cannot appear twice and the
+/// file is written in id order.
 #[derive(Serialize, Deserialize)]
 struct Manifest {
     version: u32,
     next_id: u32,
-    samples: Vec<Entry>,
+    samples: BTreeMap<u32, Entry>,
 }
 
+/// Everything stored about one sample except its audio and its id, which
+/// is the map key.
 #[derive(Serialize, Deserialize)]
 struct Entry {
-    id: u32,
     parent: Option<u32>,
 }
 
 impl Entry {
-    fn sample(&self) -> Sample {
+    fn sample(&self, id: SampleId) -> Sample {
         Sample {
-            id: SampleId(self.id),
+            id,
             parent: self.parent.map(SampleId),
         }
     }
@@ -167,7 +172,7 @@ impl Storage for FileStorage {
         self.write_manifest(&Manifest {
             version: FORMAT_VERSION,
             next_id: 0,
-            samples: Vec::new(),
+            samples: BTreeMap::new(),
         })
     }
 
@@ -175,9 +180,8 @@ impl Storage for FileStorage {
         Ok(self
             .read_manifest()?
             .samples
-            .iter()
-            .find(|e| e.id == id.0)
-            .map(Entry::sample))
+            .get(&id.0)
+            .map(|e| e.sample(id)))
     }
 
     fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
@@ -191,15 +195,13 @@ impl Storage for FileStorage {
         Ok(self
             .read_manifest()?
             .samples
-            .iter()
+            .values()
             .any(|e| e.parent == Some(id.0)))
     }
 
     fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
         let mut manifest = self.read_manifest()?;
-        let before = manifest.samples.len();
-        manifest.samples.retain(|e| e.id != id.0);
-        if manifest.samples.len() == before {
+        if manifest.samples.remove(&id.0).is_none() {
             return Ok(());
         }
         self.write_manifest(&manifest)?;
@@ -220,10 +222,12 @@ impl Storage for FileStorage {
         let id = SampleId(manifest.next_id);
         manifest.next_id += 1;
         self.write_wav(id, audio)?;
-        manifest.samples.push(Entry {
-            id: id.0,
-            parent: parent.map(|p| p.0),
-        });
+        manifest.samples.insert(
+            id.0,
+            Entry {
+                parent: parent.map(|p| p.0),
+            },
+        );
         self.write_manifest(&manifest)?;
         Ok(id)
     }
@@ -351,7 +355,7 @@ mod tests {
     fn unsupported_version_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let s = created(dir.path());
-        let manifest = r#"{"version":99,"next_id":0,"samples":[]}"#;
+        let manifest = r#"{"version":99,"next_id":0,"samples":{}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         assert!(matches!(
             s.sample(SampleId(0)),
