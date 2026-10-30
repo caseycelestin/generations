@@ -51,13 +51,10 @@ pub struct Project {
 }
 
 impl Project {
-    /// The project in `storage`, or a new empty one created there if
-    /// nothing is stored yet.
-    pub fn get_or_create(mut storage: Box<dyn Storage>) -> Result<Self, StorageError> {
-        if !storage.exists()? {
-            storage.create()?;
-        }
-        Ok(Self { storage })
+    /// The project in `storage`. A storage that exists holds a whole,
+    /// valid project, so there is nothing to check here.
+    pub fn new(storage: Box<dyn Storage>) -> Self {
+        Self { storage }
     }
 
     /// Adds audio as a sample and returns its id.
@@ -114,7 +111,6 @@ pub(crate) mod tests {
     /// What the stub storage remembers.
     #[derive(Default)]
     struct State {
-        exists: bool,
         next_id: u32,
         samples: Vec<(Sample, AudioBuffer)>,
     }
@@ -124,20 +120,6 @@ pub(crate) mod tests {
     struct Memory(Rc<RefCell<State>>);
 
     impl Storage for Memory {
-        fn exists(&self) -> Result<bool, StorageError> {
-            Ok(self.0.borrow().exists)
-        }
-
-        fn create(&mut self) -> Result<(), StorageError> {
-            let mut s = self.0.borrow_mut();
-            assert!(
-                !s.exists,
-                "create called on storage that already holds a project"
-            );
-            s.exists = true;
-            Ok(())
-        }
-
         fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
             Ok(self.find(id).map(|(s, _)| s))
         }
@@ -186,15 +168,12 @@ pub(crate) mod tests {
 
     /// A project on in-memory storage, for tests elsewhere in the crate.
     pub(crate) fn memory_project() -> Project {
-        project(false).0
+        project().0
     }
 
-    fn project(exists: bool) -> (Project, Rc<RefCell<State>>) {
-        let state = Rc::new(RefCell::new(State {
-            exists,
-            ..State::default()
-        }));
-        let p = Project::get_or_create(Box::new(Memory(state.clone()))).unwrap();
+    fn project() -> (Project, Rc<RefCell<State>>) {
+        let state = Rc::new(RefCell::new(State::default()));
+        let p = Project::new(Box::new(Memory(state.clone())));
         (p, state)
     }
 
@@ -212,27 +191,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn empty_storage_gets_a_project_created_in_it() {
-        let (_p, state) = project(false);
-        assert!(state.borrow().exists);
-    }
-
-    #[test]
-    fn existing_project_is_opened_without_creating() {
-        let (_p, state) = project(true);
-        assert!(state.borrow().exists);
-    }
-
-    #[test]
     fn add_without_parent_stores_a_root() {
-        let (mut p, state) = project(false);
+        let (mut p, state) = project();
         let id = p.add_sample(None, &tone()).unwrap();
         assert_eq!(structure(&state), vec![(id, None)]);
     }
 
     #[test]
     fn add_with_parent_stores_the_next_generation() {
-        let (mut p, state) = project(false);
+        let (mut p, state) = project();
         let root = p.add_sample(None, &tone()).unwrap();
         let child = p.add_sample(Some(root), &tone()).unwrap();
         assert_ne!(root, child);
@@ -241,7 +208,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_stored_sample_reads_back() {
-        let (mut p, _state) = project(false);
+        let (mut p, _state) = project();
         let root = p.add_sample(None, &tone()).unwrap();
         let child = p.add_sample(Some(root), &tone()).unwrap();
         assert_eq!(
@@ -256,7 +223,7 @@ pub(crate) mod tests {
 
     #[test]
     fn reading_an_unknown_sample_is_refused() {
-        let (p, _state) = project(false);
+        let (p, _state) = project();
         let bogus = SampleId(7);
         assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
         assert!(matches!(p.audio(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
@@ -264,7 +231,7 @@ pub(crate) mod tests {
 
     #[test]
     fn remove_refuses_a_sample_with_children() {
-        let (mut p, state) = project(false);
+        let (mut p, state) = project();
         let root = p.add_sample(None, &tone()).unwrap();
         let child = p.add_sample(Some(root), &tone()).unwrap();
         assert!(matches!(
@@ -278,7 +245,7 @@ pub(crate) mod tests {
 
     #[test]
     fn remove_of_unknown_sample_is_refused() {
-        let (mut p, _state) = project(false);
+        let (mut p, _state) = project();
         assert!(matches!(
             p.remove_sample(SampleId(3)),
             Err(ProjectError::UnknownSample(SampleId(3)))
@@ -287,7 +254,7 @@ pub(crate) mod tests {
 
     #[test]
     fn ids_are_not_reused_after_a_remove() {
-        let (mut p, _state) = project(false);
+        let (mut p, _state) = project();
         let a = p.add_sample(None, &tone()).unwrap();
         p.remove_sample(a).unwrap();
         let b = p.add_sample(None, &tone()).unwrap();
@@ -296,7 +263,7 @@ pub(crate) mod tests {
 
     #[test]
     fn add_with_unknown_parent_is_refused_and_stores_nothing() {
-        let (mut p, state) = project(false);
+        let (mut p, state) = project();
         let bogus = SampleId(99);
         assert!(matches!(
             p.add_sample(Some(bogus), &tone()),

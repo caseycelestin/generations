@@ -24,7 +24,7 @@ impl Engine {
     pub fn open(dir: &Path) -> Result<Self, StorageError> {
         let storage = storage::open(dir)?;
         Ok(Self {
-            project: Project::get_or_create(storage)?,
+            project: Project::new(storage),
         })
     }
 
