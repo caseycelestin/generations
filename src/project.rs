@@ -23,7 +23,8 @@ pub enum ProjectError {
 ///
 /// Samples live in one flat pool keyed by id. Lineage is a forest over the
 /// pool via each sample's parent pointer, so a chop of one sample into many
-/// is just many samples sharing a parent.
+/// is just many samples sharing a parent. Children are found by walking the
+/// pool; the parent pointer is the only stored relationship.
 #[derive(Debug, Default)]
 pub struct Project {
     samples: HashMap<SampleId, Sample>,
@@ -61,7 +62,7 @@ impl Project {
     /// separate, explicit operation that does not exist yet.
     pub fn remove(&mut self, id: SampleId) -> Result<Sample, ProjectError> {
         self.require(id)?;
-        if self.children(id).next().is_some() {
+        if self.has_children(id) {
             return Err(ProjectError::HasChildren(id));
         }
         Ok(self.samples.remove(&id).expect("checked above"))
@@ -71,62 +72,13 @@ impl Project {
         self.samples.get(&id)
     }
 
-    pub fn contains(&self, id: SampleId) -> bool {
-        self.samples.contains_key(&id)
-    }
-
-    pub fn len(&self) -> usize {
-        self.samples.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
-    }
-
     /// Every sample, in no particular order.
     pub fn iter(&self) -> impl Iterator<Item = &Sample> {
         self.samples.values()
     }
 
-    /// The sample one generation behind `id`.
-    pub fn parent(&self, id: SampleId) -> Result<Option<SampleId>, ProjectError> {
-        Ok(self.require(id)?.parent())
-    }
-
-    /// Samples printed directly from `id`, in id order.
-    pub fn children(&self, id: SampleId) -> impl Iterator<Item = SampleId> + '_ {
-        let mut ids: Vec<SampleId> = self
-            .samples
-            .values()
-            .filter(move |s| s.parent() == Some(id))
-            .map(Sample::id)
-            .collect();
-        ids.sort();
-        ids.into_iter()
-    }
-
-    /// The chain from `id` back to its root, starting with `id` itself.
-    pub fn lineage(&self, id: SampleId) -> Result<Vec<SampleId>, ProjectError> {
-        let mut chain = vec![id];
-        let mut cur = self.require(id)?;
-        while let Some(p) = cur.parent() {
-            chain.push(p);
-            cur = self.require(p)?;
-        }
-        Ok(chain)
-    }
-
-    /// How many generations `id` is from its root. A root is generation 0.
-    pub fn generation(&self, id: SampleId) -> Result<usize, ProjectError> {
-        Ok(self.lineage(id)?.len() - 1)
-    }
-
-    /// Samples with no parent.
-    pub fn roots(&self) -> impl Iterator<Item = SampleId> + '_ {
-        let mut ids: Vec<SampleId> =
-            self.samples.values().filter(|s| s.is_root()).map(Sample::id).collect();
-        ids.sort();
-        ids.into_iter()
+    fn has_children(&self, id: SampleId) -> bool {
+        self.samples.values().any(|s| s.parent() == Some(id))
     }
 
     fn require(&self, id: SampleId) -> Result<&Sample, ProjectError> {
@@ -142,18 +94,36 @@ mod tests {
         AudioBuffer::new(1, (0..n).map(|i| i as i16).collect::<Vec<_>>()).unwrap()
     }
 
+    /// Walks parents from `id` back to the root, using only the public API.
+    fn lineage(p: &Project, id: SampleId) -> Vec<SampleId> {
+        let mut chain = vec![id];
+        let mut cur = p.get(id).unwrap();
+        while let Some(parent) = cur.parent() {
+            chain.push(parent);
+            cur = p.get(parent).unwrap();
+        }
+        chain
+    }
+
+    fn children(p: &Project, id: SampleId) -> Vec<SampleId> {
+        let mut ids: Vec<_> =
+            p.iter().filter(|s| s.parent() == Some(id)).map(Sample::id).collect();
+        ids.sort();
+        ids
+    }
+
     #[test]
     fn add_without_parent_creates_a_root() {
         let mut p = Project::new();
         let id = p.add(None, tone(4)).unwrap();
         let s = p.get(id).unwrap();
-        assert!(s.is_root());
-        assert_eq!(p.generation(id).unwrap(), 0);
+        assert_eq!(s.id(), id);
+        assert_eq!(s.parent(), None);
         assert_eq!(s.audio().frames(), 4);
     }
 
     #[test]
-    fn printing_builds_a_tree_and_going_back_branches() {
+    fn adding_builds_a_tree_and_going_back_branches() {
         let mut p = Project::new();
         let root = p.add(None, tone(4)).unwrap();
         let g1 = p.add(Some(root), tone(4)).unwrap();
@@ -161,24 +131,21 @@ mod tests {
         // Go back to g1 and print something else.
         let g2b = p.add(Some(g1), tone(4)).unwrap();
 
-        assert_eq!(p.len(), 4);
-        assert_eq!(p.lineage(g2).unwrap(), vec![g2, g1, root]);
-        assert_eq!(p.lineage(g2b).unwrap(), vec![g2b, g1, root]);
-        assert_eq!(p.generation(g2b).unwrap(), 2);
-        assert_eq!(p.children(g1).collect::<Vec<_>>(), vec![g2, g2b]);
-        assert_eq!(p.children(g2).count(), 0);
-        assert_eq!(p.roots().collect::<Vec<_>>(), vec![root]);
+        assert_eq!(p.iter().count(), 4);
+        assert_eq!(lineage(&p, g2), vec![g2, g1, root]);
+        assert_eq!(lineage(&p, g2b), vec![g2b, g1, root]);
+        assert_eq!(children(&p, g1), vec![g2, g2b]);
+        assert!(children(&p, g2).is_empty());
     }
 
     #[test]
     fn chop_is_many_children_of_one_parent() {
         let mut p = Project::new();
         let brk = p.add(None, tone(8)).unwrap();
-        let slices: Vec<_> =
-            (0..8).map(|_| p.add(Some(brk), tone(1)).unwrap()).collect();
-        assert_eq!(p.children(brk).collect::<Vec<_>>(), slices);
+        let slices: Vec<_> = (0..8).map(|_| p.add(Some(brk), tone(1)).unwrap()).collect();
+        assert_eq!(children(&p, brk), slices);
         for s in slices {
-            assert_eq!(p.parent(s).unwrap(), Some(brk));
+            assert_eq!(p.get(s).unwrap().parent(), Some(brk));
         }
     }
 
@@ -187,7 +154,7 @@ mod tests {
         let mut p = Project::new();
         let bogus = SampleId(99);
         assert_eq!(p.add(Some(bogus), tone(1)).unwrap_err(), ProjectError::UnknownSample(bogus));
-        assert!(p.is_empty());
+        assert_eq!(p.iter().count(), 0);
     }
 
     #[test]
@@ -198,7 +165,7 @@ mod tests {
         assert_eq!(p.remove(root).unwrap_err(), ProjectError::HasChildren(root));
         assert!(p.remove(child).is_ok());
         assert!(p.remove(root).is_ok());
-        assert!(p.is_empty());
+        assert_eq!(p.iter().count(), 0);
     }
 
     #[test]

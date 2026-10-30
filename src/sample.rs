@@ -1,4 +1,4 @@
-//! A printed piece of audio and where it came from.
+//! A printed piece of audio and its place in a lineage.
 //!
 //! "Generation" is not a type. It is the relationship between a [`Sample`]
 //! and its `parent`: the sample one generation behind it. Lineage is the
@@ -11,7 +11,6 @@
 //! later layer. Samples themselves never change once created.
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use crate::audio::AudioBuffer;
 
@@ -33,41 +32,26 @@ impl SampleId {
 pub struct Sample {
     id: SampleId,
     parent: Option<SampleId>,
-    created_at: SystemTime,
     audio: Arc<AudioBuffer>,
 }
 
 impl Sample {
-    pub(crate) fn new(
-        id: SampleId,
-        parent: Option<SampleId>,
-        audio: Arc<AudioBuffer>,
-    ) -> Self {
-        Self { id, parent, created_at: SystemTime::now(), audio }
+    pub(crate) fn new(id: SampleId, parent: Option<SampleId>, audio: Arc<AudioBuffer>) -> Self {
+        Self { id, parent, audio }
     }
 
     pub fn id(&self) -> SampleId {
         self.id
     }
 
-    /// The sample one generation behind this one, if any.
+    /// The sample one generation behind this one. `None` for a root.
     pub fn parent(&self) -> Option<SampleId> {
         self.parent
-    }
-
-    pub fn created_at(&self) -> SystemTime {
-        self.created_at
     }
 
     /// The audio. Returned by reference so that a later change to how audio
     /// is stored (lazy loading, views into a parent) stays inside this type.
     pub fn audio(&self) -> &AudioBuffer {
         &self.audio
-    }
-
-    /// True for a root of a lineage: audio that was not printed from
-    /// anything else in the project.
-    pub fn is_root(&self) -> bool {
-        self.parent.is_none()
     }
 }

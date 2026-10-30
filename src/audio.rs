@@ -78,24 +78,11 @@ impl AudioBuffer {
         self.data.len() / usize::from(self.channels)
     }
 
-    /// Length in seconds at the engine sample rate.
-    pub fn duration_secs(&self) -> f64 {
-        self.frames() as f64 / f64::from(crate::config::SAMPLE_RATE)
-    }
-
     /// All samples, interleaved.
     pub fn samples(&self) -> &[Pcm] {
         &self.data
     }
 
-    /// One frame: a slice of `channels()` samples.
-    ///
-    /// # Panics
-    /// If `index >= frames()`.
-    pub fn frame(&self, index: usize) -> &[Pcm] {
-        let c = usize::from(self.channels);
-        &self.data[index * c..(index + 1) * c]
-    }
 }
 
 impl fmt::Debug for AudioBuffer {
@@ -152,11 +139,11 @@ mod tests {
     }
 
     #[test]
-    fn frames_and_frame_access() {
+    fn frames_count_per_channel() {
         let b = AudioBuffer::new(2, vec![1, 2, 3, 4]).unwrap();
         assert_eq!(b.frames(), 2);
-        assert_eq!(b.frame(0), &[1, 2]);
-        assert_eq!(b.frame(1), &[3, 4]);
+        assert_eq!(b.channels(), 2);
+        assert_eq!(b.samples(), &[1, 2, 3, 4]);
     }
 
     #[test]
