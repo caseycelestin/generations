@@ -10,4 +10,4 @@ pub mod sample;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use project::{Project, ProjectError};
-pub use sample::{Origin, Sample, SampleId};
+pub use sample::{Sample, SampleId};
