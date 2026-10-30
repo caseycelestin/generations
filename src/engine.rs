@@ -3,21 +3,29 @@
 //! The engine owns a [`Project`] and knows how to print. It is the only code
 //! that touches both the project and the effects; the project does not know
 //! effects exist and effects do not know projects exist.
+//!
+//! An engine runs on a [`Storage`]: the place its project is kept.
 
 use crate::audio::AudioBuffer;
 use crate::project::{Project, ProjectError};
 use crate::sample::SampleId;
+use crate::storage::{Storage, StorageError};
 
 /// The engine for one open project.
-#[derive(Debug, Default)]
 pub struct Engine {
     project: Project,
+    #[expect(dead_code, reason = "written to once changes are stored")]
+    storage: Box<dyn Storage>,
 }
 
 impl Engine {
-    /// An engine with an empty project.
-    pub fn new() -> Self {
-        Self::default()
+    /// An engine on the project in `storage`, which is created if nothing
+    /// is stored yet.
+    pub fn open(mut storage: Box<dyn Storage>) -> Result<Self, StorageError> {
+        Ok(Self {
+            project: storage.load_or_create()?,
+            storage,
+        })
     }
 
     /// The project this engine operates on.
@@ -62,9 +70,27 @@ mod tests {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
     }
 
+    /// Storage that holds nothing. Enough to open an engine on.
+    struct Empty;
+
+    impl Storage for Empty {
+        fn load_or_create(&mut self) -> Result<Project, StorageError> {
+            Ok(Project::new())
+        }
+    }
+
+    fn engine() -> Engine {
+        Engine::open(Box::new(Empty)).unwrap()
+    }
+
+    #[test]
+    fn open_on_empty_storage_gives_an_empty_project() {
+        assert_eq!(engine().project().iter().count(), 0);
+    }
+
     #[test]
     fn import_creates_a_root() {
-        let mut e = Engine::new();
+        let mut e = engine();
         let id = e.import(ramp(4));
         let s = e.project().get(id).unwrap();
         assert_eq!(s.parent(), None);
@@ -73,7 +99,7 @@ mod tests {
 
     #[test]
     fn print_adds_a_child_with_the_effect_applied() {
-        let mut e = Engine::new();
+        let mut e = engine();
         let root = e.import(ramp(4));
         let child = e.print(root, reverse).unwrap();
 
@@ -90,7 +116,7 @@ mod tests {
 
     #[test]
     fn printing_twice_from_one_source_branches() {
-        let mut e = Engine::new();
+        let mut e = engine();
         let root = e.import(ramp(4));
         let a = e.print(root, reverse).unwrap();
         let b = e.print(root, reverse).unwrap();
@@ -101,7 +127,7 @@ mod tests {
 
     #[test]
     fn print_from_unknown_source_adds_nothing() {
-        let mut e = Engine::new();
+        let mut e = engine();
         let root = e.import(ramp(4));
         let bogus = SampleId(root.raw() + 1);
         assert_eq!(
