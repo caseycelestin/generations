@@ -15,7 +15,7 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
-use crate::project::SampleId;
+use crate::project::{Sample, SampleId};
 
 /// Reasons storage cannot do what was asked.
 #[derive(Debug, ThisError)]
@@ -33,8 +33,12 @@ pub trait Storage {
     /// Marks this storage as holding a new, empty project.
     fn create(&mut self) -> Result<(), StorageError>;
 
-    /// Whether a sample with this id is stored.
-    fn has_sample(&self, id: SampleId) -> Result<bool, StorageError>;
+    /// The stored sample with this id, or `None` if there is none.
+    fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
+
+    /// The stored audio of the sample with this id, or `None` if there is
+    /// none.
+    fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError>;
 
     /// Stores a sample with its audio and returns its new id.
     ///

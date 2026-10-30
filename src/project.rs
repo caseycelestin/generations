@@ -65,12 +65,24 @@ impl Project {
         parent: Option<SampleId>,
         audio: &AudioBuffer,
     ) -> Result<SampleId, ProjectError> {
-        if let Some(p) = parent
-            && !self.storage.has_sample(p)?
-        {
-            return Err(ProjectError::UnknownSample(p));
+        if let Some(p) = parent {
+            self.sample(p)?;
         }
         Ok(self.storage.add_sample(parent, audio)?)
+    }
+
+    /// Where the sample with this id sits in the tree.
+    pub fn sample(&self, id: SampleId) -> Result<Sample, ProjectError> {
+        self.storage
+            .sample(id)?
+            .ok_or(ProjectError::UnknownSample(id))
+    }
+
+    /// The audio of the sample with this id, read from storage.
+    pub fn audio(&self, id: SampleId) -> Result<AudioBuffer, ProjectError> {
+        self.storage
+            .audio(id)?
+            .ok_or(ProjectError::UnknownSample(id))
     }
 }
 
@@ -86,7 +98,7 @@ mod tests {
     struct State {
         exists: bool,
         next_id: u32,
-        samples: Vec<(SampleId, Option<SampleId>)>,
+        samples: Vec<(Sample, AudioBuffer)>,
     }
 
     /// In-memory storage for tests, shared with the test through `Rc` so
@@ -108,20 +120,35 @@ mod tests {
             Ok(())
         }
 
-        fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
-            Ok(self.0.borrow().samples.iter().any(|(i, _)| *i == id))
+        fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
+            Ok(self.find(id).map(|(s, _)| s))
+        }
+
+        fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
+            Ok(self.find(id).map(|(_, a)| a))
         }
 
         fn add_sample(
             &mut self,
             parent: Option<SampleId>,
-            _audio: &AudioBuffer,
+            audio: &AudioBuffer,
         ) -> Result<SampleId, StorageError> {
             let mut s = self.0.borrow_mut();
             let id = SampleId(s.next_id);
             s.next_id += 1;
-            s.samples.push((id, parent));
+            s.samples.push((Sample { id, parent }, audio.clone()));
             Ok(id)
+        }
+    }
+
+    impl Memory {
+        fn find(&self, id: SampleId) -> Option<(Sample, AudioBuffer)> {
+            self.0
+                .borrow()
+                .samples
+                .iter()
+                .find(|(s, _)| s.id == id)
+                .cloned()
         }
     }
 
@@ -136,6 +163,15 @@ mod tests {
 
     fn tone() -> AudioBuffer {
         AudioBuffer::new(1, vec![0, 1, 2, 3]).unwrap()
+    }
+
+    fn structure(state: &Rc<RefCell<State>>) -> Vec<(SampleId, Option<SampleId>)> {
+        state
+            .borrow()
+            .samples
+            .iter()
+            .map(|(s, _)| (s.id, s.parent))
+            .collect()
     }
 
     #[test]
@@ -154,7 +190,7 @@ mod tests {
     fn add_without_parent_stores_a_root() {
         let (mut p, state) = project(false);
         let id = p.add_sample(None, &tone()).unwrap();
-        assert_eq!(state.borrow().samples, vec![(id, None)]);
+        assert_eq!(structure(&state), vec![(id, None)]);
     }
 
     #[test]
@@ -163,10 +199,7 @@ mod tests {
         let root = p.add_sample(None, &tone()).unwrap();
         let child = p.add_sample(Some(root), &tone()).unwrap();
         assert_ne!(root, child);
-        assert_eq!(
-            state.borrow().samples,
-            vec![(root, None), (child, Some(root))]
-        );
+        assert_eq!(structure(&state), vec![(root, None), (child, Some(root))]);
     }
 
     #[test]
@@ -177,6 +210,6 @@ mod tests {
             p.add_sample(Some(bogus), &tone()),
             Err(ProjectError::UnknownSample(id)) if id == bogus
         ));
-        assert!(state.borrow().samples.is_empty());
+        assert!(structure(&state).is_empty());
     }
 }
