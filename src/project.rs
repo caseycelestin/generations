@@ -17,6 +17,15 @@ pub enum ProjectError {
     /// The sample has children and cannot be removed on its own.
     #[error("sample {} has children and cannot be removed", .0.raw())]
     HasChildren(SampleId),
+    /// Two samples were given the same id.
+    #[error("duplicate sample id {}", .0.raw())]
+    DuplicateSample(SampleId),
+    /// A sample's parent does not come before it in the counter.
+    #[error("sample {} cannot have parent {}: parents come first", .0.raw(), .1.raw())]
+    ParentNotEarlier(SampleId, SampleId),
+    /// The counter has not moved past the largest id in use.
+    #[error("next id {next} does not follow the largest sample id {max}")]
+    CounterBehind { next: u32, max: u32 },
 }
 
 /// A self-contained collection of samples.
@@ -67,6 +76,54 @@ impl Project {
             return Err(ProjectError::HasChildren(id));
         }
         Ok(self.samples.remove(&id).expect("checked above"))
+    }
+
+    /// Rebuilds a project from samples with known ids, as read from disk.
+    ///
+    /// Checks the invariants that [`Project::add`] guarantees by
+    /// construction: ids are unique, every parent exists and was minted
+    /// before its child, and `next_id` is past every id in use. Parents
+    /// coming first is what makes a cycle impossible.
+    pub(crate) fn from_parts(
+        samples: impl IntoIterator<Item = (SampleId, Option<SampleId>, AudioBuffer)>,
+        next_id: u32,
+    ) -> Result<Self, ProjectError> {
+        let mut pool = HashMap::new();
+        for (id, parent, audio) in samples {
+            if let Some(p) = parent
+                && p >= id
+            {
+                return Err(ProjectError::ParentNotEarlier(id, p));
+            }
+            if pool
+                .insert(id, Sample::new(id, parent, Arc::new(audio)))
+                .is_some()
+            {
+                return Err(ProjectError::DuplicateSample(id));
+            }
+        }
+        for s in pool.values() {
+            if let Some(p) = s.parent()
+                && !pool.contains_key(&p)
+            {
+                return Err(ProjectError::UnknownSample(p));
+            }
+        }
+        if let Some(max) = pool.keys().map(|id| id.raw()).max()
+            && next_id <= max
+        {
+            return Err(ProjectError::CounterBehind { next: next_id, max });
+        }
+        Ok(Self {
+            samples: pool,
+            next_id,
+        })
+    }
+
+    /// The value the next minted id will take. Persisted so that ids are
+    /// never reused across a save and load.
+    pub(crate) fn next_id(&self) -> u32 {
+        self.next_id
     }
 
     pub fn get(&self, id: SampleId) -> Option<&Sample> {
@@ -173,6 +230,56 @@ mod tests {
         assert!(p.remove(child).is_ok());
         assert!(p.remove(root).is_ok());
         assert_eq!(p.iter().count(), 0);
+    }
+
+    #[test]
+    fn from_parts_rebuilds_a_tree() {
+        let p = Project::from_parts(
+            vec![
+                (SampleId(0), None, tone(1)),
+                (SampleId(2), Some(SampleId(0)), tone(1)),
+            ],
+            5,
+        )
+        .unwrap();
+        assert_eq!(lineage(&p, SampleId(2)), vec![SampleId(2), SampleId(0)]);
+        assert_eq!(p.next_id(), 5);
+    }
+
+    #[test]
+    fn from_parts_rejects_broken_invariants() {
+        let dangling = Project::from_parts(vec![(SampleId(1), Some(SampleId(0)), tone(1))], 2);
+        assert_eq!(
+            dangling.unwrap_err(),
+            ProjectError::UnknownSample(SampleId(0))
+        );
+
+        let backwards = Project::from_parts(
+            vec![
+                (SampleId(0), Some(SampleId(1)), tone(1)),
+                (SampleId(1), None, tone(1)),
+            ],
+            2,
+        );
+        assert_eq!(
+            backwards.unwrap_err(),
+            ProjectError::ParentNotEarlier(SampleId(0), SampleId(1))
+        );
+
+        let duplicate = Project::from_parts(
+            vec![(SampleId(0), None, tone(1)), (SampleId(0), None, tone(1))],
+            1,
+        );
+        assert_eq!(
+            duplicate.unwrap_err(),
+            ProjectError::DuplicateSample(SampleId(0))
+        );
+
+        let behind = Project::from_parts(vec![(SampleId(3), None, tone(1))], 3);
+        assert_eq!(
+            behind.unwrap_err(),
+            ProjectError::CounterBehind { next: 3, max: 3 }
+        );
     }
 
     #[test]
