@@ -18,7 +18,9 @@ use crate::storage::{Storage, StorageError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SampleId(pub u32);
 
-/// Where one sample sits in the tree.
+/// Everything stored about one sample except its audio, which is read
+/// separately with [`Project::audio`]. More fields arrive as the project
+/// grows.
 ///
 /// "Generation" is not a type. It is the relationship between a sample and
 /// its parent: the sample one generation behind it. Lineage is the tree
@@ -71,7 +73,7 @@ impl Project {
         Ok(self.storage.add_sample(parent, audio)?)
     }
 
-    /// Where the sample with this id sits in the tree.
+    /// Everything stored about the sample with this id, except its audio.
     pub fn sample(&self, id: SampleId) -> Result<Sample, ProjectError> {
         self.storage
             .sample(id)?
