@@ -90,7 +90,7 @@ Things a reader cannot recover from the code alone.
 engine        thin orchestration; what a UI or front panel calls
  ├── project  structure: ids and parents
  ├── effects  pure functions, buffer in, buffer out, offline
- ├── io       import (decode, resample, widen) and save/load
+ ├── disk     import (decode, resample, widen) and save/load
  └── playback real-time thread; never allocates, locks or touches disk
 ```
 

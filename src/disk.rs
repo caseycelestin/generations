@@ -43,7 +43,7 @@ const FORMAT_VERSION: u32 = 1;
 
 /// Reasons a project cannot be saved or loaded.
 #[derive(Debug, Error)]
-pub enum IoError {
+pub enum DiskError {
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,
@@ -92,7 +92,7 @@ struct Entry {
 }
 
 /// Writes `project` to `dir`, creating it if needed.
-pub fn save(project: &Project, dir: &Path) -> Result<(), IoError> {
+pub fn save(project: &Project, dir: &Path) -> Result<(), DiskError> {
     let samples_dir = dir.join(SAMPLES_DIR);
     fs::create_dir_all(&samples_dir).map_err(|e| io_err(&samples_dir, e))?;
 
@@ -115,7 +115,7 @@ pub fn save(project: &Project, dir: &Path) -> Result<(), IoError> {
         samples: entries,
     };
     let path = dir.join(MANIFEST);
-    let json = serde_json::to_vec_pretty(&manifest).map_err(|e| IoError::Manifest {
+    let json = serde_json::to_vec_pretty(&manifest).map_err(|e| DiskError::Manifest {
         path: path.clone(),
         source: e,
     })?;
@@ -127,15 +127,15 @@ pub fn save(project: &Project, dir: &Path) -> Result<(), IoError> {
 }
 
 /// Reads the project in `dir`.
-pub fn load(dir: &Path) -> Result<Project, IoError> {
+pub fn load(dir: &Path) -> Result<Project, DiskError> {
     let path = dir.join(MANIFEST);
     let bytes = fs::read(&path).map_err(|e| io_err(&path, e))?;
-    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| IoError::Manifest {
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|e| DiskError::Manifest {
         path: path.clone(),
         source: e,
     })?;
     if manifest.version != FORMAT_VERSION {
-        return Err(IoError::UnsupportedVersion(manifest.version));
+        return Err(DiskError::UnsupportedVersion(manifest.version));
     }
 
     let mut samples = Vec::with_capacity(manifest.samples.len());
@@ -151,7 +151,7 @@ fn wav_path(dir: &Path, id: SampleId) -> PathBuf {
     dir.join(SAMPLES_DIR).join(format!("{}.wav", id.raw()))
 }
 
-fn write_wav(path: &Path, audio: &AudioBuffer) -> Result<(), IoError> {
+fn write_wav(path: &Path, audio: &AudioBuffer) -> Result<(), DiskError> {
     let spec = WavSpec {
         channels: audio.channels(),
         sample_rate: SAMPLE_RATE,
@@ -168,7 +168,7 @@ fn write_wav(path: &Path, audio: &AudioBuffer) -> Result<(), IoError> {
     writer.finalize().map_err(wav)
 }
 
-fn read_wav(path: &Path) -> Result<AudioBuffer, IoError> {
+fn read_wav(path: &Path) -> Result<AudioBuffer, DiskError> {
     let wav = |e| wav_err(path, e);
     let mut reader = WavReader::open(path).map_err(wav)?;
     let spec = reader.spec();
@@ -177,7 +177,7 @@ fn read_wav(path: &Path) -> Result<AudioBuffer, IoError> {
         && spec.sample_format == SampleFormat::Int
         && (1..=MAX_CHANNELS).contains(&spec.channels);
     if !expected {
-        return Err(IoError::BadFormat {
+        return Err(DiskError::BadFormat {
             path: path.to_path_buf(),
             spec,
         });
@@ -190,7 +190,7 @@ fn read_wav(path: &Path) -> Result<AudioBuffer, IoError> {
 }
 
 /// Deletes WAVs in `samples_dir` whose id is no longer in the project.
-fn remove_orphans(project: &Project, samples_dir: &Path) -> Result<(), IoError> {
+fn remove_orphans(project: &Project, samples_dir: &Path) -> Result<(), DiskError> {
     for entry in fs::read_dir(samples_dir).map_err(|e| io_err(samples_dir, e))? {
         let path = entry.map_err(|e| io_err(samples_dir, e))?.path();
         let id = path
@@ -208,18 +208,18 @@ fn remove_orphans(project: &Project, samples_dir: &Path) -> Result<(), IoError> 
 /// A hound error that is really an `io::Error` (a missing file, say) is
 /// reported as one, so callers see the same error for a missing WAV as
 /// for a missing manifest.
-fn wav_err(path: &Path, source: hound::Error) -> IoError {
+fn wav_err(path: &Path, source: hound::Error) -> DiskError {
     match source {
         hound::Error::IoError(e) => io_err(path, e),
-        source => IoError::Wav {
+        source => DiskError::Wav {
             path: path.to_path_buf(),
             source,
         },
     }
 }
 
-fn io_err(path: &Path, source: io::Error) -> IoError {
-    IoError::Io {
+fn io_err(path: &Path, source: io::Error) -> DiskError {
+    DiskError::Io {
         path: path.to_path_buf(),
         source,
     }
@@ -313,7 +313,7 @@ mod tests {
             dir.path().join("samples").join("kick.wav"),
         )
         .unwrap();
-        assert!(matches!(load(dir.path()), Err(IoError::Io { .. })));
+        assert!(matches!(load(dir.path()), Err(DiskError::Io { .. })));
     }
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         assert!(matches!(
             load(dir.path()),
-            Err(IoError::Project(ProjectError::UnknownSample(SampleId(0))))
+            Err(DiskError::Project(ProjectError::UnknownSample(SampleId(0))))
         ));
     }
 
@@ -339,7 +339,7 @@ mod tests {
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         assert!(matches!(
             load(dir.path()),
-            Err(IoError::UnsupportedVersion(99))
+            Err(DiskError::UnsupportedVersion(99))
         ));
     }
 
@@ -358,6 +358,6 @@ mod tests {
         let mut w = WavWriter::create(wav_path(dir.path(), id), spec).unwrap();
         w.write_sample(0i16).unwrap();
         w.finalize().unwrap();
-        assert!(matches!(load(dir.path()), Err(IoError::BadFormat { .. })));
+        assert!(matches!(load(dir.path()), Err(DiskError::BadFormat { .. })));
     }
 }

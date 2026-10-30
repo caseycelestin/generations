@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::audio::AudioBuffer;
-use crate::io::{self, IoError};
+use crate::disk::{self, DiskError};
 use crate::project::{Project, ProjectError};
 use crate::sample::SampleId;
 
@@ -24,15 +24,15 @@ impl Engine {
     }
 
     /// An engine on the project saved in `dir`.
-    pub fn open(dir: &Path) -> Result<Self, IoError> {
+    pub fn open(dir: &Path) -> Result<Self, DiskError> {
         Ok(Self {
-            project: io::load(dir)?,
+            project: disk::load(dir)?,
         })
     }
 
     /// Saves the project to `dir`, creating the directory if needed.
-    pub fn save(&self, dir: &Path) -> Result<(), IoError> {
-        io::save(&self.project, dir)
+    pub fn save(&self, dir: &Path) -> Result<(), DiskError> {
+        disk::save(&self.project, dir)
     }
 
     /// The project this engine operates on.
