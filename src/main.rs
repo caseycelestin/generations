@@ -1,22 +1,25 @@
-use generations::{AudioBuffer, Project};
+//! The first print: import a ramp, reverse it, and walk the lineage back.
+
+use generations::{AudioBuffer, Engine, effects};
 
 fn main() {
-    let mut project = Project::new();
-    let silence = AudioBuffer::new(2, vec![0; 96_000]).expect("valid buffer");
-    let root = project
-        .add(None, silence.clone())
-        .expect("no parent to check");
-    let gen1 = project.add(Some(root), silence).expect("parent exists");
+    let mut engine = Engine::new();
 
-    // Walk the lineage back to the root.
-    let mut cur = Some(gen1);
+    // A short mono ramp stands in for a real recording until step 4.
+    let ramp = AudioBuffer::new(1, (0..8).collect::<Vec<_>>()).expect("valid buffer");
+    let root = engine.import(ramp);
+    let printed = engine.print(root, effects::reverse).expect("root exists");
+
+    // Walk the lineage from the print back to the root.
+    let project = engine.project();
+    let mut cur = Some(printed);
     while let Some(id) = cur {
         let s = project.get(id).expect("in lineage");
         println!(
-            "id {} parent {:?} frames {}",
+            "id {} parent {:?} samples {:?}",
             id.raw(),
             s.parent().map(|p| p.raw()),
-            s.audio().frames()
+            s.audio().samples()
         );
         cur = s.parent();
     }

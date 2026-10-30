@@ -6,8 +6,8 @@ small; each one should be a PR that leaves `main` working.
 | # | Step | Status |
 |---|------|--------|
 | 1 | Core data model: `AudioBuffer`, `Sample`, `Project` | done |
-| 2 | First print: one real effect (reverse) and a thin engine that wires it to the project | next |
-| 3 | Persistence: save and load a project directory | |
+| 2 | First print: one real effect (reverse) and a thin engine that wires it to the project | done |
+| 3 | Persistence: save and load a project directory | next |
 | 4 | Hear something: load a WAV and play it through the audio device | |
 | 5 | Recording: audio input as a new root | |
 | 6 | Sequencing and mixing: the real-time side | |
@@ -41,7 +41,13 @@ Things a reader cannot recover from the code alone.
   `AudioBuffer::to_f32` / `from_f32`, which are the only code that knows the
   PCM width. The downward conversion rounds and applies TPDF dither. This is
   the standard DAW and sampler architecture; the conversion is one multiply
-  per sample at two boundaries.
+  per sample at two boundaries. Effects that only reorder frames (reverse)
+  are exempt: they copy PCM directly, so they are exact and reversing twice
+  really does give back the root's bytes.
+- **An effect is a function**, `&AudioBuffer -> AudioBuffer`, and the engine
+  takes one as a plain argument. Effects-as-data (an enum with parameters)
+  is what the replayable recipe idea below needs, and it will be introduced
+  with that work rather than ahead of it.
 - **Generation is a relationship, not a type.** A `Sample` is an id, an
   optional parent id and audio. Lineage is the tree of parent pointers.
   Children are found by walking the pool; nothing else is stored.
