@@ -78,13 +78,13 @@ impl Project {
         Ok(self.samples.remove(&id).expect("checked above"))
     }
 
-    /// Rebuilds a project from samples with known ids, as read from disk.
+    /// Restores a saved project from its samples, with their original ids.
     ///
     /// Checks the invariants that [`Project::add`] guarantees by
     /// construction: ids are unique, every parent exists and was minted
     /// before its child, and `next_id` is past every id in use. Parents
     /// coming first is what makes a cycle impossible.
-    pub(crate) fn from_parts(
+    pub(crate) fn restore(
         samples: impl IntoIterator<Item = (SampleId, Option<SampleId>, AudioBuffer)>,
         next_id: u32,
     ) -> Result<Self, ProjectError> {
@@ -233,8 +233,8 @@ mod tests {
     }
 
     #[test]
-    fn from_parts_rebuilds_a_tree() {
-        let p = Project::from_parts(
+    fn restore_rebuilds_a_tree() {
+        let p = Project::restore(
             vec![
                 (SampleId(0), None, tone(1)),
                 (SampleId(2), Some(SampleId(0)), tone(1)),
@@ -247,14 +247,14 @@ mod tests {
     }
 
     #[test]
-    fn from_parts_rejects_broken_invariants() {
-        let dangling = Project::from_parts(vec![(SampleId(1), Some(SampleId(0)), tone(1))], 2);
+    fn restore_rejects_broken_invariants() {
+        let dangling = Project::restore(vec![(SampleId(1), Some(SampleId(0)), tone(1))], 2);
         assert_eq!(
             dangling.unwrap_err(),
             ProjectError::UnknownSample(SampleId(0))
         );
 
-        let backwards = Project::from_parts(
+        let backwards = Project::restore(
             vec![
                 (SampleId(0), Some(SampleId(1)), tone(1)),
                 (SampleId(1), None, tone(1)),
@@ -266,7 +266,7 @@ mod tests {
             ProjectError::ParentNotEarlier(SampleId(0), SampleId(1))
         );
 
-        let duplicate = Project::from_parts(
+        let duplicate = Project::restore(
             vec![(SampleId(0), None, tone(1)), (SampleId(0), None, tone(1))],
             1,
         );
@@ -275,7 +275,7 @@ mod tests {
             ProjectError::DuplicateSample(SampleId(0))
         );
 
-        let behind = Project::from_parts(vec![(SampleId(3), None, tone(1))], 3);
+        let behind = Project::restore(vec![(SampleId(3), None, tone(1))], 3);
         assert_eq!(
             behind.unwrap_err(),
             ProjectError::CounterBehind { next: 3, max: 3 }

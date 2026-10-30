@@ -144,7 +144,7 @@ pub fn load(dir: &Path) -> Result<Project, IoError> {
         let audio = read_wav(&wav_path(dir, id))?;
         samples.push((id, e.parent.map(SampleId), audio));
     }
-    Ok(Project::from_parts(samples, manifest.next_id)?)
+    Ok(Project::restore(samples, manifest.next_id)?)
 }
 
 fn wav_path(dir: &Path, id: SampleId) -> PathBuf {
