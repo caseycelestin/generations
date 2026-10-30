@@ -27,6 +27,9 @@ pub enum StorageError {
     /// The stored project was written by a format this build does not read.
     #[error("stored format version {0} is not supported")]
     UnsupportedVersion(u32),
+    /// Something is stored here, but it is not a whole project.
+    #[error("stored project is corrupt: {0}")]
+    Corrupt(String),
     /// Stored audio is not in the engine's one fixed format.
     #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
     BadAudioFormat { id: SampleId, detail: String },
@@ -38,6 +41,10 @@ pub enum StorageError {
 /// Durable storage for one project.
 pub trait Storage {
     /// Whether a project is stored here.
+    ///
+    /// `Ok(false)` means nothing is stored. `Ok(true)` means a whole, valid
+    /// project is: a backend checks everything it can before saying so.
+    /// Anything in between, something stored but broken, is an error.
     fn exists(&self) -> Result<bool, StorageError>;
 
     /// Marks this storage as holding a new, empty project.
