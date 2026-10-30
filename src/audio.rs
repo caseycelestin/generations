@@ -40,7 +40,10 @@ impl AudioBuffer {
         let data = data.into();
         check_channels(channels)?;
         if data.len() % usize::from(channels) != 0 {
-            return Err(AudioError::RaggedFrames { samples: data.len(), channels });
+            return Err(AudioError::RaggedFrames {
+                samples: data.len(),
+                channels,
+            });
         }
         Ok(Self { channels, data })
     }
@@ -82,7 +85,6 @@ impl AudioBuffer {
     pub fn samples(&self) -> &[Pcm] {
         &self.data
     }
-
 }
 
 impl fmt::Debug for AudioBuffer {
@@ -111,7 +113,9 @@ struct Dither {
 
 impl Default for Dither {
     fn default() -> Self {
-        Self { rng: SmallRng::seed_from_u64(0x9E37_79B9) }
+        Self {
+            rng: SmallRng::seed_from_u64(0x9E37_79B9),
+        }
     }
 }
 
@@ -128,14 +132,26 @@ mod tests {
 
     #[test]
     fn rejects_bad_channel_counts() {
-        assert_eq!(AudioBuffer::new(0, vec![]).unwrap_err(), AudioError::BadChannelCount(0));
-        assert_eq!(AudioBuffer::new(3, vec![]).unwrap_err(), AudioError::BadChannelCount(3));
+        assert_eq!(
+            AudioBuffer::new(0, vec![]).unwrap_err(),
+            AudioError::BadChannelCount(0)
+        );
+        assert_eq!(
+            AudioBuffer::new(3, vec![]).unwrap_err(),
+            AudioError::BadChannelCount(3)
+        );
     }
 
     #[test]
     fn rejects_ragged_frames() {
         let err = AudioBuffer::new(2, vec![0, 0, 0]).unwrap_err();
-        assert_eq!(err, AudioError::RaggedFrames { samples: 3, channels: 2 });
+        assert_eq!(
+            err,
+            AudioError::RaggedFrames {
+                samples: 3,
+                channels: 2
+            }
+        );
     }
 
     #[test]

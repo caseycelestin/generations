@@ -51,7 +51,8 @@ impl Project {
         }
         let id = SampleId(self.next_id);
         self.next_id += 1;
-        self.samples.insert(id, Sample::new(id, parent, Arc::new(audio)));
+        self.samples
+            .insert(id, Sample::new(id, parent, Arc::new(audio)));
         Ok(id)
     }
 
@@ -106,8 +107,11 @@ mod tests {
     }
 
     fn children(p: &Project, id: SampleId) -> Vec<SampleId> {
-        let mut ids: Vec<_> =
-            p.iter().filter(|s| s.parent() == Some(id)).map(Sample::id).collect();
+        let mut ids: Vec<_> = p
+            .iter()
+            .filter(|s| s.parent() == Some(id))
+            .map(Sample::id)
+            .collect();
         ids.sort();
         ids
     }
@@ -153,7 +157,10 @@ mod tests {
     fn add_with_unknown_parent_fails() {
         let mut p = Project::new();
         let bogus = SampleId(99);
-        assert_eq!(p.add(Some(bogus), tone(1)).unwrap_err(), ProjectError::UnknownSample(bogus));
+        assert_eq!(
+            p.add(Some(bogus), tone(1)).unwrap_err(),
+            ProjectError::UnknownSample(bogus)
+        );
         assert_eq!(p.iter().count(), 0);
     }
 
