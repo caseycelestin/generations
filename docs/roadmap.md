@@ -7,8 +7,8 @@ small; each one should be a PR that leaves `main` working.
 |---|------|--------|
 | 1 | Core data model: `AudioBuffer`, `Sample`, `Project` | done |
 | 2 | First print: one real effect (reverse) and a thin engine that wires it to the project | done |
-| 3 | Persistence: save and load a project directory | next |
-| 4 | Hear something: load a WAV and play it through the audio device | |
+| 3 | Persistence: save and load a project directory | done |
+| 4 | Hear something: load a WAV and play it through the audio device | next |
 | 5 | Recording: audio input as a new root | |
 | 6 | Sequencing and mixing: the real-time side | |
 | 7 | Arrangement and more effects | |
@@ -61,6 +61,24 @@ Things a reader cannot recover from the code alone.
   need.
 - **Projects are self-contained directories**: a small manifest plus one WAV
   per sample. Copying the directory copies the project.
+- **The manifest is its own struct, not a serde derive on `Project`.** It
+  holds a format version, the id counter and one id/parent pair per sample,
+  and nothing else; channel count and length live in the WAV header. Keeping
+  it separate means the file format is versioned on its own and a change to
+  the in-memory model does not silently change what is on disk. Audio never
+  goes through serde: a WAV is the buffer's bytes behind a header any tool
+  can open, and raw bytes would need the channel count and endianness stored
+  somewhere else anyway.
+- **The samples directory is engine-owned and load is strict.** A missing
+  WAV, a dangling parent or a WAV in the wrong format refuses the whole
+  project rather than dropping a sample, so a project that opens has its
+  lineage intact. Renaming a WAV by hand breaks the project. Recovering from
+  that is content-hash territory, deferred below.
+- **Save is incremental.** Samples never change and ids are never reused, so
+  a WAV named for an id never needs rewriting. Save writes only missing WAVs,
+  replaces the manifest through a temp file and rename, then deletes WAVs
+  for ids no longer in the project. A crash leaves the old or the new
+  manifest; a stray WAV is ignored on load.
 - **Removing a sample with children is refused.** Later generations depend
   on it. Removing a whole lineage will be a separate, explicit operation.
 - **The public surface is kept minimal.** Convenience methods are added when
