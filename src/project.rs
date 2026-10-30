@@ -1,11 +1,9 @@
 //! The pool of samples that makes up a project, and the lineage over it.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use thiserror::Error;
 
-use crate::audio::AudioBuffer;
 use crate::sample::{Sample, SampleId};
 
 /// Reasons a project operation can fail.
@@ -17,14 +15,26 @@ pub enum ProjectError {
     /// The sample has children and cannot be removed on its own.
     #[error("sample {} has children and cannot be removed", .0.raw())]
     HasChildren(SampleId),
+    /// Two samples were given the same id.
+    #[error("duplicate sample id {}", .0.raw())]
+    DuplicateSample(SampleId),
+    /// A sample's parent does not come before it in the counter.
+    #[error("sample {} cannot have parent {}: parents come first", .0.raw(), .1.raw())]
+    ParentNotEarlier(SampleId, SampleId),
+    /// The counter has not moved past the largest id in use.
+    #[error("next id {next} does not follow the largest sample id {max}")]
+    CounterBehind { next: u32, max: u32 },
 }
 
-/// A self-contained collection of samples.
+/// The structure of a project: which samples exist and how they descend.
 ///
 /// Samples live in one flat pool keyed by id. Lineage is a forest over the
 /// pool via each sample's parent pointer, so a chop of one sample into many
 /// is just many samples sharing a parent. Children are found by walking the
 /// pool; the parent pointer is the only stored relationship.
+///
+/// The project holds no audio. Each sample's bytes live on disk under its
+/// id, and the engine reads them when a print or playback needs them.
 #[derive(Debug, Default)]
 pub struct Project {
     samples: HashMap<SampleId, Sample>,
@@ -36,23 +46,58 @@ impl Project {
         Self::default()
     }
 
-    /// Adds a sample to the project.
+    /// Restores a saved project from its samples, with their original ids.
+    ///
+    /// Checks the invariants that [`Project::add`] guarantees by
+    /// construction: ids are unique, every parent exists and was minted
+    /// before its child, and `next_id` is past every id in use. Parents
+    /// coming first is what makes a cycle impossible.
+    pub(crate) fn restore(
+        samples: impl IntoIterator<Item = (SampleId, Option<SampleId>)>,
+        next_id: u32,
+    ) -> Result<Self, ProjectError> {
+        let mut pool = HashMap::new();
+        for (id, parent) in samples {
+            if let Some(p) = parent
+                && p >= id
+            {
+                return Err(ProjectError::ParentNotEarlier(id, p));
+            }
+            if pool.insert(id, Sample::new(id, parent)).is_some() {
+                return Err(ProjectError::DuplicateSample(id));
+            }
+        }
+        for s in pool.values() {
+            if let Some(p) = s.parent()
+                && !pool.contains_key(&p)
+            {
+                return Err(ProjectError::UnknownSample(p));
+            }
+        }
+        if let Some(max) = pool.keys().map(|id| id.raw()).max()
+            && next_id <= max
+        {
+            return Err(ProjectError::CounterBehind { next: next_id, max });
+        }
+        Ok(Self {
+            samples: pool,
+            next_id,
+        })
+    }
+
+    /// Adds a sample to the project and returns its new id.
     ///
     /// With no parent it starts a new lineage; with one it is the next
-    /// generation of that lineage. The caller has already produced `audio`;
-    /// the project only records where it sits in the tree.
-    pub fn add(
-        &mut self,
-        parent: Option<SampleId>,
-        audio: AudioBuffer,
-    ) -> Result<SampleId, ProjectError> {
+    /// generation of that lineage. The project only records where the
+    /// sample sits in the tree; storing its audio under the id is the
+    /// caller's job.
+    pub fn add(&mut self, parent: Option<SampleId>) -> Result<SampleId, ProjectError> {
         if let Some(p) = parent {
             self.require(p)?;
         }
         let id = SampleId(self.next_id);
         self.next_id += 1;
-        self.samples
-            .insert(id, Sample::new(id, parent, Arc::new(audio)));
+        self.samples.insert(id, Sample::new(id, parent));
         Ok(id)
     }
 
@@ -78,6 +123,12 @@ impl Project {
         self.samples.values()
     }
 
+    /// The value the next minted id will take. Persisted so that ids are
+    /// never reused across a save and load.
+    pub(crate) fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
     fn has_children(&self, id: SampleId) -> bool {
         self.samples.values().any(|s| s.parent() == Some(id))
     }
@@ -90,10 +141,6 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tone(n: usize) -> AudioBuffer {
-        AudioBuffer::new(1, (0..n).map(|i| i as i16).collect::<Vec<_>>()).unwrap()
-    }
 
     /// Walks parents from `id` back to the root, using only the public API.
     fn lineage(p: &Project, id: SampleId) -> Vec<SampleId> {
@@ -119,21 +166,20 @@ mod tests {
     #[test]
     fn add_without_parent_creates_a_root() {
         let mut p = Project::new();
-        let id = p.add(None, tone(4)).unwrap();
+        let id = p.add(None).unwrap();
         let s = p.get(id).unwrap();
         assert_eq!(s.id(), id);
         assert_eq!(s.parent(), None);
-        assert_eq!(s.audio().frames(), 4);
     }
 
     #[test]
     fn adding_builds_a_tree_and_going_back_branches() {
         let mut p = Project::new();
-        let root = p.add(None, tone(4)).unwrap();
-        let g1 = p.add(Some(root), tone(4)).unwrap();
-        let g2 = p.add(Some(g1), tone(4)).unwrap();
+        let root = p.add(None).unwrap();
+        let g1 = p.add(Some(root)).unwrap();
+        let g2 = p.add(Some(g1)).unwrap();
         // Go back to g1 and print something else.
-        let g2b = p.add(Some(g1), tone(4)).unwrap();
+        let g2b = p.add(Some(g1)).unwrap();
 
         assert_eq!(p.iter().count(), 4);
         assert_eq!(lineage(&p, g2), vec![g2, g1, root]);
@@ -145,8 +191,8 @@ mod tests {
     #[test]
     fn chop_is_many_children_of_one_parent() {
         let mut p = Project::new();
-        let brk = p.add(None, tone(8)).unwrap();
-        let slices: Vec<_> = (0..8).map(|_| p.add(Some(brk), tone(1)).unwrap()).collect();
+        let brk = p.add(None).unwrap();
+        let slices: Vec<_> = (0..8).map(|_| p.add(Some(brk)).unwrap()).collect();
         assert_eq!(children(&p, brk), slices);
         for s in slices {
             assert_eq!(p.get(s).unwrap().parent(), Some(brk));
@@ -158,7 +204,7 @@ mod tests {
         let mut p = Project::new();
         let bogus = SampleId(99);
         assert_eq!(
-            p.add(Some(bogus), tone(1)).unwrap_err(),
+            p.add(Some(bogus)).unwrap_err(),
             ProjectError::UnknownSample(bogus)
         );
         assert_eq!(p.iter().count(), 0);
@@ -167,8 +213,8 @@ mod tests {
     #[test]
     fn remove_refuses_samples_with_children() {
         let mut p = Project::new();
-        let root = p.add(None, tone(1)).unwrap();
-        let child = p.add(Some(root), tone(1)).unwrap();
+        let root = p.add(None).unwrap();
+        let child = p.add(Some(root)).unwrap();
         assert_eq!(p.remove(root).unwrap_err(), ProjectError::HasChildren(root));
         assert!(p.remove(child).is_ok());
         assert!(p.remove(root).is_ok());
@@ -176,11 +222,52 @@ mod tests {
     }
 
     #[test]
+    fn restore_rebuilds_a_tree() {
+        let p = Project::restore(
+            vec![(SampleId(0), None), (SampleId(2), Some(SampleId(0)))],
+            5,
+        )
+        .unwrap();
+        assert_eq!(lineage(&p, SampleId(2)), vec![SampleId(2), SampleId(0)]);
+        assert_eq!(p.next_id(), 5);
+    }
+
+    #[test]
+    fn restore_rejects_broken_invariants() {
+        let dangling = Project::restore(vec![(SampleId(1), Some(SampleId(0)))], 2);
+        assert_eq!(
+            dangling.unwrap_err(),
+            ProjectError::UnknownSample(SampleId(0))
+        );
+
+        let backwards = Project::restore(
+            vec![(SampleId(0), Some(SampleId(1))), (SampleId(1), None)],
+            2,
+        );
+        assert_eq!(
+            backwards.unwrap_err(),
+            ProjectError::ParentNotEarlier(SampleId(0), SampleId(1))
+        );
+
+        let duplicate = Project::restore(vec![(SampleId(0), None), (SampleId(0), None)], 1);
+        assert_eq!(
+            duplicate.unwrap_err(),
+            ProjectError::DuplicateSample(SampleId(0))
+        );
+
+        let behind = Project::restore(vec![(SampleId(3), None)], 3);
+        assert_eq!(
+            behind.unwrap_err(),
+            ProjectError::CounterBehind { next: 3, max: 3 }
+        );
+    }
+
+    #[test]
     fn ids_are_never_reused() {
         let mut p = Project::new();
-        let a = p.add(None, tone(1)).unwrap();
+        let a = p.add(None).unwrap();
         p.remove(a).unwrap();
-        let b = p.add(None, tone(1)).unwrap();
+        let b = p.add(None).unwrap();
         assert_ne!(a, b);
     }
 }
