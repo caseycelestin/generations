@@ -45,39 +45,6 @@ impl Project {
         Self::default()
     }
 
-    /// Adds a sample to the project.
-    ///
-    /// With no parent it starts a new lineage; with one it is the next
-    /// generation of that lineage. The caller has already produced `audio`;
-    /// the project only records where it sits in the tree.
-    pub fn add(
-        &mut self,
-        parent: Option<SampleId>,
-        audio: AudioBuffer,
-    ) -> Result<SampleId, ProjectError> {
-        if let Some(p) = parent {
-            self.require(p)?;
-        }
-        let id = SampleId(self.next_id);
-        self.next_id += 1;
-        self.samples
-            .insert(id, Sample::new(id, parent, Arc::new(audio)));
-        Ok(id)
-    }
-
-    /// Removes a sample that has no children.
-    ///
-    /// A sample with children is refused: later generations depend on it
-    /// and the lineage must stay readable. Removing a whole lineage is a
-    /// separate, explicit operation that does not exist yet.
-    pub fn remove(&mut self, id: SampleId) -> Result<Sample, ProjectError> {
-        self.require(id)?;
-        if self.has_children(id) {
-            return Err(ProjectError::HasChildren(id));
-        }
-        Ok(self.samples.remove(&id).expect("checked above"))
-    }
-
     /// Restores a saved project from its samples, with their original ids.
     ///
     /// Checks the invariants that [`Project::add`] guarantees by
@@ -120,10 +87,37 @@ impl Project {
         })
     }
 
-    /// The value the next minted id will take. Persisted so that ids are
-    /// never reused across a save and load.
-    pub(crate) fn next_id(&self) -> u32 {
-        self.next_id
+    /// Adds a sample to the project.
+    ///
+    /// With no parent it starts a new lineage; with one it is the next
+    /// generation of that lineage. The caller has already produced `audio`;
+    /// the project only records where it sits in the tree.
+    pub fn add(
+        &mut self,
+        parent: Option<SampleId>,
+        audio: AudioBuffer,
+    ) -> Result<SampleId, ProjectError> {
+        if let Some(p) = parent {
+            self.require(p)?;
+        }
+        let id = SampleId(self.next_id);
+        self.next_id += 1;
+        self.samples
+            .insert(id, Sample::new(id, parent, Arc::new(audio)));
+        Ok(id)
+    }
+
+    /// Removes a sample that has no children.
+    ///
+    /// A sample with children is refused: later generations depend on it
+    /// and the lineage must stay readable. Removing a whole lineage is a
+    /// separate, explicit operation that does not exist yet.
+    pub fn remove(&mut self, id: SampleId) -> Result<Sample, ProjectError> {
+        self.require(id)?;
+        if self.has_children(id) {
+            return Err(ProjectError::HasChildren(id));
+        }
+        Ok(self.samples.remove(&id).expect("checked above"))
     }
 
     pub fn get(&self, id: SampleId) -> Option<&Sample> {
@@ -133,6 +127,12 @@ impl Project {
     /// Every sample, in no particular order.
     pub fn iter(&self) -> impl Iterator<Item = &Sample> {
         self.samples.values()
+    }
+
+    /// The value the next minted id will take. Persisted so that ids are
+    /// never reused across a save and load.
+    pub(crate) fn next_id(&self) -> u32 {
+        self.next_id
     }
 
     fn has_children(&self, id: SampleId) -> bool {
