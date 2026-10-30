@@ -4,7 +4,10 @@
 //! that touches both the project and the effects; the project does not know
 //! effects exist and effects do not know projects exist.
 
+use std::path::Path;
+
 use crate::audio::AudioBuffer;
+use crate::io::{self, IoError};
 use crate::project::{Project, ProjectError};
 use crate::sample::SampleId;
 
@@ -18,6 +21,18 @@ impl Engine {
     /// An engine with an empty project.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An engine on the project saved in `dir`.
+    pub fn open(dir: &Path) -> Result<Self, IoError> {
+        Ok(Self {
+            project: io::load(dir)?,
+        })
+    }
+
+    /// Saves the project to `dir`, creating the directory if needed.
+    pub fn save(&self, dir: &Path) -> Result<(), IoError> {
+        io::save(&self.project, dir)
     }
 
     /// The project this engine operates on.
@@ -97,6 +112,22 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(e.project().get(a).unwrap().parent(), Some(root));
         assert_eq!(e.project().get(b).unwrap().parent(), Some(root));
+    }
+
+    #[test]
+    fn save_then_open_gives_back_the_same_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::new();
+        let root = e.import(ramp(4));
+        let child = e.print(root, reverse).unwrap();
+        e.save(dir.path()).unwrap();
+
+        let e2 = Engine::open(dir.path()).unwrap();
+        assert_eq!(e2.project().get(child).unwrap().parent(), Some(root));
+        assert_eq!(
+            e2.project().get(child).unwrap().audio().samples(),
+            &[3, 2, 1, 0]
+        );
     }
 
     #[test]
