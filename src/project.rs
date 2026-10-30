@@ -1,186 +1,79 @@
-//! The pool of samples that makes up a project, and the lineage over it.
+//! A project: everything the device keeps for one piece of work.
+//!
+//! A [`Project`] is the code representation of the data on disk, bound to
+//! the [`Storage`] it came from. Changing the project changes the disk;
+//! there is no save step. Today the data is empty; samples, patterns and
+//! settings arrive as their steps come.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use crate::storage::{Storage, StorageError};
 
-use thiserror::Error;
+/// The data a project is made of. What storage keeps.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ProjectData {}
 
-use crate::audio::AudioBuffer;
-use crate::sample::{Sample, SampleId};
-
-/// Reasons a project operation can fail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum ProjectError {
-    /// No sample with this id exists in the project.
-    #[error("no sample with id {}", .0.raw())]
-    UnknownSample(SampleId),
-    /// The sample has children and cannot be removed on its own.
-    #[error("sample {} has children and cannot be removed", .0.raw())]
-    HasChildren(SampleId),
-}
-
-/// A self-contained collection of samples.
-///
-/// Samples live in one flat pool keyed by id. Lineage is a forest over the
-/// pool via each sample's parent pointer, so a chop of one sample into many
-/// is just many samples sharing a parent. Children are found by walking the
-/// pool; the parent pointer is the only stored relationship.
-#[derive(Debug, Default)]
+/// One project, live: its data and the storage that data is written to.
 pub struct Project {
-    samples: HashMap<SampleId, Sample>,
-    next_id: u32,
+    data: ProjectData,
+    #[expect(
+        dead_code,
+        reason = "written through once the project has data that changes"
+    )]
+    storage: Box<dyn Storage>,
 }
 
 impl Project {
-    pub fn new() -> Self {
-        Self::default()
+    /// The project in `storage`, or a new empty one created there if
+    /// nothing is stored yet.
+    pub fn get_or_create(mut storage: Box<dyn Storage>) -> Result<Self, StorageError> {
+        let data = match storage.load()? {
+            Some(data) => data,
+            None => {
+                storage.create()?;
+                ProjectData::default()
+            }
+        };
+        Ok(Self { data, storage })
     }
 
-    /// Adds a sample to the project.
-    ///
-    /// With no parent it starts a new lineage; with one it is the next
-    /// generation of that lineage. The caller has already produced `audio`;
-    /// the project only records where it sits in the tree.
-    pub fn add(
-        &mut self,
-        parent: Option<SampleId>,
-        audio: AudioBuffer,
-    ) -> Result<SampleId, ProjectError> {
-        if let Some(p) = parent {
-            self.require(p)?;
-        }
-        let id = SampleId(self.next_id);
-        self.next_id += 1;
-        self.samples
-            .insert(id, Sample::new(id, parent, Arc::new(audio)));
-        Ok(id)
-    }
-
-    /// Removes a sample that has no children.
-    ///
-    /// A sample with children is refused: later generations depend on it
-    /// and the lineage must stay readable. Removing a whole lineage is a
-    /// separate, explicit operation that does not exist yet.
-    pub fn remove(&mut self, id: SampleId) -> Result<Sample, ProjectError> {
-        self.require(id)?;
-        if self.has_children(id) {
-            return Err(ProjectError::HasChildren(id));
-        }
-        Ok(self.samples.remove(&id).expect("checked above"))
-    }
-
-    pub fn get(&self, id: SampleId) -> Option<&Sample> {
-        self.samples.get(&id)
-    }
-
-    /// Every sample, in no particular order.
-    pub fn iter(&self) -> impl Iterator<Item = &Sample> {
-        self.samples.values()
-    }
-
-    fn has_children(&self, id: SampleId) -> bool {
-        self.samples.values().any(|s| s.parent() == Some(id))
-    }
-
-    fn require(&self, id: SampleId) -> Result<&Sample, ProjectError> {
-        self.samples.get(&id).ok_or(ProjectError::UnknownSample(id))
+    /// The project's data.
+    pub fn data(&self) -> &ProjectData {
+        &self.data
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn tone(n: usize) -> AudioBuffer {
-        AudioBuffer::new(1, (0..n).map(|i| i as i16).collect::<Vec<_>>()).unwrap()
+    /// Storage that remembers only whether a project was created in it.
+    #[derive(Default)]
+    pub(crate) struct Memory {
+        pub(crate) stored: Option<ProjectData>,
     }
 
-    /// Walks parents from `id` back to the root, using only the public API.
-    fn lineage(p: &Project, id: SampleId) -> Vec<SampleId> {
-        let mut chain = vec![id];
-        let mut cur = p.get(id).unwrap();
-        while let Some(parent) = cur.parent() {
-            chain.push(parent);
-            cur = p.get(parent).unwrap();
+    impl Storage for Memory {
+        fn load(&mut self) -> Result<Option<ProjectData>, StorageError> {
+            Ok(self.stored.take())
         }
-        chain
-    }
 
-    fn children(p: &Project, id: SampleId) -> Vec<SampleId> {
-        let mut ids: Vec<_> = p
-            .iter()
-            .filter(|s| s.parent() == Some(id))
-            .map(Sample::id)
-            .collect();
-        ids.sort();
-        ids
-    }
-
-    #[test]
-    fn add_without_parent_creates_a_root() {
-        let mut p = Project::new();
-        let id = p.add(None, tone(4)).unwrap();
-        let s = p.get(id).unwrap();
-        assert_eq!(s.id(), id);
-        assert_eq!(s.parent(), None);
-        assert_eq!(s.audio().frames(), 4);
-    }
-
-    #[test]
-    fn adding_builds_a_tree_and_going_back_branches() {
-        let mut p = Project::new();
-        let root = p.add(None, tone(4)).unwrap();
-        let g1 = p.add(Some(root), tone(4)).unwrap();
-        let g2 = p.add(Some(g1), tone(4)).unwrap();
-        // Go back to g1 and print something else.
-        let g2b = p.add(Some(g1), tone(4)).unwrap();
-
-        assert_eq!(p.iter().count(), 4);
-        assert_eq!(lineage(&p, g2), vec![g2, g1, root]);
-        assert_eq!(lineage(&p, g2b), vec![g2b, g1, root]);
-        assert_eq!(children(&p, g1), vec![g2, g2b]);
-        assert!(children(&p, g2).is_empty());
-    }
-
-    #[test]
-    fn chop_is_many_children_of_one_parent() {
-        let mut p = Project::new();
-        let brk = p.add(None, tone(8)).unwrap();
-        let slices: Vec<_> = (0..8).map(|_| p.add(Some(brk), tone(1)).unwrap()).collect();
-        assert_eq!(children(&p, brk), slices);
-        for s in slices {
-            assert_eq!(p.get(s).unwrap().parent(), Some(brk));
+        fn create(&mut self) -> Result<(), StorageError> {
+            self.stored = Some(ProjectData::default());
+            Ok(())
         }
     }
 
     #[test]
-    fn add_with_unknown_parent_fails() {
-        let mut p = Project::new();
-        let bogus = SampleId(99);
-        assert_eq!(
-            p.add(Some(bogus), tone(1)).unwrap_err(),
-            ProjectError::UnknownSample(bogus)
-        );
-        assert_eq!(p.iter().count(), 0);
+    fn empty_storage_gets_a_new_project_created_in_it() {
+        let p = Project::get_or_create(Box::new(Memory::default())).unwrap();
+        assert_eq!(*p.data(), ProjectData::default());
     }
 
     #[test]
-    fn remove_refuses_samples_with_children() {
-        let mut p = Project::new();
-        let root = p.add(None, tone(1)).unwrap();
-        let child = p.add(Some(root), tone(1)).unwrap();
-        assert_eq!(p.remove(root).unwrap_err(), ProjectError::HasChildren(root));
-        assert!(p.remove(child).is_ok());
-        assert!(p.remove(root).is_ok());
-        assert_eq!(p.iter().count(), 0);
-    }
-
-    #[test]
-    fn ids_are_never_reused() {
-        let mut p = Project::new();
-        let a = p.add(None, tone(1)).unwrap();
-        p.remove(a).unwrap();
-        let b = p.add(None, tone(1)).unwrap();
-        assert_ne!(a, b);
+    fn stored_data_is_the_project() {
+        let m = Memory {
+            stored: Some(ProjectData {}),
+        };
+        let p = Project::get_or_create(Box::new(m)).unwrap();
+        assert_eq!(*p.data(), ProjectData {});
     }
 }

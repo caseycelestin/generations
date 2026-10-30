@@ -1,9 +1,16 @@
-//! The first print: import a ramp, reverse it, and walk the lineage back.
+//! Opens the project at the given directory. There is no storage backend
+//! yet, so this cannot run until one exists.
 //!
-//! The engine now opens on a `Storage`, and no storage exists yet, so there
-//! is nothing to run until one does.
+//! Usage: `generations <project-dir>`.
+
+use std::path::PathBuf;
+
+use generations::Engine;
 
 fn main() {
-    eprintln!("no storage implementation yet; nothing to run");
-    std::process::exit(1);
+    let dir = std::env::args_os()
+        .nth(1)
+        .map(PathBuf::from)
+        .expect("usage: generations <project-dir>");
+    let _engine = Engine::open(&dir).expect("open project");
 }

@@ -36,6 +36,10 @@ pub struct Sample {
 }
 
 impl Sample {
+    #[expect(
+        dead_code,
+        reason = "from the first design; nothing builds samples until the project holds them"
+    )]
     pub(crate) fn new(id: SampleId, parent: Option<SampleId>, audio: Arc<AudioBuffer>) -> Self {
         Self { id, parent, audio }
     }

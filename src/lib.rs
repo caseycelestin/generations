@@ -1,8 +1,8 @@
 //! The engine behind the generations sampler.
 //!
 //! Audio moves forward by printing. See the README for the idea; this crate
-//! is the engine underneath it. Start at [`engine::Engine`], which owns a
-//! [`project::Project`] and prints [`effects`] into it.
+//! is the engine underneath it. Start at [`engine::Engine`], which opens a
+//! [`project::Project`] from a path and runs on it.
 
 pub mod audio;
 pub mod config;
@@ -14,6 +14,6 @@ pub mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use engine::Engine;
-pub use project::{Project, ProjectError};
+pub use project::{Project, ProjectData};
 pub use sample::{Sample, SampleId};
 pub use storage::{Storage, StorageError};
