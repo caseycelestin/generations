@@ -8,8 +8,27 @@
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::sample::SampleId;
 use crate::storage::{Storage, StorageError};
+
+/// Identity of a sample within one project.
+///
+/// A sample does not exist until it is stored, so storage mints the id
+/// when it adds one, from a per-project counter. Ids are never reused and
+/// are not meaningful across projects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SampleId(pub u32);
+
+/// Where one sample sits in the tree.
+///
+/// "Generation" is not a type. It is the relationship between a sample and
+/// its parent: the sample one generation behind it. Lineage is the tree
+/// formed by those pointers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sample {
+    pub id: SampleId,
+    /// The sample one generation behind this one. `None` for a root.
+    pub parent: Option<SampleId>,
+}
 
 /// Reasons a project operation can fail.
 #[derive(Debug, Error)]

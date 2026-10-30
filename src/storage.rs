@@ -15,7 +15,7 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
-use crate::sample::SampleId;
+use crate::project::SampleId;
 
 /// Reasons storage cannot do what was asked.
 #[derive(Debug, ThisError)]
