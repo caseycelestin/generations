@@ -20,7 +20,7 @@
 //! the directory synced after each step, so a power cut leaves the old
 //! manifest or the new one, never half of either. The directory is
 //! engine-owned; renaming a WAV by hand breaks the sample, and
-//! [`Storage::exists`] checks the whole project before saying one is here.
+//! [`FileStorage::open`] checks the whole project before opening on it.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -86,14 +86,30 @@ impl Entry {
 #[derive(Debug)]
 pub struct FileStorage {
     dir: PathBuf,
+    /// Whether a whole project is here: found and validated on open, or
+    /// created since.
+    has_project: bool,
 }
 
 impl FileStorage {
-    /// Storage at `dir`. Nothing is touched until [`Storage::create`].
-    pub fn open(dir: &Path) -> Self {
-        Self {
+    /// Storage at `dir`.
+    ///
+    /// If a project is stored there it is checked whole before this
+    /// returns; anything stored but broken is an error. If nothing is
+    /// stored, nothing is touched until [`Storage::create`].
+    pub fn open(dir: &Path) -> Result<Self, StorageError> {
+        let storage = Self {
             dir: dir.to_path_buf(),
+            has_project: false,
+        };
+        let has_project = storage.manifest_path().exists();
+        if has_project {
+            storage.validate()?;
         }
+        Ok(Self {
+            has_project,
+            ..storage
+        })
     }
 
     fn manifest_path(&self) -> PathBuf {
@@ -236,11 +252,7 @@ fn sync_dir(dir: &Path) -> Result<(), StorageError> {
 
 impl Storage for FileStorage {
     fn exists(&self) -> Result<bool, StorageError> {
-        if !self.manifest_path().exists() {
-            return Ok(false);
-        }
-        self.validate()?;
-        Ok(true)
+        Ok(self.has_project)
     }
 
     fn create(&mut self) -> Result<(), StorageError> {
@@ -250,7 +262,9 @@ impl Storage for FileStorage {
             version: FORMAT_VERSION,
             next_id: 0,
             samples: BTreeMap::new(),
-        })
+        })?;
+        self.has_project = true;
+        Ok(())
     }
 
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
@@ -323,15 +337,20 @@ mod tests {
     }
 
     fn created(dir: &Path) -> FileStorage {
-        let mut s = FileStorage::open(dir);
+        let mut s = FileStorage::open(dir).unwrap();
         s.create().unwrap();
         s
+    }
+
+    /// Reopens the directory, as the next run of the engine would.
+    fn reopen(dir: &Path) -> Result<FileStorage, StorageError> {
+        FileStorage::open(dir)
     }
 
     #[test]
     fn nothing_exists_until_created() {
         let dir = tempfile::tempdir().unwrap();
-        let mut s = FileStorage::open(dir.path());
+        let mut s = FileStorage::open(dir.path()).unwrap();
         assert!(!s.exists().unwrap());
         s.create().unwrap();
         assert!(s.exists().unwrap());
@@ -352,7 +371,7 @@ mod tests {
             .unwrap();
         drop(s);
 
-        let s = FileStorage::open(dir.path());
+        let s = reopen(dir.path()).unwrap();
         assert!(s.exists().unwrap());
         assert_eq!(s.sample(rev).unwrap().unwrap().parent, Some(root));
         assert_eq!(s.sample(back).unwrap().unwrap().parent, Some(rev));
@@ -376,7 +395,7 @@ mod tests {
         let a = s.add_sample(None, &ramp(1, 1)).unwrap();
         s.remove_sample(a).unwrap();
         drop(s);
-        let mut s = FileStorage::open(dir.path());
+        let mut s = reopen(dir.path()).unwrap();
         let b = s.add_sample(None, &ramp(1, 1)).unwrap();
         assert_ne!(a, b);
     }
@@ -434,24 +453,26 @@ mod tests {
         let s = created(dir.path());
         let manifest = r#"{"version":99,"next_id":0,"samples":{}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
+        drop(s);
         assert!(matches!(
-            s.exists(),
+            reopen(dir.path()),
             Err(StorageError::UnsupportedVersion(99))
         ));
     }
 
     /// A project that was written by the engine passes the open check.
     #[test]
-    fn exists_is_true_for_a_whole_project() {
+    fn open_accepts_a_whole_project() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let root = s.add_sample(None, &ramp(2, 4)).unwrap();
         s.add_sample(Some(root), &ramp(1, 4)).unwrap();
-        assert!(FileStorage::open(dir.path()).exists().unwrap());
+        drop(s);
+        assert!(reopen(dir.path()).unwrap().exists().unwrap());
     }
 
     #[test]
-    fn exists_refuses_a_dangling_parent() {
+    fn open_refuses_a_dangling_parent() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let root = s.add_sample(None, &ramp(1, 1)).unwrap();
@@ -459,11 +480,12 @@ mod tests {
         // Forget the root but leave the child pointing at it.
         let manifest = r#"{"version":1,"next_id":2,"samples":{"1":{"parent":0}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
-        assert!(matches!(s.exists(), Err(StorageError::Corrupt(_))));
+        drop(s);
+        assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
     }
 
     #[test]
-    fn exists_refuses_a_parent_minted_after_its_child() {
+    fn open_refuses_a_parent_minted_after_its_child() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         s.add_sample(None, &ramp(1, 1)).unwrap();
@@ -471,27 +493,29 @@ mod tests {
         let manifest =
             r#"{"version":1,"next_id":2,"samples":{"0":{"parent":1},"1":{"parent":null}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
-        assert!(matches!(s.exists(), Err(StorageError::Corrupt(_))));
+        drop(s);
+        assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
     }
 
     #[test]
-    fn exists_refuses_a_counter_that_is_behind() {
+    fn open_refuses_a_counter_that_is_behind() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         s.add_sample(None, &ramp(1, 1)).unwrap();
         let manifest = r#"{"version":1,"next_id":0,"samples":{"0":{"parent":null}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
-        assert!(matches!(s.exists(), Err(StorageError::Corrupt(_))));
+        drop(s);
+        assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
     }
 
     #[test]
-    fn exists_refuses_a_missing_or_wrong_format_wav() {
+    fn open_refuses_a_missing_or_wrong_format_wav() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let id = s.add_sample(None, &ramp(1, 4)).unwrap();
         let path = s.wav_path(id);
         fs::rename(&path, dir.path().join("samples/kick.wav")).unwrap();
-        assert!(matches!(s.exists(), Err(StorageError::Backend(_))));
+        assert!(matches!(reopen(dir.path()), Err(StorageError::Backend(_))));
 
         let spec = WavSpec {
             channels: 1,
@@ -502,8 +526,9 @@ mod tests {
         let mut w = WavWriter::create(&path, spec).unwrap();
         w.write_sample(0i16).unwrap();
         w.finalize().unwrap();
+        drop(s);
         assert!(matches!(
-            s.exists(),
+            reopen(dir.path()),
             Err(StorageError::BadAudioFormat { .. })
         ));
     }

@@ -42,9 +42,9 @@ pub enum StorageError {
 pub trait Storage {
     /// Whether a project is stored here.
     ///
-    /// `Ok(false)` means nothing is stored. `Ok(true)` means a whole, valid
-    /// project is: a backend checks everything it can before saying so.
-    /// Anything in between, something stored but broken, is an error.
+    /// A backend validates what it finds when it is opened and refuses to
+    /// open on anything stored but broken, so this is only ever asked of
+    /// storage that holds nothing or a whole project.
     fn exists(&self) -> Result<bool, StorageError>;
 
     /// Marks this storage as holding a new, empty project.
@@ -82,5 +82,5 @@ pub trait Storage {
 /// This is the one place that decides what a path means. Everything above
 /// it sees only the trait.
 pub fn open(dir: &Path) -> Result<Box<dyn Storage>, StorageError> {
-    Ok(Box::new(files::FileStorage::open(dir)))
+    Ok(Box::new(files::FileStorage::open(dir)?))
 }
