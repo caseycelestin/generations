@@ -33,9 +33,12 @@ pub trait Storage {
     /// Marks this storage as holding a new, empty project.
     fn create(&mut self) -> Result<(), StorageError>;
 
-    /// Everything stored about the sample with this id, or `None` if
-    /// there is none.
+    /// The stored sample with this id, or `None` if there is none.
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
+
+    /// The stored audio of the sample with this id, or `None` if there is
+    /// none.
+    fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError>;
 
     /// Stores a sample with its audio and returns its new id.
     ///
