@@ -2,14 +2,27 @@
 //!
 //! A [`Project`] is the rules over a [`Storage`]. It keeps no copy of the
 //! data: every read and write goes to storage, so changing the project is
-//! changing the disk and there is no save step. Today there are no rules
-//! and no data; samples, patterns and settings arrive as their steps come.
+//! changing the disk and there is no save step. Today a project holds
+//! samples; patterns and settings arrive as their steps come.
 
+use thiserror::Error;
+
+use crate::audio::AudioBuffer;
+use crate::sample::SampleId;
 use crate::storage::{Storage, StorageError};
+
+/// Reasons a project operation can fail.
+#[derive(Debug, Error)]
+pub enum ProjectError {
+    /// No sample with this id exists in the project.
+    #[error("no sample with id {}", .0.0)]
+    UnknownSample(SampleId),
+    #[error(transparent)]
+    Storage(#[from] StorageError),
+}
 
 /// One project, live on its storage.
 pub struct Project {
-    #[expect(dead_code, reason = "read and written once the project has data")]
     storage: Box<dyn Storage>,
 }
 
@@ -22,56 +35,129 @@ impl Project {
         }
         Ok(Self { storage })
     }
+
+    /// Adds audio as a sample and returns its id.
+    ///
+    /// With no parent it starts a new lineage; with one it is the next
+    /// generation of that lineage. An unknown parent is refused and
+    /// nothing is stored.
+    pub fn add_sample(
+        &mut self,
+        parent: Option<SampleId>,
+        audio: &AudioBuffer,
+    ) -> Result<SampleId, ProjectError> {
+        if let Some(p) = parent
+            && !self.storage.has_sample(p)?
+        {
+            return Err(ProjectError::UnknownSample(p));
+        }
+        Ok(self.storage.add_sample(parent, audio)?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::RefCell;
     use std::rc::Rc;
 
     use super::*;
 
-    /// Storage that remembers only whether a project is in it, and refuses
-    /// to create one twice.
-    struct Memory {
-        exists: Rc<Cell<bool>>,
+    /// What the stub storage remembers.
+    #[derive(Default)]
+    struct State {
+        exists: bool,
+        next_id: u32,
+        samples: Vec<(SampleId, Option<SampleId>)>,
     }
+
+    /// In-memory storage for tests, shared with the test through `Rc` so
+    /// it can be inspected after the project takes ownership.
+    struct Memory(Rc<RefCell<State>>);
 
     impl Storage for Memory {
         fn exists(&self) -> Result<bool, StorageError> {
-            Ok(self.exists.get())
+            Ok(self.0.borrow().exists)
         }
 
         fn create(&mut self) -> Result<(), StorageError> {
+            let mut s = self.0.borrow_mut();
             assert!(
-                !self.exists.get(),
+                !s.exists,
                 "create called on storage that already holds a project"
             );
-            self.exists.set(true);
+            s.exists = true;
             Ok(())
+        }
+
+        fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
+            Ok(self.0.borrow().samples.iter().any(|(i, _)| *i == id))
+        }
+
+        fn add_sample(
+            &mut self,
+            parent: Option<SampleId>,
+            _audio: &AudioBuffer,
+        ) -> Result<SampleId, StorageError> {
+            let mut s = self.0.borrow_mut();
+            let id = SampleId(s.next_id);
+            s.next_id += 1;
+            s.samples.push((id, parent));
+            Ok(id)
         }
     }
 
-    fn memory(exists: bool) -> (Box<dyn Storage>, Rc<Cell<bool>>) {
-        let flag = Rc::new(Cell::new(exists));
-        (
-            Box::new(Memory {
-                exists: flag.clone(),
-            }),
-            flag,
-        )
+    fn project(exists: bool) -> (Project, Rc<RefCell<State>>) {
+        let state = Rc::new(RefCell::new(State {
+            exists,
+            ..State::default()
+        }));
+        let p = Project::get_or_create(Box::new(Memory(state.clone()))).unwrap();
+        (p, state)
+    }
+
+    fn tone() -> AudioBuffer {
+        AudioBuffer::new(1, vec![0, 1, 2, 3]).unwrap()
     }
 
     #[test]
     fn empty_storage_gets_a_project_created_in_it() {
-        let (storage, exists) = memory(false);
-        Project::get_or_create(storage).unwrap();
-        assert!(exists.get());
+        let (_p, state) = project(false);
+        assert!(state.borrow().exists);
     }
 
     #[test]
     fn existing_project_is_opened_without_creating() {
-        let (storage, _exists) = memory(true);
-        Project::get_or_create(storage).unwrap();
+        let (_p, state) = project(true);
+        assert!(state.borrow().exists);
+    }
+
+    #[test]
+    fn add_without_parent_stores_a_root() {
+        let (mut p, state) = project(false);
+        let id = p.add_sample(None, &tone()).unwrap();
+        assert_eq!(state.borrow().samples, vec![(id, None)]);
+    }
+
+    #[test]
+    fn add_with_parent_stores_the_next_generation() {
+        let (mut p, state) = project(false);
+        let root = p.add_sample(None, &tone()).unwrap();
+        let child = p.add_sample(Some(root), &tone()).unwrap();
+        assert_ne!(root, child);
+        assert_eq!(
+            state.borrow().samples,
+            vec![(root, None), (child, Some(root))]
+        );
+    }
+
+    #[test]
+    fn add_with_unknown_parent_is_refused_and_stores_nothing() {
+        let (mut p, state) = project(false);
+        let bogus = SampleId(99);
+        assert!(matches!(
+            p.add_sample(Some(bogus), &tone()),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert!(state.borrow().samples.is_empty());
     }
 }
