@@ -7,7 +7,11 @@
 //! directory today, perhaps a database later) is the implementation's
 //! private business.
 //!
+//! [`files::FileStorage`] is the one backend so far.
+//!
 //! [`Project`]: crate::project::Project
+
+pub mod files;
 
 use std::error::Error;
 use std::path::Path;
@@ -20,6 +24,12 @@ use crate::project::{Sample, SampleId};
 /// Reasons storage cannot do what was asked.
 #[derive(Debug, ThisError)]
 pub enum StorageError {
+    /// The stored project was written by a format this build does not read.
+    #[error("stored format version {0} is not supported")]
+    UnsupportedVersion(u32),
+    /// Stored audio is not in the engine's one fixed format.
+    #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
+    BadAudioFormat { id: SampleId, detail: String },
     /// Something failed underneath: the filesystem, a codec, a database.
     #[error(transparent)]
     Backend(Box<dyn Error + Send + Sync>),
@@ -65,6 +75,5 @@ pub trait Storage {
 /// This is the one place that decides what a path means. Everything above
 /// it sees only the trait.
 pub fn open(dir: &Path) -> Result<Box<dyn Storage>, StorageError> {
-    let _ = dir;
-    todo!("no storage backend yet")
+    Ok(Box::new(files::FileStorage::open(dir)))
 }
