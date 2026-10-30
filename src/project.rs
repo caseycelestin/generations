@@ -105,7 +105,7 @@ impl Project {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -182,6 +182,11 @@ mod tests {
                 .find(|(s, _)| s.id == id)
                 .cloned()
         }
+    }
+
+    /// A project on in-memory storage, for tests elsewhere in the crate.
+    pub(crate) fn memory_project() -> Project {
+        project(false).0
     }
 
     fn project(exists: bool) -> (Project, Rc<RefCell<State>>) {
