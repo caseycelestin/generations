@@ -79,6 +79,18 @@ Things a reader cannot recover from the code alone.
   replaces the manifest through a temp file and rename, then deletes WAVs
   for ids no longer in the project. A crash leaves the old or the new
   manifest; a stray WAV is ignored on load.
+- **Three storage tiers, one format.** On the device, saved projects live on
+  the SD card, the working project lives on eMMC, and audio being played
+  lives in RAM. The disk layer does not know about tiers: save and load
+  take a directory, and SD and eMMC are two paths. That is what the
+  incremental save is for: an autosave to eMMC after each print writes one
+  new WAV and a small manifest, and a later save to the card copies only
+  what the card is missing. Copying the directory between media is also a
+  valid save. Today load reads every WAV into RAM, so the loaded project is
+  the playback copy; when projects outgrow RAM the store below replaces
+  that, and `restore` takes whatever the store hands out instead of a
+  buffer. Saving a non-resident sample then becomes a file copy from eMMC
+  to SD, which the id-named, immutable WAVs make possible without decoding.
 - **Removing a sample with children is refused.** Later generations depend
   on it. Removing a whole lineage will be a separate, explicit operation.
 - **The public surface is kept minimal.** Convenience methods are added when
