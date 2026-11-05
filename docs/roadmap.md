@@ -271,6 +271,38 @@ are here even though most of the code is not.
   owns the consuming end (as Kira does) rather than taking commands as a
   parameter (as JUCE does): there is one host and one feeder, and the
   device closure is then one line.
+- **The device is its own role, and it takes a callback.** `device.rs` is
+  the only code that knows `cpal` exists and the only code that knows
+  there is an audio thread. `Device::default_output()` picks the system's
+  default output and checks it runs 48 kHz stereo `f32`; `start(render)`
+  runs the callback on the audio thread and returns a `Stream` that plays
+  while held. The device knows nothing about playback: the engine hands it
+  playback's renderer in a closure and holds the stream. Playback never
+  touches a device, so a bounce or a test drives the same renderer with
+  no device at all.
+- **`cpal`, and no trait of our own.** `cpal` is already the abstraction
+  over ALSA, PipeWire, JACK, CoreAudio and WASAPI, and it runs on the
+  development machine and the Pi with no code change. A trait over it
+  would have one implementation; tests do not need a fake device because
+  they hold the renderer. Going direct to ALSA, or to RtAudio for a duplex
+  stream, is the day a second implementation exists. `cpal` needs the ALSA
+  headers to build, so CI installs them.
+- **The stream runs from open to drop.** Opening a stream takes tens of
+  milliseconds and often clicks, so it is opened once and renders silence
+  when nothing plays, as every synth does. Stopping it when idle would put
+  the open cost on the first press.
+- **The period is the backend's default for now.** It is the latency
+  knob: a press lands within one period, and the renderer's work per
+  callback is bounded by it. On the Pi it should be chosen deliberately
+  (`BufferSize::Fixed`) once the device is in hand; on desktop Linux the
+  default is around ten milliseconds and good enough to hear.
+- **Recording will be a second stream.** `cpal` opens input and output as
+  separate streams with separate callbacks, so recording gets its own
+  input type in `device.rs` and its own ring back to the control side,
+  and playback never learns about it. Two streams have no guaranteed
+  frame alignment between them; if a resample must land on the frame,
+  that is the case for a duplex stream, and it is a change inside the two
+  roles.
 - **Nothing on the render path reads a clock or the device.** Frame counts
   only, with the rate from config. This is what makes an offline bounce
   possible: build a renderer, drive `render` in a loop faster than real
@@ -323,6 +355,15 @@ changes to it.
   rather than read a clock.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
+- Unloading a sample while a voice plays it leaves the voice as the last
+  holder of the audio, so the free happens on the audio thread. Fix:
+  `ResidentSet::remove` returns the `Arc`, and playback keeps a retiring
+  list it sweeps on the control side for entries whose count has dropped
+  to one. Not an audible problem today; a rule to keep before the device
+  is the target.
+- Stream errors (the device went away, an xrun the backend could not hide)
+  are printed from the audio thread. They need a way back to the control
+  side, which arrives with whatever reports events to a front panel.
 - A bound on sample length. Audio in flight (an import's buffer, a print's
   input and output, a recording in progress) is not counted against the
   budget, so the OS reservation must cover the budget plus the largest
