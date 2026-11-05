@@ -34,8 +34,11 @@ pub struct Sample {
     ///
     /// Playback reads only loaded audio, so this is the persisted intent
     /// behind what is resident: the engine loads every loaded sample when
-    /// it opens the project. New samples start unloaded. Setting it is a
-    /// separate operation that does not exist yet.
+    /// it opens the project. New samples start unloaded. Read it here;
+    /// change it with [`Engine::load`] and [`Engine::unload`].
+    ///
+    /// [`Engine::load`]: crate::engine::Engine::load
+    /// [`Engine::unload`]: crate::engine::Engine::unload
     pub loaded: bool,
 }
 
@@ -93,6 +96,16 @@ impl Project {
         Ok(self.storage.remove_sample(id)?)
     }
 
+    /// Records whether the sample with this id is loaded.
+    ///
+    /// Crate-private because the flag is only half of loading: the engine
+    /// sets it and moves the audio, and a caller reaching the project
+    /// directly would leave the two disagreeing.
+    pub(crate) fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), ProjectError> {
+        self.sample(id)?;
+        Ok(self.storage.set_loaded(id, loaded)?)
+    }
+
     /// Everything stored about the sample with this id, except its audio.
     pub fn sample(&self, id: SampleId) -> Result<Sample, ProjectError> {
         self.storage
@@ -146,6 +159,19 @@ pub(crate) mod tests {
 
         fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
             self.0.borrow_mut().samples.retain(|(s, _)| s.id != id);
+            Ok(())
+        }
+
+        fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
+            if let Some((s, _)) = self
+                .0
+                .borrow_mut()
+                .samples
+                .iter_mut()
+                .find(|(s, _)| s.id == id)
+            {
+                s.loaded = loaded;
+            }
             Ok(())
         }
 
@@ -234,6 +260,17 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(p.audio(child).unwrap(), tone());
+    }
+
+    #[test]
+    fn set_loaded_on_an_unknown_sample_is_refused() {
+        let (mut p, state) = project();
+        let bogus = SampleId(7);
+        assert!(matches!(
+            p.set_loaded(bogus, true),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert!(state.borrow().samples.is_empty());
     }
 
     #[test]

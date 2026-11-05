@@ -47,6 +47,21 @@ impl Engine {
         self.project.add_sample(None, audio)
     }
 
+    /// Marks `id` as loaded: a sample playback keeps in RAM.
+    ///
+    /// Today this records the intent and nothing more; moving the audio
+    /// into RAM arrives with the playback side. Loading a sample that is
+    /// already loaded changes nothing.
+    pub fn load(&mut self, id: SampleId) -> Result<(), ProjectError> {
+        self.project.set_loaded(id, true)
+    }
+
+    /// Marks `id` as unloaded, the reverse of [`Engine::load`]. Unloading a
+    /// sample that is not loaded changes nothing.
+    pub fn unload(&mut self, id: SampleId) -> Result<(), ProjectError> {
+        self.project.set_loaded(id, false)
+    }
+
     /// Prints `effect` applied to `source` as the next generation of its
     /// lineage, and returns the new sample's id.
     ///
@@ -82,6 +97,38 @@ mod tests {
         let id = e.import(&ramp(4)).unwrap();
         assert_eq!(e.project().sample(id).unwrap().parent, None);
         assert_eq!(e.project().audio(id).unwrap(), ramp(4));
+    }
+
+    #[test]
+    fn load_and_unload_set_the_flag() {
+        let mut e = engine();
+        let id = e.import(&ramp(4)).unwrap();
+        assert!(!e.project().sample(id).unwrap().loaded);
+
+        e.load(id).unwrap();
+        assert!(e.project().sample(id).unwrap().loaded);
+        e.load(id).unwrap();
+        assert!(e.project().sample(id).unwrap().loaded);
+
+        e.unload(id).unwrap();
+        assert!(!e.project().sample(id).unwrap().loaded);
+        e.unload(id).unwrap();
+        assert!(!e.project().sample(id).unwrap().loaded);
+    }
+
+    #[test]
+    fn load_of_an_unknown_sample_is_refused() {
+        let mut e = engine();
+        let root = e.import(&ramp(4)).unwrap();
+        let bogus = SampleId(root.0 + 1);
+        assert!(matches!(
+            e.load(bogus),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert!(matches!(
+            e.unload(bogus),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
     }
 
     #[test]

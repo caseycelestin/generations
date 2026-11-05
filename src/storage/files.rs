@@ -311,6 +311,18 @@ impl Storage for FileStorage {
         }
     }
 
+    fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
+        let mut manifest = self.read_manifest()?;
+        let Some(entry) = manifest.samples.get_mut(&id.0) else {
+            return Ok(());
+        };
+        if entry.loaded == loaded {
+            return Ok(());
+        }
+        entry.loaded = loaded;
+        self.write_manifest(&manifest)
+    }
+
     fn add_sample(
         &mut self,
         parent: Option<SampleId>,
@@ -526,6 +538,25 @@ mod tests {
         let mut s = created(dir.path());
         let id = s.add_sample(None, &ramp(1, 1)).unwrap();
         assert!(!s.sample(id).unwrap().unwrap().loaded);
+    }
+
+    #[test]
+    fn set_loaded_survives_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let a = s.add_sample(None, &ramp(1, 1)).unwrap();
+        let b = s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.set_loaded(a, true).unwrap();
+        s.set_loaded(b, true).unwrap();
+        s.set_loaded(b, false).unwrap();
+        // Not stored: not an error, nothing changes.
+        s.set_loaded(SampleId(99), true).unwrap();
+        drop(s);
+
+        let s = reopen(dir.path()).unwrap();
+        assert!(s.sample(a).unwrap().unwrap().loaded);
+        assert!(!s.sample(b).unwrap().unwrap().loaded);
+        assert!(s.sample(SampleId(99)).unwrap().is_none());
     }
 
     #[test]
