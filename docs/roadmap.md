@@ -340,6 +340,12 @@ changes to it.
 
 ## Deferred ideas
 
+- Effects move into playback. An effect runs live on a voice or the bus,
+  heard through the renderer, and a print becomes the committed render of
+  what was heard: the same effect code with the same parameters, driven
+  offline, stored as a new generation. Today's `print`, an offline function
+  over a buffer, is the stand-in until then; the operation it performs,
+  commit a new generation, stays the centre of the engine.
 - A replayable recipe on prints, so a chain applied to one sample can be
   applied to others as a preset. Needs effects-as-data first. Not every
   print is replayable, so a label-only form must remain.
