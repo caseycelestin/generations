@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::config::OUTPUT_CHANNELS;
-use crate::playback::controller::VoiceId;
+use crate::playback::renderer::VoiceId;
 
 /// A sample playing from the first frame to the last.
 #[derive(Debug)]

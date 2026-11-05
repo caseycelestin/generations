@@ -1,14 +1,14 @@
 //! The real-time side: commands in, a period of audio out.
 //!
-//! The [`Controller`] lives on the audio thread. Each period the device
-//! hands it a stereo `f32` slice; the controller applies the commands that
+//! The [`Renderer`] lives on the audio thread. Each period the device
+//! hands it a stereo `f32` slice; the renderer applies the commands that
 //! have arrived, which start and stop voices, then zeroes the slice, lets
 //! every playing voice add itself, clips the sum once, and returns.
 //! Nothing in here may allocate, lock, block or fail.
 //!
 //! Commands come over a lock-free ring from the control thread. The
-//! controller owns the consuming end; the engine owns the producing end
-//! and is the only other code that knows the controller exists.
+//! renderer owns the consuming end; the engine owns the producing end
+//! and is the only other code that knows the renderer exists.
 //!
 //! This file holds the shape so far; behaviour comes next.
 
@@ -29,7 +29,7 @@ use crate::playback::voice::Voice;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct VoiceId(pub u64);
 
-/// What the engine can ask of the controller.
+/// What the engine can ask of the renderer.
 #[derive(Debug)]
 pub enum Command {
     /// Start `audio` from its first frame as voice `id`.
@@ -43,10 +43,10 @@ pub enum Command {
     StopAll,
 }
 
-/// The real-time side of playback.
+/// The real-time side of playback: what the audio thread runs.
 #[derive(Debug)]
 #[allow(dead_code)] // read by render, which comes next
-pub struct Controller {
+pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
     /// The voices playing. Fixed size, so the work in one period is
@@ -54,8 +54,8 @@ pub struct Controller {
     voices: [Option<Voice>; VOICE_COUNT],
 }
 
-impl Controller {
-    /// A silent controller that takes its commands from `commands`.
+impl Renderer {
+    /// A silent renderer that takes its commands from `commands`.
     pub fn new(commands: Consumer<Command>) -> Self {
         Self {
             commands,
