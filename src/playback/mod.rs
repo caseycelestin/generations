@@ -10,8 +10,11 @@
 //!
 //! ```text
 //! control half                       rendering half
-//! ResidentSet   audio in RAM         Voice       one sample playing
-//!               under a budget       Renderer    commands in, a period out
+//! Playback      what the engine      Voice       one sample playing
+//!   ResidentSet   holds: audio in    Renderer    commands in, a period out
+//!   Producer      RAM, the ring's    Device      calls the renderer once
+//!   Device        sending end, the               per period from its callback
+//!                 device
 //!                         ── Command ring ──▶
 //! ```
 //!
@@ -22,6 +25,7 @@
 //! half a second thread: it owns the renderer and calls it from the audio
 //! callback.
 
+pub mod control;
 pub mod device;
 pub mod renderer;
 pub mod resident;
@@ -32,6 +36,7 @@ use thiserror::Error;
 use crate::config::COMMAND_CAPACITY;
 use crate::project::SampleId;
 
+pub use control::Playback;
 pub use device::{Device, DeviceError};
 pub use renderer::{Command, Renderer, VoiceId};
 pub use resident::ResidentSet;

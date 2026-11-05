@@ -12,11 +12,9 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use rtrb::{Producer, RingBuffer};
-
 use crate::audio::AudioBuffer;
-use crate::config::{COMMAND_CAPACITY, SAMPLE_RAM_BUDGET};
-use crate::playback::{Command, Device, PlaybackError, Renderer, ResidentSet, VoiceId};
+use crate::config::SAMPLE_RAM_BUDGET;
+use crate::playback::{Playback, PlaybackError, ResidentSet, VoiceId};
 use crate::project::{Project, ProjectError, SampleId};
 use crate::storage::{self, StorageError};
 
@@ -34,14 +32,7 @@ pub enum EngineError {
 /// The engine for one open project.
 pub struct Engine {
     project: Project,
-    resident: ResidentSet,
-    /// The producing end of the command ring; the renderer has the other.
-    commands: Producer<Command>,
-    /// The next voice id to mint. Only goes up, so an id is never reused.
-    next_voice: u64,
-    /// The open audio device, held so it keeps playing. `None` when the
-    /// renderer is driven by hand instead, as tests do.
-    device: Option<Device>,
+    playback: Playback,
 }
 
 impl Engine {
@@ -54,31 +45,14 @@ impl Engine {
     /// the open fails rather than deciding which ones to leave out.
     pub fn open(dir: &Path) -> Result<Self, EngineError> {
         let storage = storage::open(dir)?;
-        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
-        let device = Device::start(Renderer::new(consumer)).map_err(PlaybackError::from)?;
-        let mut engine = Self::on(
-            Project::new(storage),
-            ResidentSet::new(SAMPLE_RAM_BUDGET),
-            producer,
-        )?;
-        engine.device = Some(device);
-        Ok(engine)
+        let playback = Playback::start(SAMPLE_RAM_BUDGET)?;
+        Self::on(Project::new(storage), playback)
     }
 
-    /// An engine on an already open project, loading what it marks loaded,
-    /// sending commands to whoever holds the other end of `commands`.
-    pub(crate) fn on(
-        project: Project,
-        resident: ResidentSet,
-        commands: Producer<Command>,
-    ) -> Result<Self, EngineError> {
-        let mut engine = Self {
-            project,
-            resident,
-            commands,
-            next_voice: 0,
-            device: None,
-        };
+    /// An engine on an already open project and playback, loading what the
+    /// project marks loaded.
+    pub(crate) fn on(project: Project, playback: Playback) -> Result<Self, EngineError> {
+        let mut engine = Self { project, playback };
         for id in engine.project.loaded_samples()? {
             engine.make_resident(id)?;
         }
@@ -92,7 +66,7 @@ impl Engine {
 
     /// The audio this engine holds in RAM for playback.
     pub fn resident(&self) -> &ResidentSet {
-        &self.resident
+        self.playback.resident()
     }
 
     /// Adds audio to the project as a new root.
@@ -123,7 +97,7 @@ impl Engine {
     /// Unloading an unloaded sample changes nothing.
     pub fn unload(&mut self, id: SampleId) -> Result<(), EngineError> {
         self.project.set_loaded(id, false)?;
-        self.resident.remove(id);
+        self.playback.unload(id);
         Ok(())
     }
 
@@ -135,42 +109,34 @@ impl Engine {
     /// period. A play never fails for want of a free voice: the renderer
     /// steals the oldest.
     pub fn play(&mut self, id: SampleId) -> Result<VoiceId, EngineError> {
-        let Some(audio) = self.resident.get(id) else {
-            self.project.sample(id)?;
-            return Err(PlaybackError::NotLoaded(id).into());
-        };
-        let voice = VoiceId(self.next_voice);
-        self.next_voice += 1;
-        self.send(Command::Play { id: voice, audio })?;
-        Ok(voice)
+        match self.playback.play(id) {
+            Err(PlaybackError::NotLoaded(_)) => {
+                // Unknown and unloaded are different mistakes; say which.
+                self.project.sample(id)?;
+                Err(PlaybackError::NotLoaded(id).into())
+            }
+            result => Ok(result?),
+        }
     }
 
     /// Stops `voice` if it is still playing. A voice that has finished or
     /// been stolen is left alone.
     pub fn stop(&mut self, voice: VoiceId) -> Result<(), EngineError> {
-        self.send(Command::Stop(voice))
+        Ok(self.playback.stop(voice)?)
     }
 
     /// Stops every voice.
     pub fn stop_all(&mut self) -> Result<(), EngineError> {
-        self.send(Command::StopAll)
+        Ok(self.playback.stop_all()?)
     }
 
-    fn send(&mut self, command: Command) -> Result<(), EngineError> {
-        self.commands
-            .push(command)
-            .map_err(|_| PlaybackError::CommandsFull)?;
-        Ok(())
-    }
-
-    /// Reads `id` from the project into the resident set, unless it is
-    /// already there.
+    /// Reads `id` from the project into RAM, unless it is already there.
     fn make_resident(&mut self, id: SampleId) -> Result<(), EngineError> {
-        if self.resident.contains(id) {
+        if self.playback.resident().contains(id) {
             return Ok(());
         }
         let audio = self.project.audio(id)?;
-        self.resident.insert(id, audio)?;
+        self.playback.load(id, audio)?;
         Ok(())
     }
 
@@ -193,6 +159,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::effects::reverse;
+    use crate::playback::Renderer;
     use crate::project::tests::memory_project;
 
     fn ramp(n: i16) -> AudioBuffer {
@@ -206,17 +173,15 @@ mod tests {
     }
 
     fn with_budget(budget: usize) -> (Engine, Renderer) {
-        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
-        let engine = Engine::on(memory_project(), ResidentSet::new(budget), producer).unwrap();
-        (engine, Renderer::new(consumer))
+        let (playback, renderer) = Playback::unplugged(budget);
+        (Engine::on(memory_project(), playback).unwrap(), renderer)
     }
 
     /// An engine on the project at `dir` with no audio device, as
     /// `Engine::open` would build it on a machine without one.
     fn on_disk(dir: &Path, budget: usize) -> Engine {
-        let (producer, _consumer) = RingBuffer::new(COMMAND_CAPACITY);
         let project = Project::new(storage::open(dir).unwrap());
-        Engine::on(project, ResidentSet::new(budget), producer).unwrap()
+        Engine::on(project, Playback::unplugged(budget).0).unwrap()
     }
 
     /// Renders one period of `frames` frames and returns it.
@@ -365,20 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn a_full_command_ring_refuses_the_press() {
-        let (mut e, _r) = engine();
-        let id = e.import(&ramp(4)).unwrap();
-        e.load(id).unwrap();
-        for _ in 0..COMMAND_CAPACITY {
-            e.play(id).unwrap();
-        }
-        assert!(matches!(
-            e.play(id),
-            Err(EngineError::Playback(PlaybackError::CommandsFull))
-        ));
-    }
-
-    #[test]
     fn open_brings_loaded_samples_back_into_ram() {
         let dir = tempfile::tempdir().unwrap();
         let mut e = on_disk(dir.path(), usize::MAX);
@@ -404,8 +355,7 @@ mod tests {
         drop(e);
 
         let project = Project::new(storage::open(dir.path()).unwrap());
-        let (producer, _consumer) = RingBuffer::new(COMMAND_CAPACITY);
-        let result = Engine::on(project, ResidentSet::new(ramp(4).bytes() - 1), producer);
+        let result = Engine::on(project, Playback::unplugged(ramp(4).bytes() - 1).0);
         assert!(matches!(
             result,
             Err(EngineError::Playback(PlaybackError::OverBudget { .. }))
