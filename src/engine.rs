@@ -12,9 +12,11 @@ use std::path::Path;
 
 use thiserror::Error;
 
+use rtrb::{Producer, RingBuffer};
+
 use crate::audio::AudioBuffer;
-use crate::config::SAMPLE_RAM_BUDGET;
-use crate::playback::{PlaybackError, ResidentSet};
+use crate::config::{COMMAND_CAPACITY, SAMPLE_RAM_BUDGET};
+use crate::playback::{Command, Device, PlaybackError, Renderer, ResidentSet, VoiceId};
 use crate::project::{Project, ProjectError, SampleId};
 use crate::storage::{self, StorageError};
 
@@ -33,10 +35,18 @@ pub enum EngineError {
 pub struct Engine {
     project: Project,
     resident: ResidentSet,
+    /// The producing end of the command ring; the renderer has the other.
+    commands: Producer<Command>,
+    /// The next voice id to mint. Only goes up, so an id is never reused.
+    next_voice: u64,
+    /// The open audio device, held so it keeps playing. `None` when the
+    /// renderer is driven by hand instead, as tests do.
+    device: Option<Device>,
 }
 
 impl Engine {
-    /// An engine on the project at `dir`, created there if none exists.
+    /// An engine on the project at `dir`, created there if none exists,
+    /// playing through the default audio device.
     ///
     /// Every sample the project marks loaded is brought into RAM before
     /// this returns, so the device comes back ready. If they no longer fit
@@ -44,12 +54,31 @@ impl Engine {
     /// the open fails rather than deciding which ones to leave out.
     pub fn open(dir: &Path) -> Result<Self, EngineError> {
         let storage = storage::open(dir)?;
-        Self::on(Project::new(storage), ResidentSet::new(SAMPLE_RAM_BUDGET))
+        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
+        let device = Device::start(Renderer::new(consumer)).map_err(PlaybackError::from)?;
+        let mut engine = Self::on(
+            Project::new(storage),
+            ResidentSet::new(SAMPLE_RAM_BUDGET),
+            producer,
+        )?;
+        engine.device = Some(device);
+        Ok(engine)
     }
 
-    /// An engine on an already open project, loading what it marks loaded.
-    pub(crate) fn on(project: Project, resident: ResidentSet) -> Result<Self, EngineError> {
-        let mut engine = Self { project, resident };
+    /// An engine on an already open project, loading what it marks loaded,
+    /// sending commands to whoever holds the other end of `commands`.
+    pub(crate) fn on(
+        project: Project,
+        resident: ResidentSet,
+        commands: Producer<Command>,
+    ) -> Result<Self, EngineError> {
+        let mut engine = Self {
+            project,
+            resident,
+            commands,
+            next_voice: 0,
+            device: None,
+        };
         for id in engine.project.loaded_samples()? {
             engine.make_resident(id)?;
         }
@@ -98,6 +127,42 @@ impl Engine {
         Ok(())
     }
 
+    /// Starts playing `id` from its first frame and returns the voice, so
+    /// it can be stopped.
+    ///
+    /// The sample must be loaded; nothing is read from disk here, so a
+    /// press costs the same every time. Sound starts at the renderer's next
+    /// period. A play never fails for want of a free voice: the renderer
+    /// steals the oldest.
+    pub fn play(&mut self, id: SampleId) -> Result<VoiceId, EngineError> {
+        let Some(audio) = self.resident.get(id) else {
+            self.project.sample(id)?;
+            return Err(PlaybackError::NotLoaded(id).into());
+        };
+        let voice = VoiceId(self.next_voice);
+        self.next_voice += 1;
+        self.send(Command::Play { id: voice, audio })?;
+        Ok(voice)
+    }
+
+    /// Stops `voice` if it is still playing. A voice that has finished or
+    /// been stolen is left alone.
+    pub fn stop(&mut self, voice: VoiceId) -> Result<(), EngineError> {
+        self.send(Command::Stop(voice))
+    }
+
+    /// Stops every voice.
+    pub fn stop_all(&mut self) -> Result<(), EngineError> {
+        self.send(Command::StopAll)
+    }
+
+    fn send(&mut self, command: Command) -> Result<(), EngineError> {
+        self.commands
+            .push(command)
+            .map_err(|_| PlaybackError::CommandsFull)?;
+        Ok(())
+    }
+
     /// Reads `id` from the project into the resident set, unless it is
     /// already there.
     fn make_resident(&mut self, id: SampleId) -> Result<(), EngineError> {
@@ -134,17 +199,36 @@ mod tests {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
     }
 
-    fn engine() -> Engine {
+    /// An engine on a memory project, and the renderer it commands, which
+    /// the test drives by hand.
+    fn engine() -> (Engine, Renderer) {
         with_budget(usize::MAX)
     }
 
-    fn with_budget(budget: usize) -> Engine {
-        Engine::on(memory_project(), ResidentSet::new(budget)).unwrap()
+    fn with_budget(budget: usize) -> (Engine, Renderer) {
+        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
+        let engine = Engine::on(memory_project(), ResidentSet::new(budget), producer).unwrap();
+        (engine, Renderer::new(consumer))
+    }
+
+    /// An engine on the project at `dir` with no audio device, as
+    /// `Engine::open` would build it on a machine without one.
+    fn on_disk(dir: &Path, budget: usize) -> Engine {
+        let (producer, _consumer) = RingBuffer::new(COMMAND_CAPACITY);
+        let project = Project::new(storage::open(dir).unwrap());
+        Engine::on(project, ResidentSet::new(budget), producer).unwrap()
+    }
+
+    /// Renders one period of `frames` frames and returns it.
+    fn period(r: &mut Renderer, frames: usize) -> Vec<f32> {
+        let mut out = vec![0.0; frames * 2];
+        r.render(&mut out);
+        out
     }
 
     #[test]
     fn import_creates_a_root() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let id = e.import(&ramp(4)).unwrap();
         assert_eq!(e.project().sample(id).unwrap().parent, None);
         assert_eq!(e.project().audio(id).unwrap(), ramp(4));
@@ -152,7 +236,7 @@ mod tests {
 
     #[test]
     fn import_does_not_load() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let id = e.import(&ramp(4)).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
         assert!(!e.resident().contains(id));
@@ -160,7 +244,7 @@ mod tests {
 
     #[test]
     fn load_makes_audio_resident_and_sets_the_flag() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let id = e.import(&ramp(4)).unwrap();
 
         e.load(id).unwrap();
@@ -175,7 +259,7 @@ mod tests {
 
     #[test]
     fn unload_clears_the_flag_and_drops_the_audio() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let id = e.import(&ramp(4)).unwrap();
         e.load(id).unwrap();
 
@@ -191,7 +275,7 @@ mod tests {
 
     #[test]
     fn load_over_budget_is_refused_and_leaves_the_flag_clear() {
-        let mut e = with_budget(ramp(4).bytes());
+        let (mut e, _r) = with_budget(ramp(4).bytes());
         let a = e.import(&ramp(4)).unwrap();
         let b = e.import(&ramp(4)).unwrap();
         e.load(a).unwrap();
@@ -207,7 +291,7 @@ mod tests {
 
     #[test]
     fn load_of_an_unknown_sample_is_refused() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let root = e.import(&ramp(4)).unwrap();
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(
@@ -222,9 +306,82 @@ mod tests {
     }
 
     #[test]
+    fn play_is_heard_from_the_renderers_next_period() {
+        let (mut e, mut r) = engine();
+        let id = e.import(&ramp(2)).unwrap();
+        e.load(id).unwrap();
+
+        let voice = e.play(id).unwrap();
+        let out = period(&mut r, 2);
+        // Two frames fit in one two-frame period, so the voice is done.
+        assert!(!r.is_playing(voice));
+        let expected: Vec<f32> = ramp(2).frames_f32(0..2).flat_map(|s| [s, s]).collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn each_play_is_its_own_voice() {
+        let (mut e, mut r) = engine();
+        let id = e.import(&ramp(100)).unwrap();
+        e.load(id).unwrap();
+
+        let a = e.play(id).unwrap();
+        let b = e.play(id).unwrap();
+        assert_ne!(a, b);
+        period(&mut r, 4);
+        assert_eq!(r.playing(), 2);
+
+        e.stop(a).unwrap();
+        period(&mut r, 4);
+        assert!(!r.is_playing(a));
+        assert!(r.is_playing(b));
+
+        e.stop_all().unwrap();
+        period(&mut r, 4);
+        assert_eq!(r.playing(), 0);
+    }
+
+    #[test]
+    fn play_of_an_unloaded_sample_is_refused() {
+        let (mut e, mut r) = engine();
+        let id = e.import(&ramp(4)).unwrap();
+        assert!(matches!(
+            e.play(id),
+            Err(EngineError::Playback(PlaybackError::NotLoaded(s))) if s == id
+        ));
+        period(&mut r, 4);
+        assert_eq!(r.playing(), 0);
+    }
+
+    #[test]
+    fn play_of_an_unknown_sample_is_refused_as_unknown() {
+        let (mut e, _r) = engine();
+        let root = e.import(&ramp(4)).unwrap();
+        let bogus = SampleId(root.0 + 1);
+        assert!(matches!(
+            e.play(bogus),
+            Err(EngineError::Project(ProjectError::UnknownSample(s))) if s == bogus
+        ));
+    }
+
+    #[test]
+    fn a_full_command_ring_refuses_the_press() {
+        let (mut e, _r) = engine();
+        let id = e.import(&ramp(4)).unwrap();
+        e.load(id).unwrap();
+        for _ in 0..COMMAND_CAPACITY {
+            e.play(id).unwrap();
+        }
+        assert!(matches!(
+            e.play(id),
+            Err(EngineError::Playback(PlaybackError::CommandsFull))
+        ));
+    }
+
+    #[test]
     fn open_brings_loaded_samples_back_into_ram() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = Engine::open(dir.path()).unwrap();
+        let mut e = on_disk(dir.path(), usize::MAX);
         let kept = e.import(&ramp(4)).unwrap();
         let dropped = e.import(&ramp(8)).unwrap();
         e.load(kept).unwrap();
@@ -232,7 +389,7 @@ mod tests {
         e.unload(dropped).unwrap();
         drop(e);
 
-        let e = Engine::open(dir.path()).unwrap();
+        let e = on_disk(dir.path(), usize::MAX);
         assert!(e.resident().contains(kept));
         assert!(!e.resident().contains(dropped));
         assert_eq!(e.resident().bytes(), ramp(4).bytes());
@@ -241,13 +398,14 @@ mod tests {
     #[test]
     fn open_fails_when_loaded_samples_no_longer_fit() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = Engine::open(dir.path()).unwrap();
+        let mut e = on_disk(dir.path(), usize::MAX);
         let id = e.import(&ramp(4)).unwrap();
         e.load(id).unwrap();
         drop(e);
 
         let project = Project::new(storage::open(dir.path()).unwrap());
-        let result = Engine::on(project, ResidentSet::new(ramp(4).bytes() - 1));
+        let (producer, _consumer) = RingBuffer::new(COMMAND_CAPACITY);
+        let result = Engine::on(project, ResidentSet::new(ramp(4).bytes() - 1), producer);
         assert!(matches!(
             result,
             Err(EngineError::Playback(PlaybackError::OverBudget { .. }))
@@ -256,7 +414,7 @@ mod tests {
 
     #[test]
     fn print_adds_a_child_with_the_effect_applied() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let root = e.import(&ramp(4)).unwrap();
         let child = e.print(root, reverse).unwrap();
 
@@ -268,7 +426,7 @@ mod tests {
 
     #[test]
     fn printing_twice_from_one_source_branches() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let root = e.import(&ramp(4)).unwrap();
         let a = e.print(root, reverse).unwrap();
         let b = e.print(root, reverse).unwrap();
@@ -279,7 +437,7 @@ mod tests {
 
     #[test]
     fn print_from_unknown_source_adds_nothing() {
-        let mut e = engine();
+        let (mut e, _r) = engine();
         let root = e.import(&ramp(4)).unwrap();
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(

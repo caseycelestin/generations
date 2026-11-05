@@ -29,6 +29,9 @@ pub mod voice;
 
 use thiserror::Error;
 
+use crate::config::COMMAND_CAPACITY;
+use crate::project::SampleId;
+
 pub use device::{Device, DeviceError};
 pub use renderer::{Command, Renderer, VoiceId};
 pub use resident::ResidentSet;
@@ -50,6 +53,13 @@ pub enum PlaybackError {
         /// The budget this set was built with.
         budget: usize,
     },
+    /// The sample exists but is not loaded, so there is nothing resident
+    /// to play. Load it first.
+    #[error("sample {} is not loaded", .0.0)]
+    NotLoaded(SampleId),
+    /// The command ring was full; the command was dropped.
+    #[error("the renderer has not taken the last {COMMAND_CAPACITY} commands")]
+    CommandsFull,
     /// The audio device could not be opened or started.
     #[error(transparent)]
     Device(#[from] DeviceError),
