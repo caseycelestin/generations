@@ -7,12 +7,14 @@
 //!
 //! # Architecture
 //!
-//! Four roles, each its own module, with one rule about who talks to whom:
+//! Five roles, each its own module, with one rule about who talks to whom:
 //!
 //! ```text
 //! engine     coordinates: what a UI or front panel calls
 //!   │
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
+//!   │
+//!   ├─ playback  audio in RAM, and the audio thread that turns it into sound
 //!   │
 //!   └─ project   the rules: what a project holds and what is allowed
 //!        │
@@ -20,9 +22,15 @@
 //!              └─ files   a directory of WAVs and a manifest (the one backend)
 //! ```
 //!
-//! - **[`engine`]** is the only code that touches both the project and the
-//!   effects. A print is: read the source's audio from the project, run the
-//!   effect, add the result to the project as the source's child.
+//! - **[`engine`]** is the only code that touches more than one role. A
+//!   print is: read the source's audio from the project, run the effect,
+//!   add the result to the project as the source's child. A load is: read
+//!   the audio from the project, put it in playback's resident set, mark
+//!   the sample loaded.
+//! - **[`playback`]** is two threads with one rule. On the control thread,
+//!   the resident set holds audio in RAM under a budget. On the audio
+//!   thread, the renderer turns commands and resident audio into periods of
+//!   output and must never wait. Nothing in it knows what a project is.
 //! - **[`project`]** owns a [`Storage`] and holds nothing else. There is no
 //!   in-memory copy of a project: every read and write goes to storage, so
 //!   changing the project is changing the disk and there is no save step.
