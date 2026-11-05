@@ -9,7 +9,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 1 | Core data model | done, then rebuilt in step 3 |
 | 2 | First print: one real effect (reverse) and an engine that applies it | done |
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
-| 4 | Hear something: load a WAV and play it through the audio device | next |
+| 4 | Hear something: load a WAV and play it through the audio device | in progress |
 | 5 | Recording: audio input as a new root | |
 | 6 | Sequencing and mixing: the real-time side | |
 | 7 | Arrangement and more effects | |
@@ -73,9 +73,22 @@ out; the short version of the argument is here so it is not had twice.
 - **Generation is a relationship, not a type.** A sample is an id and an
   optional parent id. Lineage is the tree of parent pointers; children are
   found by asking storage. Nothing else is stored about the relationship.
-- **Samples carry structure only.** No name, no label, no record of whether
-  they came from a file or a recording. Naming and organising belong to
-  whatever points at a sample (pads, tracks) in a later layer.
+- **Samples carry metadata as well as lineage.** The first version of this
+  decision said structure only: no name, no label, nothing but the parent
+  pointer. That was wrong. A sample needs to carry facts about itself that
+  nothing else is in a position to hold, and `loaded` is the first. More
+  arrive as their steps come. `sample(id)` is where they are read, and
+  each one that can change gets its own setter with its own rule, rather
+  than one general update: the id and parent can never change, and a rule
+  belongs next to the one field it governs.
+- **Project mutation goes through the engine.** `Engine::project()` lends
+  the project read-only; every change is an engine method. Some changes
+  are only half a project write (`load` sets a flag and moves audio into
+  RAM), and a caller reaching the project directly would leave the two
+  disagreeing. So new mutating methods on `Project` are crate-private by
+  default, starting with `set_loaded`. The older `add_sample` and
+  `remove_sample` are still public and will be tightened when there is a
+  reason to touch them.
 
 ### Storage
 
@@ -135,6 +148,56 @@ out; the short version of the argument is here so it is not had twice.
   takes one as a plain argument. Effects-as-data (an enum with parameters)
   is what the replayable recipe idea below needs, and it will be introduced
   with that work rather than ahead of it.
+
+### Playback
+
+Step 4 is being built up one decision at a time, and the decisions so far
+are here even though most of the code is not.
+
+- **Playback belongs to the engine.** Pressing a pad is a front-panel
+  action, and the engine is what the front panel calls. The device, the
+  audio thread and the mixer are their own role beside effects, knowing
+  only buffers; the engine is the one place that touches both them and
+  the project. Keeping playback outside would need a second coordinator
+  by step 6.
+- **Playback reads only audio already in RAM.** The real-time thread never
+  touches storage: storage reads the manifest from disk and fsyncs on every
+  write, and an fsync on eMMC can stall other I/O for hundreds of
+  milliseconds. Streaming from eMMC is not bandwidth-bound (a stereo voice
+  is 192 KB/s against tens of MB/s) but it is latency-bound, and our own
+  prints are the main contention. Streaming long recordings is a deferred
+  idea.
+- **Residency is explicit and persisted.** A sample is in RAM because
+  someone asked, not because it was played. `loaded` on the sample is the
+  recorded intent; the engine loads every flagged sample on open, so the
+  device comes back ready after a power-down. `Engine::load` and
+  `Engine::unload` change it. Playing a sample that is not loaded is an
+  error, not a silent disk read, so a press never pays for a load and
+  latency never depends on history. What to load is the caller's policy;
+  the engine never loads on its own. Load-on-play is two lines in a
+  caller that wants it.
+- **Adding a sample and loading it stay separate.** A print the user made
+  must land on disk even when it does not fit in RAM. Combining the two
+  would have to either refuse the add or store the sample unloaded anyway,
+  which makes the flag a request rather than a fact. The cost is a disk
+  read of bytes the engine was just holding, a few milliseconds per print.
+- **The budget is enforced where RAM is managed.** `SAMPLE_RAM_BUDGET` in
+  `config.rs` bounds resident audio. The resident set checks it, because
+  the resident set is the one thing that knows how many bytes it holds;
+  the project never learns about RAM. `Engine::load` puts the audio in RAM
+  first and sets the flag only if that succeeded, so the flag is never true
+  for a sample that is not resident.
+- **A fixed voice count.** `VOICE_COUNT` in `config.rs`. Mixing is cheap
+  (one multiply-add per voice per output sample at original pitch), so the
+  cap is not a measured limit. It is a guarantee: the callback has a known
+  worst case, and a full table steals the oldest voice rather than
+  failing, which is how the SP-404 behaves and what a player relies on.
+  Per-voice cost grows once pads can be pitched, and the cap earns its
+  keep then.
+- **Both constants are set generously.** The real budget depends on the
+  CM4 variant (1, 2, 4 or 8 GB); the real voice count depends on what a
+  voice costs with pitch and processing. They exist so the design can be
+  written in terms of them.
 
 ### Process
 
