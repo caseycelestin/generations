@@ -34,3 +34,4 @@ pub const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 /// generously for now; the cost per voice grows as voices gain pitch and
 /// processing.
 pub const VOICE_COUNT: usize = 64;
+const _: () = assert!(VOICE_COUNT > 0, "the voice table cannot be empty");

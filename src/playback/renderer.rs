@@ -96,17 +96,14 @@ impl Renderer {
     /// Starts a voice in a free slot, or in the oldest voice's slot when
     /// none is free. Ids are minted in order, so the oldest is the lowest.
     fn play(&mut self, id: VoiceId, audio: Arc<AudioBuffer>) {
-        let slot = match self.voices.iter().position(Option::is_none) {
-            Some(free) => free,
-            None => self
-                .voices
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, v)| v.as_ref().map_or(VoiceId(u64::MAX), Voice::id))
-                .map(|(i, _)| i)
-                .expect("VOICE_COUNT is not zero"),
-        };
-        self.voices[slot] = Some(Voice::new(id, audio));
+        // `None` orders below every `Some`, so a free slot wins when there
+        // is one and the lowest id wins otherwise.
+        let slot = self
+            .voices
+            .iter_mut()
+            .min_by_key(|slot| slot.as_ref().map(Voice::id))
+            .expect("VOICE_COUNT is not zero; see config");
+        *slot = Some(Voice::new(id, audio));
     }
 
     /// Stops voice `id`. A voice that is gone is left gone.
