@@ -1,12 +1,11 @@
-//! Thin orchestration over a project: what a UI or front panel calls.
+//! The engine: the one thing a caller holds, and the only way in.
 //!
-//! An engine starts from a path. The path becomes a [`Storage`], the
-//! storage becomes a [`Project`], and the engine runs on the project. The
-//! engine is the only code that touches more than one role: the project,
-//! the effects, and playback. The project does not know effects or
-//! playback exist, and they do not know projects exist.
-//!
-//! [`Storage`]: crate::storage::Storage
+//! Every role in the crate knows one thing. The engine is where an action
+//! that needs two of them is written: a print reads the project and runs
+//! an effect, a load reads the project and fills playback's RAM, a play
+//! asks playback and, on failure, asks the project why. Nothing below the
+//! engine is reachable from outside the crate except read-only, so there
+//! is one path to every action and the rules hold on it.
 
 use std::path::Path;
 

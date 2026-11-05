@@ -1,6 +1,6 @@
 //! A project: everything the device keeps for one piece of work.
 //!
-//! A [`Project`] is the rules over a [`Storage`]. It keeps no copy of the
+//! A [`Project`] is the rules over a `Storage`. It keeps no copy of the
 //! data: every read and write goes to storage, so changing the project is
 //! changing the disk and there is no save step. Today a project holds
 //! samples; patterns and settings arrive as their steps come.
@@ -56,6 +56,10 @@ pub enum ProjectError {
 }
 
 /// One project, live on its storage.
+///
+/// A caller reaches it read-only through `Engine::project()`. Everything
+/// that changes it is an engine method, so the engine can keep the other
+/// roles in step (a loaded sample is also in playback's RAM).
 pub struct Project {
     storage: Box<dyn Storage>,
 }
@@ -63,7 +67,7 @@ pub struct Project {
 impl Project {
     /// The project in `storage`. A storage that exists holds a whole,
     /// valid project, so there is nothing to check here.
-    pub fn new(storage: Box<dyn Storage>) -> Self {
+    pub(crate) fn new(storage: Box<dyn Storage>) -> Self {
         Self { storage }
     }
 
@@ -72,7 +76,7 @@ impl Project {
     /// With no parent it starts a new lineage; with one it is the next
     /// generation of that lineage. An unknown parent is refused and
     /// nothing is stored.
-    pub fn add_sample(
+    pub(crate) fn add_sample(
         &mut self,
         parent: Option<SampleId>,
         audio: &AudioBuffer,
@@ -88,7 +92,8 @@ impl Project {
     /// A sample with children is refused: later generations depend on it
     /// and the lineage must stay readable. Removing a whole lineage is a
     /// separate, explicit operation that does not exist yet.
-    pub fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
+    #[allow(dead_code)] // the engine's remove is not written yet; it will call this
+    pub(crate) fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
         self.sample(id)?;
         if self.storage.has_children(id)? {
             return Err(ProjectError::HasChildren(id));

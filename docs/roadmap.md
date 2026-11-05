@@ -81,14 +81,22 @@ out; the short version of the argument is here so it is not had twice.
   each one that can change gets its own setter with its own rule, rather
   than one general update: the id and parent can never change, and a rule
   belongs next to the one field it governs.
-- **Project mutation goes through the engine.** `Engine::project()` lends
-  the project read-only; every change is an engine method. Some changes
-  are only half a project write (`load` sets a flag and moves audio into
-  RAM), and a caller reaching the project directly would leave the two
-  disagreeing. So new mutating methods on `Project` are crate-private by
-  default, starting with `set_loaded`. The older `add_sample` and
-  `remove_sample` are still public and will be tightened when there is a
-  reason to touch them.
+- **The engine is the only way in.** `Engine::project()` lends the
+  project read-only; every change is an engine method. Some changes are
+  only half a project write (`load` sets a flag and moves audio into RAM),
+  and a caller reaching a role directly would leave the two disagreeing.
+  So the roles the engine owns (`project`'s mutation, `playback`, `device`,
+  `storage`) are crate-private, and what is public is the engine, the
+  project's read side, the value types in the engine's signatures, the
+  errors, the effects and config. One path to each action, and the rules
+  hold on it. A reader who wants a role's internals opens the module.
+- **The engine's methods stay flat for now.** Most touch more than one
+  role (`play` asks playback and, on failure, the project), so grouping
+  them by role would mislead. If the list grows past easy reading, the
+  grouping to use is by what the caller is doing (samples, sound, later
+  pads and patterns), as `impl` blocks or as views the engine lends that
+  borrow the whole engine so they can still cross roles. Not needed at
+  nine methods.
 
 ### Storage
 

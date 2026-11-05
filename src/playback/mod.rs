@@ -40,7 +40,6 @@ use crate::project::SampleId;
 pub use control::Playback;
 pub use renderer::{Command, Renderer, VoiceId};
 pub(crate) use resident::ResidentSet;
-pub use voice::Voice;
 
 /// Reasons playback cannot do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
