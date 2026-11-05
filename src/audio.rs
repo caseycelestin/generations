@@ -85,6 +85,12 @@ impl AudioBuffer {
     pub fn samples(&self) -> &[Pcm] {
         &self.data
     }
+
+    /// Size of the audio in memory, in bytes. This is what resident audio
+    /// costs against the RAM budget.
+    pub fn bytes(&self) -> usize {
+        std::mem::size_of_val(&*self.data)
+    }
 }
 
 impl fmt::Debug for AudioBuffer {
@@ -129,6 +135,13 @@ impl Dither {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bytes_is_samples_times_pcm_width() {
+        let b = AudioBuffer::new(2, vec![0; 6]).unwrap();
+        assert_eq!(b.bytes(), 6 * std::mem::size_of::<Pcm>());
+        assert_eq!(AudioBuffer::new(1, vec![]).unwrap().bytes(), 0);
+    }
 
     #[test]
     fn rejects_bad_channel_counts() {
