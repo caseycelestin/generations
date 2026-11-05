@@ -10,6 +10,7 @@
 //! renderer owns the consuming end; the engine owns the producing end
 //! and is the only other code that knows the renderer exists.
 //!
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use rtrb::Consumer;
@@ -20,11 +21,9 @@ use crate::playback::voice::Voice;
 
 /// Identity of one started sound, minted by the engine.
 ///
-/// Minted in order and never reused, so two things hold: a stop that
-/// arrives after its voice was stolen or finished names nothing, and the
-/// lowest id among playing voices is the oldest, which is what a full
-/// table steals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// Never reused, so a stop that arrives after its voice was stolen or
+/// finished names nothing and does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VoiceId(pub u64);
 
 /// What the engine can ask of the renderer.
@@ -46,9 +45,10 @@ pub enum Command {
 pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
-    /// The voices playing. Fixed size, so the work in one period is
-    /// bounded; an empty slot is `None`.
-    voices: [Option<Voice>; VOICE_COUNT],
+    /// The voices playing, oldest first. Never more than [`VOICE_COUNT`],
+    /// so the work in one period is bounded and the deque, sized once
+    /// here, never reallocates.
+    voices: VecDeque<Voice>,
 }
 
 impl Renderer {
@@ -56,7 +56,7 @@ impl Renderer {
     pub fn new(commands: Consumer<Command>) -> Self {
         Self {
             commands,
-            voices: [const { None }; VOICE_COUNT],
+            voices: VecDeque::with_capacity(VOICE_COUNT),
         }
     }
 
@@ -70,13 +70,7 @@ impl Renderer {
     pub fn render(&mut self, out: &mut [f32]) {
         self.apply_commands();
         out.fill(0.0);
-        for slot in &mut self.voices {
-            if let Some(voice) = slot
-                && voice.mix_into(out)
-            {
-                *slot = None;
-            }
-        }
+        self.voices.retain_mut(|voice| !voice.mix_into(out));
         for o in out.iter_mut() {
             *o = o.clamp(-1.0, 1.0);
         }
@@ -88,43 +82,36 @@ impl Renderer {
             match command {
                 Command::Play { id, audio } => self.play(id, audio),
                 Command::Stop(id) => self.stop(id),
-                Command::StopAll => self.voices.fill_with(|| None),
+                Command::StopAll => self.voices.clear(),
             }
         }
     }
 
-    /// Starts a voice in a free slot, or in the oldest voice's slot when
-    /// none is free. Ids are minted in order, so the oldest is the lowest.
+    /// Starts a voice, stealing the oldest when every voice is in use.
     fn play(&mut self, id: VoiceId, audio: Arc<AudioBuffer>) {
-        // `None` orders below every `Some`, so a free slot wins when there
-        // is one and the lowest id wins otherwise.
-        let slot = self
-            .voices
-            .iter_mut()
-            .min_by_key(|slot| slot.as_ref().map(Voice::id))
-            .expect("VOICE_COUNT is not zero; see config");
-        *slot = Some(Voice::new(id, audio));
+        if self.voices.len() == VOICE_COUNT {
+            self.voices.pop_front();
+        }
+        debug_assert!(
+            self.voices.len() < self.voices.capacity(),
+            "push would allocate"
+        );
+        self.voices.push_back(Voice::new(id, audio));
     }
 
     /// Stops voice `id`. A voice that is gone is left gone.
     fn stop(&mut self, id: VoiceId) {
-        for slot in &mut self.voices {
-            if slot.as_ref().is_some_and(|v| v.id() == id) {
-                *slot = None;
-            }
-        }
+        self.voices.retain(|v| v.id() != id);
     }
 
     /// Whether voice `id` is playing.
     pub fn is_playing(&self, id: VoiceId) -> bool {
-        self.voices
-            .iter()
-            .any(|v| v.as_ref().is_some_and(|v| v.id() == id))
+        self.voices.iter().any(|v| v.id() == id)
     }
 
     /// How many voices are playing.
     pub fn playing(&self) -> usize {
-        self.voices.iter().filter(|v| v.is_some()).count()
+        self.voices.len()
     }
 }
 
