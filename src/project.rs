@@ -106,6 +106,11 @@ impl Project {
         Ok(self.storage.set_loaded(id, loaded)?)
     }
 
+    /// The ids of every loaded sample, in id order.
+    pub fn loaded_samples(&self) -> Result<Vec<SampleId>, ProjectError> {
+        Ok(self.storage.loaded_samples()?)
+    }
+
     /// Everything stored about the sample with this id, except its audio.
     pub fn sample(&self, id: SampleId) -> Result<Sample, ProjectError> {
         self.storage
@@ -155,6 +160,17 @@ pub(crate) mod tests {
                 .samples
                 .iter()
                 .any(|(s, _)| s.parent == Some(id)))
+        }
+
+        fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError> {
+            Ok(self
+                .0
+                .borrow()
+                .samples
+                .iter()
+                .filter(|(s, _)| s.loaded)
+                .map(|(s, _)| s.id)
+                .collect())
         }
 
         fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {

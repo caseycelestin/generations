@@ -58,11 +58,13 @@ pub mod audio;
 pub mod config;
 pub mod effects;
 pub mod engine;
+pub mod playback;
 pub mod project;
 pub mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use engine::Engine;
+pub use engine::{Engine, EngineError};
+pub use playback::{PlaybackError, ResidentSet};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use storage::files::FileStorage;
 pub use storage::{Storage, StorageError};

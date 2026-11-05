@@ -182,11 +182,32 @@ are here even though most of the code is not.
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
 - **The budget is enforced where RAM is managed.** `SAMPLE_RAM_BUDGET` in
-  `config.rs` bounds resident audio. The resident set checks it, because
-  the resident set is the one thing that knows how many bytes it holds;
-  the project never learns about RAM. `Engine::load` puts the audio in RAM
-  first and sets the flag only if that succeeded, so the flag is never true
-  for a sample that is not resident.
+  `config.rs` bounds resident audio. The `ResidentSet` in `playback.rs`
+  checks it, because it is the one thing that knows how many bytes it
+  holds; the project never learns about RAM. `Engine::load` puts the audio
+  in RAM first and sets the flag only if that succeeded, so the flag is
+  never true for a sample that is not resident. The engine lends the set
+  read-only through `Engine::resident()`, as it lends the project.
+- **Resident audio is ordinary heap allocation; the OS guarantees the
+  budget.** Each buffer owns its own block, wrapped in an `Arc` so a voice
+  can hold it while it plays. There is no preallocated arena. Linux
+  overcommits, so no allocation inside the engine can guarantee the memory
+  exists; the guarantee comes from the device's configuration instead: a
+  cgroup memory reservation for the engine's process, no swap, and the
+  budget set below what is really free. The alternative, a touched and
+  locked arena with a fixed-size chunk pool, gives the same guarantee in
+  code we control but reshapes the resident form of audio and how storage
+  reads; it can be added later behind the same `insert` and `get`.
+- **Open fails when the loaded set no longer fits.** This happens only if
+  the budget shrank or the project moved to a smaller device. Open could
+  instead load what fits and clear the rest, but that is a policy and a
+  project write during open. Failing is honest, and the case is rare.
+- **Loading is synchronous.** A load is a disk read on the control
+  thread, a few milliseconds to a couple of hundred. Nothing with a
+  deadline waits on it: the audio thread never calls it. When a front
+  panel exists and a load visibly stalls it, the fix is an engine thread
+  with a command channel, not async methods; the engine's API stays plain
+  functions.
 - **A fixed voice count.** `VOICE_COUNT` in `config.rs`. Mixing is cheap
   (one multiply-add per voice per output sample at original pitch), so the
   cap is not a measured limit. It is a guarantee: the callback has a known
@@ -215,11 +236,11 @@ are here even though most of the code is not.
 ```
 SD card   kept projects; a copy of the active one, made on request
 eMMC      the active project; every change lands here at once
-RAM       whatever playback needs resident; a cache in front of storage
+RAM       whatever playback needs resident; the ResidentSet, under a budget
 ```
 
-The storage layer does not know about tiers. A copy to the card and a
-resident cache for playback are both layers beside or in front of it, not
+The storage layer does not know about tiers. A copy to the card and the
+resident set for playback are both layers beside or in front of it, not
 changes to it.
 
 ## Deferred ideas
@@ -233,3 +254,14 @@ changes to it.
 - Removing a whole lineage as one explicit operation.
 - A SQLite backend, if a single-file project, transactions or richer
   metadata become worth having.
+- A bound on sample length. Audio in flight (an import's buffer, a print's
+  input and output, a recording in progress) is not counted against the
+  budget, so the OS reservation must cover the budget plus the largest
+  transient. A maximum sample length bounds every transient at once,
+  including a recording, which has no other natural end. Needed before
+  step 5.
+- Streaming long recordings from eMMC instead of holding them resident,
+  for audio that outgrows RAM. Needs a feeder thread and a prefetch window
+  per voice, and has to stay clear of our own fsyncs.
+- A budget read from the device's configuration rather than compiled in,
+  once the CM4 variant is known and the free memory is measured.

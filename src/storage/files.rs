@@ -297,6 +297,16 @@ impl Storage for FileStorage {
             .any(|e| e.parent == Some(id.0)))
     }
 
+    fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError> {
+        Ok(self
+            .read_manifest()?
+            .samples
+            .iter()
+            .filter(|(_, e)| e.loaded)
+            .map(|(&id, _)| SampleId(id))
+            .collect())
+    }
+
     fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
         let mut manifest = self.read_manifest()?;
         if manifest.samples.remove(&id.0).is_none() {
@@ -557,6 +567,7 @@ mod tests {
         assert!(s.sample(a).unwrap().unwrap().loaded);
         assert!(!s.sample(b).unwrap().unwrap().loaded);
         assert!(s.sample(SampleId(99)).unwrap().is_none());
+        assert_eq!(s.loaded_samples().unwrap(), vec![a]);
     }
 
     #[test]
