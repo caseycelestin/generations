@@ -10,9 +10,9 @@
 //! renderer owns the consuming end; the engine owns the producing end
 //! and is the only other code that knows the renderer exists.
 //!
-use std::collections::VecDeque;
 use std::sync::Arc;
 
+use heapless::Deque;
 use rtrb::Consumer;
 
 use crate::audio::AudioBuffer;
@@ -45,10 +45,9 @@ pub enum Command {
 pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
-    /// The voices playing, oldest first. Never more than [`VOICE_COUNT`],
-    /// so the work in one period is bounded and the deque, sized once
-    /// here, never reallocates.
-    voices: VecDeque<Voice>,
+    /// The voices playing, oldest first. Fixed capacity, stored inline:
+    /// the work in one period is bounded and nothing here can allocate.
+    voices: Deque<Voice, VOICE_COUNT>,
 }
 
 impl Renderer {
@@ -56,7 +55,7 @@ impl Renderer {
     pub fn new(commands: Consumer<Command>) -> Self {
         Self {
             commands,
-            voices: VecDeque::with_capacity(VOICE_COUNT),
+            voices: Deque::new(),
         }
     }
 
@@ -89,14 +88,11 @@ impl Renderer {
 
     /// Starts a voice, stealing the oldest when every voice is in use.
     fn play(&mut self, id: VoiceId, audio: Arc<AudioBuffer>) {
-        if self.voices.len() == VOICE_COUNT {
+        if self.voices.is_full() {
             self.voices.pop_front();
         }
-        debug_assert!(
-            self.voices.len() < self.voices.capacity(),
-            "push would allocate"
-        );
-        self.voices.push_back(Voice::new(id, audio));
+        // Cannot fail: there is room, either already or because of the pop.
+        let _ = self.voices.push_back(Voice::new(id, audio));
     }
 
     /// Stops voice `id`. A voice that is gone is left gone.
