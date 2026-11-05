@@ -215,6 +215,59 @@ are here even though most of the code is not.
   failing, which is how the SP-404 behaves and what a player relies on.
   Per-voice cost grows once pads can be pitched, and the cap earns its
   keep then.
+- **The real-time side is two types: `Voice` and `Renderer`.** A voice is
+  how one sample is heard: today the whole buffer from first frame to
+  last at its own speed. Start and end points, looping, gain and fades
+  are fields and lines on the voice when they come. The renderer is
+  real-time safe, not real-time only: it owns the playing voices and the
+  consuming end of the command ring, and each call applies the commands
+  that arrived, zeroes the slice it is given, lets every voice add itself,
+  drops the voices that finished, and clips the sum once. A device drives
+  it live from its callback; a bounce drives it offline in a loop. There
+  is no separate mixer: a list of voices with a sum is a method, not a
+  concept. The pattern is JUCE's `Synthesiser` and Kira's `Renderer`; the
+  name is Kira's, and "controller" was rejected because the engine gives
+  the orders and this side carries them out.
+- **Voices add into the device's buffer, voice-major.** The device owns
+  the period buffer and hands it in; the renderer never allocates one.
+  Each voice adds its next frames into the whole slice in turn, which is
+  how samplers and synths are written: one contiguous read and one
+  contiguous add per voice, which the compiler vectorises. Frame-major
+  (for each frame, for each voice) jumps between buffers every sample and
+  cannot. Threads are not worth it at this size; the work per period is
+  tens of microseconds against a budget of milliseconds.
+- **Clip the sum once, hard, in the renderer.** Two full-scale voices sum
+  past full scale, and an unclamped value either wraps at the DAC or is
+  clamped by the driver, depending on the backend. Clamping in the
+  renderer makes every device and the offline bounce behave the same. A
+  hard clip is what hardware samplers do and it tells the user they are
+  over. A master gain or a bus limiter goes before the clamp when it
+  comes; the clamp stays last.
+- **Commands take effect at period boundaries.** The renderer drains the
+  ring once at the start of each period, so a press lands within one
+  period, a few milliseconds. Sample-accurate placement within a period
+  is what sequencing adds, as a frame offset on the command.
+- **Playing voices are a fixed-capacity FIFO.** `heapless::Deque<Voice,
+  VOICE_COUNT>`, stored inline in the renderer: oldest first, so stealing
+  is pop the front and push the back, and the type cannot allocate. An
+  array of `Option<Voice>` tracked free and in-use slots by scanning for a
+  sentinel and relied on ids being minted in order to know the oldest;
+  the deque says FIFO in the type and needs neither.
+- **The ring is `rtrb`.** Single producer, single consumer, lock-free,
+  fixed capacity, written for audio. Popping on the audio thread is a few
+  atomic loads and never blocks. A full ring drops the push on the control
+  side, which is the right failure. `std::sync::mpsc` locks and can
+  allocate; writing our own is where subtle bugs come from. The renderer
+  owns the consuming end (as Kira does) rather than taking commands as a
+  parameter (as JUCE does): there is one host and one feeder, and the
+  device closure is then one line.
+- **Nothing on the render path reads a clock or the device.** Frame counts
+  only, with the rate from config. This is what makes an offline bounce
+  possible: build a renderer, drive `render` in a loop faster than real
+  time, and the frames are the same ones live playback would produce.
+  The bounce is the renderer used as a function, and belongs beside
+  effects as another kind of print; it does not go through the live
+  renderer.
 - **Both constants are set generously.** The real budget depends on the
   CM4 variant (1, 2, 4 or 8 GB); the real voice count depends on what a
   voice costs with pitch and processing. They exist so the design can be
@@ -254,6 +307,12 @@ changes to it.
 - Removing a whole lineage as one explicit operation.
 - A SQLite backend, if a single-file project, transactions or richer
   metadata become worth having.
+- An offline bounce: a renderer driven in a loop with frame-stamped
+  commands, its output stored as a new root. Same code as live playback,
+  so what you hear is what you print. Needs the sequencer to count frames
+  rather than read a clock.
+- A master gain and a bus limiter before the final clamp, once stacked
+  pads clipping is a complaint rather than a design.
 - A bound on sample length. Audio in flight (an import's buffer, a print's
   input and output, a recording in progress) is not counted against the
   budget, so the OS reservation must cover the budget plus the largest

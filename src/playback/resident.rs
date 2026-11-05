@@ -1,17 +1,12 @@
-//! Playback: the audio a player can hear, and how it is kept.
+//! Audio held in RAM for playback, under a budget.
 //!
-//! Playback reads only audio that is already in RAM. The real-time thread
-//! never touches storage, so everything a sample needs to be heard is
-//! brought into memory ahead of time, on purpose, under a budget. The
-//! [`ResidentSet`] is that memory. It knows nothing about the project, the
-//! device or voices: it holds buffers by id and keeps count.
-//!
-//! The budget is enforced here and nowhere else, because this is the one
-//! place that knows how many bytes are resident. The memory itself is
-//! ordinary heap allocation: each buffer owns its own block, and the
-//! guarantee that the budget's worth of RAM exists is the operating
-//! system's job (a reservation for the engine's process on the device),
-//! not the engine's.
+//! The [`ResidentSet`] knows nothing about the project, the device or
+//! voices: it holds buffers by id and keeps count. The budget is enforced
+//! here and nowhere else, because this is the one place that knows how
+//! many bytes are resident. The memory itself is ordinary heap allocation:
+//! each buffer owns its own block, and the guarantee that the budget's
+//! worth of RAM exists is the operating system's job (a reservation for
+//! the engine's process on the device), not the engine's.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,7 +38,7 @@ pub enum PlaybackError {
 ///
 /// Buffers are shared through [`Arc`] so a voice can hold one while it
 /// plays. Only the control thread inserts and removes; the set is not for
-/// the real-time thread, which only ever reads the clones it was handed.
+/// the renderer, which only ever reads the clones it was handed.
 #[derive(Debug)]
 pub struct ResidentSet {
     budget: usize,
