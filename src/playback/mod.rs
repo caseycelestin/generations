@@ -12,21 +12,22 @@
 //! control half                       rendering half
 //! Playback      what the engine      Voice       one sample playing
 //!   ResidentSet   holds: audio in    Renderer    commands in, a period out
-//!   Producer      RAM, the ring's    Device      calls the renderer once
-//!   Device        sending end, the               per period from its callback
-//!                 device
+//!   Producer      RAM and the ring's
+//!                 sending end
 //!                         ── Command ring ──▶
 //! ```
+//!
+//! Playback never touches a device. `Playback::new` hands the renderer
+//! back, and whoever called decides what drives it: the engine puts it on
+//! a [`Device`](crate::device::Device), a bounce would loop over it, a test
+//! calls it by hand.
 //!
 //! Commands cross over a lock-free ring, one way. Audio crosses as
 //! `Arc<AudioBuffer>`: the resident set holds one reference, a playing
 //! voice holds a clone, and freeing happens only where the control half
-//! lets go of the last one. The [`Device`] is what makes the rendering
-//! half a second thread: it owns the renderer and calls it from the audio
-//! callback.
+//! lets go of the last one.
 
 pub mod control;
-pub mod device;
 pub mod renderer;
 pub mod resident;
 pub mod voice;
@@ -37,7 +38,6 @@ use crate::config::COMMAND_CAPACITY;
 use crate::project::SampleId;
 
 pub use control::Playback;
-pub use device::{Device, DeviceError};
 pub use renderer::{Command, Renderer, VoiceId};
 pub use resident::ResidentSet;
 pub use voice::Voice;
@@ -65,7 +65,4 @@ pub enum PlaybackError {
     /// The command ring was full; the command was dropped.
     #[error("the renderer has not taken the last {COMMAND_CAPACITY} commands")]
     CommandsFull,
-    /// The audio device could not be opened or started.
-    #[error(transparent)]
-    Device(#[from] DeviceError),
 }

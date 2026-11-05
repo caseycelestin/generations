@@ -1,16 +1,16 @@
 //! The control half of playback: what the engine holds.
 //!
 //! A [`Playback`] owns everything playback keeps on the control side: the
-//! audio resident in RAM, the sending end of the command ring, the voice
-//! ids it mints, and the device whose callback runs the renderer. The
-//! engine holds one and calls it; it never sees a ring, a voice counter or
-//! a device. Nothing here knows what a project is.
+//! audio resident in RAM, the sending end of the command ring, and the
+//! voice ids it mints. The engine holds one and calls it; it never sees a
+//! ring or a voice counter. Nothing here knows what a project or a device
+//! is: `new` hands the renderer back and the caller decides what drives it.
 
 use rtrb::{Producer, RingBuffer};
 
 use crate::audio::AudioBuffer;
 use crate::config::COMMAND_CAPACITY;
-use crate::playback::{Command, Device, PlaybackError, Renderer, ResidentSet, VoiceId};
+use crate::playback::{Command, PlaybackError, Renderer, ResidentSet, VoiceId};
 use crate::project::SampleId;
 
 /// The control half of playback.
@@ -21,32 +21,17 @@ pub struct Playback {
     /// The next voice id to mint. Only goes up, and this is the one
     /// sender, so an id is never reused.
     next_voice: u64,
-    /// The open audio device, held so it keeps playing. `None` when the
-    /// renderer is driven by hand instead.
-    device: Option<Device>,
 }
 
 impl Playback {
-    /// Starts playback through the default audio device, with `budget`
-    /// bytes of RAM for resident audio. Silent until something is played.
-    pub fn start(budget: usize) -> Result<Self, PlaybackError> {
-        let (playback, renderer) = Self::unplugged(budget);
-        let device = Device::start(renderer)?;
-        Ok(Self {
-            device: Some(device),
-            ..playback
-        })
-    }
-
-    /// Playback with no device: the caller gets the renderer and drives it.
-    /// This is how tests hear what the engine did.
-    pub(crate) fn unplugged(budget: usize) -> (Self, Renderer) {
+    /// Playback with `budget` bytes of RAM for resident audio, and the
+    /// renderer it commands. The caller decides what drives the renderer.
+    pub fn new(budget: usize) -> (Self, Renderer) {
         let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
         let playback = Self {
             resident: ResidentSet::new(budget),
             commands: producer,
             next_voice: 0,
-            device: None,
         };
         (playback, Renderer::new(consumer))
     }
@@ -102,7 +87,6 @@ impl std::fmt::Debug for Playback {
         f.debug_struct("Playback")
             .field("resident", &self.resident)
             .field("next_voice", &self.next_voice)
-            .field("device", &self.device)
             .finish_non_exhaustive()
     }
 }
@@ -117,7 +101,7 @@ mod tests {
 
     #[test]
     fn play_of_an_unloaded_sample_is_refused() {
-        let (mut p, mut r) = Playback::unplugged(usize::MAX);
+        let (mut p, mut r) = Playback::new(usize::MAX);
         assert_eq!(
             p.play(SampleId(1)),
             Err(PlaybackError::NotLoaded(SampleId(1)))
@@ -129,7 +113,7 @@ mod tests {
 
     #[test]
     fn each_play_mints_a_new_voice() {
-        let (mut p, mut r) = Playback::unplugged(usize::MAX);
+        let (mut p, mut r) = Playback::new(usize::MAX);
         p.load(SampleId(1), tone()).unwrap();
         let a = p.play(SampleId(1)).unwrap();
         let b = p.play(SampleId(1)).unwrap();
@@ -143,7 +127,7 @@ mod tests {
 
     #[test]
     fn a_full_ring_refuses_the_command() {
-        let (mut p, _r) = Playback::unplugged(usize::MAX);
+        let (mut p, _r) = Playback::new(usize::MAX);
         p.load(SampleId(1), tone()).unwrap();
         for _ in 0..COMMAND_CAPACITY {
             p.play(SampleId(1)).unwrap();
@@ -154,7 +138,7 @@ mod tests {
 
     #[test]
     fn unload_keeps_a_playing_voice_alive() {
-        let (mut p, mut r) = Playback::unplugged(usize::MAX);
+        let (mut p, mut r) = Playback::new(usize::MAX);
         p.load(SampleId(1), tone()).unwrap();
         p.play(SampleId(1)).unwrap();
         let mut out = vec![0.0; 2];

@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::SAMPLE_RAM_BUDGET;
+use crate::device::{Device, DeviceError, Stream};
 use crate::playback::{Playback, PlaybackError, ResidentSet, VoiceId};
 use crate::project::{Project, ProjectError, SampleId};
 use crate::storage::{self, StorageError};
@@ -27,12 +28,18 @@ pub enum EngineError {
     Project(#[from] ProjectError),
     #[error(transparent)]
     Playback(#[from] PlaybackError),
+    #[error(transparent)]
+    Device(#[from] DeviceError),
 }
 
 /// The engine for one open project.
 pub struct Engine {
     project: Project,
     playback: Playback,
+    /// The running audio stream, which calls playback's renderer once per
+    /// period. Held so it keeps running; `None` when something else drives
+    /// the renderer, as tests do.
+    stream: Option<Stream>,
 }
 
 impl Engine {
@@ -45,14 +52,22 @@ impl Engine {
     /// the open fails rather than deciding which ones to leave out.
     pub fn open(dir: &Path) -> Result<Self, EngineError> {
         let storage = storage::open(dir)?;
-        let playback = Playback::start(SAMPLE_RAM_BUDGET)?;
-        Self::on(Project::new(storage), playback)
+        let (playback, mut renderer) = Playback::new(SAMPLE_RAM_BUDGET);
+        let stream = Device::default_output()?.start(move |out| renderer.render(out))?;
+        let mut engine = Self::on(Project::new(storage), playback)?;
+        engine.stream = Some(stream);
+        Ok(engine)
     }
 
     /// An engine on an already open project and playback, loading what the
-    /// project marks loaded.
+    /// project marks loaded. Whoever built the playback holds its renderer
+    /// and drives it.
     pub(crate) fn on(project: Project, playback: Playback) -> Result<Self, EngineError> {
-        let mut engine = Self { project, playback };
+        let mut engine = Self {
+            project,
+            playback,
+            stream: None,
+        };
         for id in engine.project.loaded_samples()? {
             engine.make_resident(id)?;
         }
@@ -173,7 +188,7 @@ mod tests {
     }
 
     fn with_budget(budget: usize) -> (Engine, Renderer) {
-        let (playback, renderer) = Playback::unplugged(budget);
+        let (playback, renderer) = Playback::new(budget);
         (Engine::on(memory_project(), playback).unwrap(), renderer)
     }
 
@@ -181,7 +196,7 @@ mod tests {
     /// `Engine::open` would build it on a machine without one.
     fn on_disk(dir: &Path, budget: usize) -> Engine {
         let project = Project::new(storage::open(dir).unwrap());
-        Engine::on(project, Playback::unplugged(budget).0).unwrap()
+        Engine::on(project, Playback::new(budget).0).unwrap()
     }
 
     /// Renders one period of `frames` frames and returns it.
@@ -355,7 +370,7 @@ mod tests {
         drop(e);
 
         let project = Project::new(storage::open(dir.path()).unwrap());
-        let result = Engine::on(project, Playback::unplugged(ramp(4).bytes() - 1).0);
+        let result = Engine::on(project, Playback::new(ramp(4).bytes() - 1).0);
         assert!(matches!(
             result,
             Err(EngineError::Playback(PlaybackError::OverBudget { .. }))
