@@ -68,8 +68,9 @@
 //! # Where to start
 //!
 //! [`Engine`] for what a caller does; `examples/first_print.rs` for the
-//! whole path on real files; `docs/roadmap.md` for the plan and the
-//! decisions behind it.
+//! whole path on real files and `examples/first_sound.rs` for the same
+//! through a speaker; `docs/roadmap.md` for the plan and the decisions
+//! behind it.
 
 pub mod audio;
 pub mod config;

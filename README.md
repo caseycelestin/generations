@@ -39,8 +39,9 @@ the hardware unit all sit on top of. It is responsible for:
 ## Status
 
 Early. The engine opens a project on disk, imports audio, prints one effect
-(reverse) as a new generation, and keeps the lineage durable across a
-power-down. Nothing plays yet. See [docs/roadmap.md](docs/roadmap.md) for
+(reverse) as a new generation, keeps the lineage durable across a
+power-down, and plays loaded samples through the default audio device.
+See [docs/roadmap.md](docs/roadmap.md) for
 the plan and the decisions behind it, and `cargo doc --open` for the
 architecture.
 
