@@ -30,6 +30,16 @@ pub struct Sample {
     pub id: SampleId,
     /// The sample one generation behind this one. `None` for a root.
     pub parent: Option<SampleId>,
+    /// Whether the engine keeps this sample's audio in RAM for playback.
+    ///
+    /// Playback reads only loaded audio, so this is the persisted intent
+    /// behind what is resident: the engine loads every loaded sample when
+    /// it opens the project. New samples start unloaded. Read it here;
+    /// change it with [`Engine::load`] and [`Engine::unload`].
+    ///
+    /// [`Engine::load`]: crate::engine::Engine::load
+    /// [`Engine::unload`]: crate::engine::Engine::unload
+    pub loaded: bool,
 }
 
 /// Reasons a project operation can fail.
@@ -84,6 +94,16 @@ impl Project {
             return Err(ProjectError::HasChildren(id));
         }
         Ok(self.storage.remove_sample(id)?)
+    }
+
+    /// Records whether the sample with this id is loaded.
+    ///
+    /// Crate-private because the flag is only half of loading: the engine
+    /// sets it and moves the audio, and a caller reaching the project
+    /// directly would leave the two disagreeing.
+    pub(crate) fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), ProjectError> {
+        self.sample(id)?;
+        Ok(self.storage.set_loaded(id, loaded)?)
     }
 
     /// Everything stored about the sample with this id, except its audio.
@@ -142,6 +162,19 @@ pub(crate) mod tests {
             Ok(())
         }
 
+        fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
+            if let Some((s, _)) = self
+                .0
+                .borrow_mut()
+                .samples
+                .iter_mut()
+                .find(|(s, _)| s.id == id)
+            {
+                s.loaded = loaded;
+            }
+            Ok(())
+        }
+
         fn add_sample(
             &mut self,
             parent: Option<SampleId>,
@@ -150,7 +183,14 @@ pub(crate) mod tests {
             let mut s = self.0.borrow_mut();
             let id = SampleId(s.next_id);
             s.next_id += 1;
-            s.samples.push((Sample { id, parent }, audio.clone()));
+            s.samples.push((
+                Sample {
+                    id,
+                    parent,
+                    loaded: false,
+                },
+                audio.clone(),
+            ));
             Ok(id)
         }
     }
@@ -215,10 +255,22 @@ pub(crate) mod tests {
             p.sample(child).unwrap(),
             Sample {
                 id: child,
-                parent: Some(root)
+                parent: Some(root),
+                loaded: false,
             }
         );
         assert_eq!(p.audio(child).unwrap(), tone());
+    }
+
+    #[test]
+    fn set_loaded_on_an_unknown_sample_is_refused() {
+        let (mut p, state) = project();
+        let bogus = SampleId(7);
+        assert!(matches!(
+            p.set_loaded(bogus, true),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert!(state.borrow().samples.is_empty());
     }
 
     #[test]

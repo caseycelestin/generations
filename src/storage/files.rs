@@ -71,6 +71,10 @@ struct Manifest {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     parent: Option<u32>,
+    /// Absent in manifests written before the field existed, which means
+    /// not loaded, so the format version does not move.
+    #[serde(default)]
+    loaded: bool,
 }
 
 impl Entry {
@@ -78,6 +82,7 @@ impl Entry {
         Sample {
             id,
             parent: self.parent.map(SampleId),
+            loaded: self.loaded,
         }
     }
 }
@@ -306,6 +311,18 @@ impl Storage for FileStorage {
         }
     }
 
+    fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
+        let mut manifest = self.read_manifest()?;
+        let Some(entry) = manifest.samples.get_mut(&id.0) else {
+            return Ok(());
+        };
+        if entry.loaded == loaded {
+            return Ok(());
+        }
+        entry.loaded = loaded;
+        self.write_manifest(&manifest)
+    }
+
     fn add_sample(
         &mut self,
         parent: Option<SampleId>,
@@ -319,6 +336,7 @@ impl Storage for FileStorage {
             id.0,
             Entry {
                 parent: parent.map(|p| p.0),
+                loaded: false,
             },
         );
         self.write_manifest(&manifest)?;
@@ -512,6 +530,48 @@ mod tests {
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
         assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_new_sample_starts_unloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let id = s.add_sample(None, &ramp(1, 1)).unwrap();
+        assert!(!s.sample(id).unwrap().unwrap().loaded);
+    }
+
+    #[test]
+    fn set_loaded_survives_a_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let a = s.add_sample(None, &ramp(1, 1)).unwrap();
+        let b = s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.set_loaded(a, true).unwrap();
+        s.set_loaded(b, true).unwrap();
+        s.set_loaded(b, false).unwrap();
+        // Not stored: not an error, nothing changes.
+        s.set_loaded(SampleId(99), true).unwrap();
+        drop(s);
+
+        let s = reopen(dir.path()).unwrap();
+        assert!(s.sample(a).unwrap().unwrap().loaded);
+        assert!(!s.sample(b).unwrap().unwrap().loaded);
+        assert!(s.sample(SampleId(99)).unwrap().is_none());
+    }
+
+    #[test]
+    fn loaded_is_read_from_the_manifest_and_absent_means_unloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.add_sample(None, &ramp(1, 1)).unwrap();
+        let manifest = r#"{"version":1,"next_id":2,"samples":{"0":{"parent":null,"loaded":true},"1":{"parent":null}}}"#;
+        fs::write(dir.path().join(MANIFEST), manifest).unwrap();
+        drop(s);
+
+        let s = reopen(dir.path()).unwrap();
+        assert!(s.sample(SampleId(0)).unwrap().unwrap().loaded);
+        assert!(!s.sample(SampleId(1)).unwrap().unwrap().loaded);
     }
 
     #[test]

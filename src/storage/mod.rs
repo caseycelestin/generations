@@ -63,6 +63,11 @@ pub trait Storage {
     /// is not stored is not an error. The counter does not move back.
     fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError>;
 
+    /// Records whether the sample with this id is loaded. Setting it on an
+    /// id that is not stored is not an error; whether it exists is the
+    /// project's rule.
+    fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError>;
+
     /// Stores a sample with its audio and returns its new id.
     ///
     /// Ids come from a counter that only goes up, so an id is never
