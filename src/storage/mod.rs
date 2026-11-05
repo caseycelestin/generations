@@ -59,6 +59,9 @@ pub trait Storage {
     /// Whether any stored sample has this one as its parent.
     fn has_children(&self, id: SampleId) -> Result<bool, StorageError>;
 
+    /// The ids of every stored sample that is loaded, in id order.
+    fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError>;
+
     /// Removes the sample with this id and its audio. Removing an id that
     /// is not stored is not an error. The counter does not move back.
     fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError>;
