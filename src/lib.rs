@@ -81,7 +81,7 @@ pub mod storage;
 pub use audio::{AudioBuffer, AudioError};
 pub use device::{Device, DeviceError, Stream};
 pub use engine::{Engine, EngineError};
-pub use playback::{PlaybackError, ResidentSet};
+pub use playback::PlaybackError;
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use storage::files::FileStorage;
 pub use storage::{Storage, StorageError};

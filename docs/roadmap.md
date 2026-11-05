@@ -182,12 +182,14 @@ are here even though most of the code is not.
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
 - **The budget is enforced where RAM is managed.** `SAMPLE_RAM_BUDGET` in
-  `config.rs` bounds resident audio. The `ResidentSet` in `playback.rs`
+  `config.rs` bounds resident audio. The resident set inside `playback`
   checks it, because it is the one thing that knows how many bytes it
   holds; the project never learns about RAM. `Engine::load` puts the audio
   in RAM first and sets the flag only if that succeeded, so the flag is
-  never true for a sample that is not resident. The engine lends the set
-  read-only through `Engine::resident()`, as it lends the project.
+  never true for a sample that is not resident. The set is private to the
+  crate: "is this loaded" is answered by the sample's flag, and "how much
+  RAM is in use" gets a number on the engine when a panel asks for it,
+  not a lent struct.
 - **Resident audio is ordinary heap allocation; the OS guarantees the
   budget.** Each buffer owns its own block, wrapped in an `Arc` so a voice
   can hold it while it plays. There is no preallocated arena. Linux

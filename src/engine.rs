@@ -15,7 +15,7 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::config::SAMPLE_RAM_BUDGET;
 use crate::device::{Device, DeviceError, Stream};
-use crate::playback::{Playback, PlaybackError, ResidentSet, VoiceId};
+use crate::playback::{Playback, PlaybackError, VoiceId};
 use crate::project::{Project, ProjectError, SampleId};
 use crate::storage::{self, StorageError};
 
@@ -77,11 +77,6 @@ impl Engine {
     /// The project this engine operates on.
     pub fn project(&self) -> &Project {
         &self.project
-    }
-
-    /// The audio this engine holds in RAM for playback.
-    pub fn resident(&self) -> &ResidentSet {
-        self.playback.resident()
     }
 
     /// Adds audio to the project as a new root.
@@ -219,7 +214,7 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.import(&ramp(4)).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
-        assert!(!e.resident().contains(id));
+        assert!(!e.playback.resident().contains(id));
     }
 
     #[test]
@@ -229,12 +224,15 @@ mod tests {
 
         e.load(id).unwrap();
         assert!(e.project().sample(id).unwrap().loaded);
-        assert_eq!(e.resident().get(id).unwrap().samples(), &[0, 1, 2, 3]);
-        assert_eq!(e.resident().bytes(), ramp(4).bytes());
+        assert_eq!(
+            e.playback.resident().get(id).unwrap().samples(),
+            &[0, 1, 2, 3]
+        );
+        assert_eq!(e.playback.resident().bytes(), ramp(4).bytes());
 
         // Loading again changes nothing.
         e.load(id).unwrap();
-        assert_eq!(e.resident().bytes(), ramp(4).bytes());
+        assert_eq!(e.playback.resident().bytes(), ramp(4).bytes());
     }
 
     #[test]
@@ -245,8 +243,8 @@ mod tests {
 
         e.unload(id).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
-        assert!(!e.resident().contains(id));
-        assert_eq!(e.resident().bytes(), 0);
+        assert!(!e.playback.resident().contains(id));
+        assert_eq!(e.playback.resident().bytes(), 0);
 
         // Unloading again changes nothing.
         e.unload(id).unwrap();
@@ -265,7 +263,7 @@ mod tests {
             Err(EngineError::Playback(PlaybackError::OverBudget { .. }))
         ));
         assert!(!e.project().sample(b).unwrap().loaded);
-        assert!(!e.resident().contains(b));
+        assert!(!e.playback.resident().contains(b));
         assert!(e.project().sample(a).unwrap().loaded);
     }
 
@@ -282,7 +280,7 @@ mod tests {
             e.unload(bogus),
             Err(EngineError::Project(ProjectError::UnknownSample(id))) if id == bogus
         ));
-        assert!(!e.resident().contains(bogus));
+        assert!(!e.playback.resident().contains(bogus));
     }
 
     #[test]
@@ -356,9 +354,9 @@ mod tests {
         drop(e);
 
         let e = on_disk(dir.path(), usize::MAX);
-        assert!(e.resident().contains(kept));
-        assert!(!e.resident().contains(dropped));
-        assert_eq!(e.resident().bytes(), ramp(4).bytes());
+        assert!(e.playback.resident().contains(kept));
+        assert!(!e.playback.resident().contains(dropped));
+        assert_eq!(e.playback.resident().bytes(), ramp(4).bytes());
     }
 
     #[test]

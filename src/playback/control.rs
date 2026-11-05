@@ -70,8 +70,9 @@ impl Playback {
         self.send(Command::StopAll)
     }
 
-    /// The audio resident in RAM.
-    pub fn resident(&self) -> &ResidentSet {
+    /// The audio resident in RAM. For the engine, which checks residency
+    /// before reading from disk, and for tests.
+    pub(crate) fn resident(&self) -> &ResidentSet {
         &self.resident
     }
 
