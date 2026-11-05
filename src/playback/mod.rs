@@ -11,14 +11,18 @@
 //! control thread                     real-time thread
 //! ResidentSet   audio in RAM         Voice    one sample playing
 //!               under a budget       Mixer    the voices summed into a period
+//!                         ── Command ring ──▶
 //! ```
 //!
-//! Audio crosses the line as `Arc<AudioBuffer>`: the resident set holds
-//! one reference, a playing voice holds a clone, and freeing happens only
-//! where the control thread lets go of the last one.
+//! Commands cross the line over a lock-free ring, one way. Audio crosses
+//! as `Arc<AudioBuffer>`: the resident set holds one reference, a playing
+//! voice holds a clone, and freeing happens only where the control thread
+//! lets go of the last one.
 
+pub mod mixer;
 pub mod resident;
 pub mod voice;
 
+pub use mixer::{Command, Mixer, VoiceId};
 pub use resident::{PlaybackError, ResidentSet};
 pub use voice::Voice;
