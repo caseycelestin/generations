@@ -6,6 +6,7 @@
 //! functions here are the only code that knows what `Pcm` actually is.
 
 use std::fmt;
+use std::ops::Range;
 
 use rand::rngs::SmallRng;
 use rand::{RngExt, SeedableRng};
@@ -69,6 +70,18 @@ impl AudioBuffer {
     /// Converts to normalised `f32` samples, still interleaved.
     pub fn to_f32(&self) -> Vec<f32> {
         self.data.iter().map(|&s| f32::from(s) / SCALE).collect()
+    }
+
+    /// The samples of frames `frames`, interleaved, as normalised `f32`,
+    /// without allocating. This is how playback reads: a period's worth at
+    /// a time, converting as it goes.
+    ///
+    /// Panics if the range runs past the end.
+    pub fn frames_f32(&self, frames: Range<usize>) -> impl Iterator<Item = f32> + '_ {
+        let c = usize::from(self.channels);
+        self.data[frames.start * c..frames.end * c]
+            .iter()
+            .map(|&s| f32::from(s) / SCALE)
     }
 
     /// Number of interleaved channels.
@@ -135,6 +148,15 @@ impl Dither {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_f32_reads_a_range_of_frames() {
+        let b = AudioBuffer::new(2, vec![0, 16_384, -16_384, 32_767, 0, 0]).unwrap();
+        let mid: Vec<f32> = b.frames_f32(1..2).collect();
+        assert_eq!(mid, vec![-0.5, 32_767.0 / 32_768.0]);
+        assert_eq!(b.frames_f32(0..3).count(), 6);
+        assert_eq!(b.frames_f32(3..3).count(), 0);
+    }
 
     #[test]
     fn bytes_is_samples_times_pcm_width() {

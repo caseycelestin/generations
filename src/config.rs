@@ -16,6 +16,10 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// The largest channel count a buffer may have.
 pub const MAX_CHANNELS: u16 = 2;
 
+/// Channels in the output the mixer renders: always stereo. A mono sample
+/// is heard on both.
+pub const OUTPUT_CHANNELS: usize = 2;
+
 /// Upper bound on sample audio resident in RAM for playback, in bytes.
 ///
 /// Playback reads only resident audio, so everything a pad can trigger
