@@ -18,12 +18,16 @@
 //! Commands cross over a lock-free ring, one way. Audio crosses as
 //! `Arc<AudioBuffer>`: the resident set holds one reference, a playing
 //! voice holds a clone, and freeing happens only where the control half
-//! lets go of the last one.
+//! lets go of the last one. The [`Device`] is what makes the rendering
+//! half a second thread: it owns the renderer and calls it from the audio
+//! callback.
 
+pub mod device;
 pub mod renderer;
 pub mod resident;
 pub mod voice;
 
+pub use device::Device;
 pub use renderer::{Command, Renderer, VoiceId};
 pub use resident::{PlaybackError, ResidentSet};
 pub use voice::Voice;
