@@ -43,13 +43,8 @@ impl Engine {
     /// the budget (it shrank, or the project moved to a smaller device)
     /// the open fails rather than deciding which ones to leave out.
     pub fn open(dir: &Path) -> Result<Self, EngineError> {
-        Self::open_with_budget(dir, SAMPLE_RAM_BUDGET)
-    }
-
-    /// [`Engine::open`] with a budget other than the configured one.
-    pub(crate) fn open_with_budget(dir: &Path, budget: usize) -> Result<Self, EngineError> {
         let storage = storage::open(dir)?;
-        Self::on(Project::new(storage), ResidentSet::new(budget))
+        Self::on(Project::new(storage), ResidentSet::new(SAMPLE_RAM_BUDGET))
     }
 
     /// An engine on an already open project, loading what it marks loaded.
@@ -251,7 +246,8 @@ mod tests {
         e.load(id).unwrap();
         drop(e);
 
-        let result = Engine::open_with_budget(dir.path(), ramp(4).bytes() - 1);
+        let project = Project::new(storage::open(dir.path()).unwrap());
+        let result = Engine::on(project, ResidentSet::new(ramp(4).bytes() - 1));
         assert!(matches!(
             result,
             Err(EngineError::Playback(PlaybackError::OverBudget { .. }))
