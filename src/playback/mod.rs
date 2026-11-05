@@ -9,8 +9,8 @@
 //!
 //! ```text
 //! control thread                     real-time thread
-//! ResidentSet   audio in RAM         Voice    one sample playing
-//!               under a budget       Mixer    the voices summed into a period
+//! ResidentSet   audio in RAM         Voice       one sample playing
+//!               under a budget       Controller  commands in, a period out
 //!                         ── Command ring ──▶
 //! ```
 //!
@@ -19,10 +19,10 @@
 //! voice holds a clone, and freeing happens only where the control thread
 //! lets go of the last one.
 
-pub mod mixer;
+pub mod controller;
 pub mod resident;
 pub mod voice;
 
-pub use mixer::{Command, Mixer, VoiceId};
+pub use controller::{Command, Controller, VoiceId};
 pub use resident::{PlaybackError, ResidentSet};
 pub use voice::Voice;

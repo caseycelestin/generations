@@ -11,19 +11,30 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::config::OUTPUT_CHANNELS;
+use crate::playback::controller::VoiceId;
 
 /// A sample playing from the first frame to the last.
 #[derive(Debug)]
 pub struct Voice {
+    id: VoiceId,
     audio: Arc<AudioBuffer>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    /// A voice at the start of `audio`.
-    pub fn new(audio: Arc<AudioBuffer>) -> Self {
-        Self { audio, position: 0 }
+    /// Voice `id` at the start of `audio`.
+    pub fn new(id: VoiceId, audio: Arc<AudioBuffer>) -> Self {
+        Self {
+            id,
+            audio,
+            position: 0,
+        }
+    }
+
+    /// Which started sound this is.
+    pub fn id(&self) -> VoiceId {
+        self.id
     }
 
     /// Adds this voice's next frames into `out`, an interleaved stereo
@@ -76,7 +87,10 @@ mod tests {
     const HALF: Pcm = 16_384;
 
     fn voice(channels: u16, data: Vec<Pcm>) -> Voice {
-        Voice::new(Arc::new(AudioBuffer::new(channels, data).unwrap()))
+        Voice::new(
+            VoiceId(0),
+            Arc::new(AudioBuffer::new(channels, data).unwrap()),
+        )
     }
 
     #[test]
