@@ -1,14 +1,16 @@
-//! The real-time side: commands in, a period of audio out.
+//! Commands in, a period of audio out.
 //!
-//! The [`Renderer`] lives on the audio thread. Each period the device
-//! hands it a stereo `f32` slice; the renderer applies the commands that
-//! have arrived, which start and stop voices, then zeroes the slice, lets
-//! every playing voice add itself, clips the sum once, and returns.
-//! Nothing in here may allocate, lock, block or fail.
+//! The [`Renderer`] is real-time safe, not real-time only. Each call to
+//! `render` is given a stereo `f32` slice; the renderer applies the
+//! commands that have arrived, which start and stop voices, then zeroes
+//! the slice, lets every playing voice add itself, clips the sum once, and
+//! returns. Nothing in here allocates, locks, blocks, fails or reads a
+//! clock, so an audio device can call it from its callback with a hard
+//! deadline, and a bounce can call it in a loop as fast as the CPU goes
+//! and get the same frames.
 //!
-//! Commands come over a lock-free ring from the control thread. The
-//! renderer owns the consuming end; the engine owns the producing end
-//! and is the only other code that knows the renderer exists.
+//! Commands come over a lock-free ring. The renderer owns the consuming
+//! end; whoever drives it owns the producing end. Live, that is the engine.
 //!
 use std::sync::Arc;
 
@@ -40,7 +42,7 @@ pub enum Command {
     StopAll,
 }
 
-/// The real-time side of playback: what the audio thread runs.
+/// Turns commands and resident audio into periods of output.
 #[derive(Debug)]
 pub struct Renderer {
     /// The consuming end of the command ring.

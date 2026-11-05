@@ -38,7 +38,7 @@ pub enum PlaybackError {
 ///
 /// Buffers are shared through [`Arc`] so a voice can hold one while it
 /// plays. Only the control thread inserts and removes; the set is not for
-/// the real-time thread, which only ever reads the clones it was handed.
+/// the renderer, which only ever reads the clones it was handed.
 #[derive(Debug)]
 pub struct ResidentSet {
     budget: usize,

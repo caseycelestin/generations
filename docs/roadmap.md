@@ -218,11 +218,12 @@ are here even though most of the code is not.
 - **The real-time side is two types: `Voice` and `Renderer`.** A voice is
   how one sample is heard: today the whole buffer from first frame to
   last at its own speed. Start and end points, looping, gain and fades
-  are fields and lines on the voice when they come. The renderer is what
-  the audio thread runs: it owns the playing voices and the consuming end
-  of the command ring, and once per period it applies the commands that
-  arrived, zeroes the slice the device hands it, lets every voice add
-  itself, drops the voices that finished, and clips the sum once. There
+  are fields and lines on the voice when they come. The renderer is
+  real-time safe, not real-time only: it owns the playing voices and the
+  consuming end of the command ring, and each call applies the commands
+  that arrived, zeroes the slice it is given, lets every voice add itself,
+  drops the voices that finished, and clips the sum once. A device drives
+  it live from its callback; a bounce drives it offline in a loop. There
   is no separate mixer: a list of voices with a sum is a method, not a
   concept. The pattern is JUCE's `Synthesiser` and Kira's `Renderer`; the
   name is Kira's, and "controller" was rejected because the engine gives

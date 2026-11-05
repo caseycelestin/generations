@@ -2,10 +2,10 @@
 //!
 //! A [`Voice`] is how a sample is heard: today, the whole buffer from the
 //! first frame to the last at its own speed. Start and end points, looping,
-//! gain and fades are all fields and lines here, when they come; the mixer
-//! that sums voices never needs to know about them.
+//! gain and fades are all fields and lines here, when they come; the
+//! renderer that sums voices never needs to know about them.
 //!
-//! Runs on the real-time thread. Nothing here allocates, locks or fails.
+//! Real-time safe: nothing here allocates, locks or fails.
 
 use std::sync::Arc;
 

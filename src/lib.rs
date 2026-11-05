@@ -14,7 +14,7 @@
 //!   │
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
 //!   │
-//!   ├─ playback  audio in RAM, and the audio thread that turns it into sound
+//!   ├─ playback  audio in RAM, and the renderer that turns it into sound
 //!   │
 //!   └─ project   the rules: what a project holds and what is allowed
 //!        │
@@ -27,10 +27,11 @@
 //!   add the result to the project as the source's child. A load is: read
 //!   the audio from the project, put it in playback's resident set, mark
 //!   the sample loaded.
-//! - **[`playback`]** is two threads with one rule. On the control thread,
-//!   the resident set holds audio in RAM under a budget. On the audio
-//!   thread, the renderer turns commands and resident audio into periods of
-//!   output and must never wait. Nothing in it knows what a project is.
+//! - **[`playback`]** is two halves with one rule. The resident set holds
+//!   audio in RAM under a budget. The renderer turns commands and resident
+//!   audio into periods of output and is real-time safe, so a device can
+//!   drive it live and a bounce can drive it offline. Nothing in it knows
+//!   what a project is.
 //! - **[`project`]** owns a [`Storage`] and holds nothing else. There is no
 //!   in-memory copy of a project: every read and write goes to storage, so
 //!   changing the project is changing the disk and there is no save step.
