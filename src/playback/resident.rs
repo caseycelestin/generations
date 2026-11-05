@@ -11,28 +11,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use thiserror::Error;
-
 use crate::audio::AudioBuffer;
+use crate::playback::PlaybackError;
 use crate::project::SampleId;
-
-/// Reasons playback cannot do what was asked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum PlaybackError {
-    /// Loading this audio would put resident audio over the budget.
-    #[error(
-        "loading {requested} bytes would put resident audio at {} of a {budget} byte budget",
-        resident + requested
-    )]
-    OverBudget {
-        /// Bytes the refused audio would have cost.
-        requested: usize,
-        /// Bytes resident at the time.
-        resident: usize,
-        /// The budget this set was built with.
-        budget: usize,
-    },
-}
 
 /// Audio held in RAM for playback, under a byte budget.
 ///

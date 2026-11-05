@@ -27,7 +27,30 @@ pub mod renderer;
 pub mod resident;
 pub mod voice;
 
-pub use device::Device;
+use thiserror::Error;
+
+pub use device::{Device, DeviceError};
 pub use renderer::{Command, Renderer, VoiceId};
-pub use resident::{PlaybackError, ResidentSet};
+pub use resident::ResidentSet;
 pub use voice::Voice;
+
+/// Reasons playback cannot do what was asked.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PlaybackError {
+    /// Loading this audio would put resident audio over the budget.
+    #[error(
+        "loading {requested} bytes would put resident audio at {} of a {budget} byte budget",
+        resident + requested
+    )]
+    OverBudget {
+        /// Bytes the refused audio would have cost.
+        requested: usize,
+        /// Bytes resident at the time.
+        resident: usize,
+        /// The budget this set was built with.
+        budget: usize,
+    },
+    /// The audio device could not be opened or started.
+    #[error(transparent)]
+    Device(#[from] DeviceError),
+}
