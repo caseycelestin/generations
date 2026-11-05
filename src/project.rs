@@ -30,6 +30,13 @@ pub struct Sample {
     pub id: SampleId,
     /// The sample one generation behind this one. `None` for a root.
     pub parent: Option<SampleId>,
+    /// Whether the engine keeps this sample's audio in RAM for playback.
+    ///
+    /// Playback reads only loaded audio, so this is the persisted intent
+    /// behind what is resident: the engine loads every loaded sample when
+    /// it opens the project. New samples start unloaded. Setting it is a
+    /// separate operation that does not exist yet.
+    pub loaded: bool,
 }
 
 /// Reasons a project operation can fail.
@@ -150,7 +157,14 @@ pub(crate) mod tests {
             let mut s = self.0.borrow_mut();
             let id = SampleId(s.next_id);
             s.next_id += 1;
-            s.samples.push((Sample { id, parent }, audio.clone()));
+            s.samples.push((
+                Sample {
+                    id,
+                    parent,
+                    loaded: false,
+                },
+                audio.clone(),
+            ));
             Ok(id)
         }
     }
@@ -215,7 +229,8 @@ pub(crate) mod tests {
             p.sample(child).unwrap(),
             Sample {
                 id: child,
-                parent: Some(root)
+                parent: Some(root),
+                loaded: false,
             }
         );
         assert_eq!(p.audio(child).unwrap(), tone());

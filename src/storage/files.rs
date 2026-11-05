@@ -71,6 +71,10 @@ struct Manifest {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     parent: Option<u32>,
+    /// Absent in manifests written before the field existed, which means
+    /// not loaded, so the format version does not move.
+    #[serde(default)]
+    loaded: bool,
 }
 
 impl Entry {
@@ -78,6 +82,7 @@ impl Entry {
         Sample {
             id,
             parent: self.parent.map(SampleId),
+            loaded: self.loaded,
         }
     }
 }
@@ -319,6 +324,7 @@ impl Storage for FileStorage {
             id.0,
             Entry {
                 parent: parent.map(|p| p.0),
+                loaded: false,
             },
         );
         self.write_manifest(&manifest)?;
@@ -512,6 +518,29 @@ mod tests {
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
         assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_new_sample_starts_unloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let id = s.add_sample(None, &ramp(1, 1)).unwrap();
+        assert!(!s.sample(id).unwrap().unwrap().loaded);
+    }
+
+    #[test]
+    fn loaded_is_read_from_the_manifest_and_absent_means_unloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.add_sample(None, &ramp(1, 1)).unwrap();
+        let manifest = r#"{"version":1,"next_id":2,"samples":{"0":{"parent":null,"loaded":true},"1":{"parent":null}}}"#;
+        fs::write(dir.path().join(MANIFEST), manifest).unwrap();
+        drop(s);
+
+        let s = reopen(dir.path()).unwrap();
+        assert!(s.sample(SampleId(0)).unwrap().unwrap().loaded);
+        assert!(!s.sample(SampleId(1)).unwrap().unwrap().loaded);
     }
 
     #[test]
