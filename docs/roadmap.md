@@ -7,10 +7,10 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | # | Step | Status |
 |---|------|--------|
 | 1 | Core data model | done, then rebuilt in step 3 |
-| 2 | First print: one real effect (reverse) and an engine that applies it | done |
+| 2 | First print: one real effect (reverse) and an engine that applies it | done, then removed in step 5 |
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
-| 5 | RAM ledger: one figure for everything the engine holds in memory | |
+| 5 | RAM ledger: one figure for everything the engine holds in memory | done |
 | 6 | Recording: audio input as a new root | |
 | 7 | Sequencing and mixing: the real-time side | |
 | 8 | Arrangement and more effects | |
@@ -64,9 +64,11 @@ out; the short version of the argument is here so it is not had twice.
   only goes up, and never reuses an id, even after a remove. The project
   never touches a number it does not own.
 - **Two reads per sample.** `sample(id)` returns everything stored about a
-  sample except its audio, and grows as fields are added. `audio(id)`
-  returns the bytes. They are separate because structure is small and read
-  often, audio is large and read when a print or playback needs it.
+  sample except its audio, and grows as fields are added. The audio read
+  is the engine's alone, crate-private and paid for by a reservation
+  taken from the record first. They are separate because structure is
+  small and read often, audio is large and read only when a load needs
+  it.
 - **`add_sample` takes a buffer.** Audio in flight is not a copy of the
   project. Recording, import after conversion and print output all produce
   a transient buffer, and storage is where it lands. The thing never to add
@@ -154,10 +156,16 @@ out; the short version of the argument is here so it is not had twice.
   PCM width. The downward conversion rounds and applies TPDF dither. Effects
   that only reorder frames (reverse) are exempt: they copy PCM directly, so
   they are exact and reversing twice really does give back the root's bytes.
-- **An effect is a function**, `&AudioBuffer -> AudioBuffer`, and the engine
-  takes one as a plain argument. Effects-as-data (an enum with parameters)
-  is what the replayable recipe idea below needs, and it will be introduced
-  with that work rather than ahead of it.
+- **An effect was a function**, `&AudioBuffer -> AudioBuffer`, and the
+  engine took one as a plain argument to `print`. Removed in step 5 along
+  with `print` and the one effect, reverse: by then the decision that
+  effects live on the render side (under Deferred ideas) had been made,
+  so the offline form was dead code that would not be written that way
+  again, and it was the one allocation the ledger could only estimate.
+  The generation model it exercised, a child sample with a parent, stays
+  in the project and is tested there. Effects-as-data (an enum with
+  parameters) is what the replayable recipe idea needs, and arrives with
+  that work.
 
 ### Import
 
@@ -443,10 +451,23 @@ thing the engine holds in RAM that the resident set cannot serve.
   figure is inside the ledger's reserve. A reservation is a value held
   next to the buffer it paid for and gives the bytes back when it is
   dropped, so release is automatic and cannot be forgotten or counted
-  twice. Call sites are many but identical: ask once, hold the ticket,
-  drop it. None of them knows the figure or what else is in RAM. A single
-  budget checked by arithmetic at several sites was rejected as the thing
-  that would get messy.
+  twice. Call sites are many but identical: ask once, hold the
+  reservation, drop it. None of them knows the figure or what else is in
+  RAM. A single budget checked by arithmetic at several sites was
+  rejected as the thing that would get messy.
+- **Whatever allocates in proportion to audio length takes a reservation.**
+  Decode, convert and the storage read each take a `&Reservation` and
+  refuse, before allocating, one that does not cover what they are about
+  to allocate. So asking first is not a rule a call site can forget: a
+  call without a reservation does not compile, and the size check sits
+  in the one function that knows the real size, not in the engine after
+  the fact. The allocators only borrow the reservation; the engine keeps
+  it and decides when the bytes go back. They never learn the figure.
+  Effects are exempt because they are placeholders for the render side,
+  and so is everything that does not scale with audio: the manifest, id
+  lists, error strings, a decoder's read buffer, the resampler's
+  chunk-sized state. That is the fixed overhead the deployment sets the
+  figure below.
 - **The reservation comes before the allocation, so the size is known
   first.** A load that read the audio and then asked would hold memory
   the ledger never approved, for exactly the moment the budget is meant
@@ -454,13 +475,12 @@ thing the engine holds in RAM that the resident set cannot serve.
   count, the engine reserves from those, and only then reads. The file
   backend takes them from the WAV header rather than repeating them in
   the manifest, so there is one record of the shape and nothing to fall
-  out of step; the read is refused as corrupt if the audio comes back a
-  different size than the header said. Import and print will have their
-  sizes in hand before they allocate (the file header, the source sample)
-  and are to reserve the same way; they do not yet, and step 5 stays open
-  until they do. Asking whether a sample exists stays a manifest-only
-  question, so a sample whose WAV has gone bad can still be unloaded and
-  removed.
+  out of step; the storage read refuses a reservation that does not
+  cover what the header says before it reads. Import has its sizes in hand
+  before it allocates (the file header, then the decoded audio) and
+  reserves the same way. Asking whether a sample exists stays a
+  manifest-only question, so a sample whose WAV has gone bad can still be
+  unloaded and removed.
 - **The resident set dissolved into a map on the engine.** Once the
   ledger took the counting, the set was a `HashMap` behind four one-line
   methods, one of which repeated a check the engine already made. It is
@@ -485,13 +505,26 @@ thing the engine holds in RAM that the resident set cannot serve.
   predictable limit matters as a product feature, it is the caller
   stopping the take at N seconds, or a product constant chosen once like
   the voice count. It is not a second number on `open`.
-- **Prints reserve their cost up front.** An effect is a plain function
-  that allocates its own f32 working copies, and the ledger cannot see
-  inside it. The engine reserves the print's known cost before calling
-  the effect, input and output in f32 plus the i16 result, and the
-  effect's allocations land inside that estimate. It is accurate for every
-  effect that exists and becomes exact when effects move into the render
-  side and the engine owns their buffers.
+- **A print reserved its cost up front, as an estimate.** An effect was a
+  plain function that allocated its own f32 working copies, which the
+  ledger could not see, so the engine reserved input and output as PCM
+  and both again in f32 before calling it. That was the one place the
+  figure rested on an estimate rather than a check inside the allocator,
+  and one reason the offline print went. When effects come back on the
+  render side they are built on the control side and reserve exactly, as
+  the next bullet says.
+- **An import holds two reservations, each taken from the thing in hand.** The
+  decoder reads the file's header and says how large its samples will be;
+  the engine reserves that, then decodes. The converter looks at the
+  decoded audio and says what it will allocate on the path it is about to
+  take (the exact path only the result; the same-rate path an f32 copy
+  too; resampling an f32 copy, the f32 output and the result); the engine
+  reserves that, then converts. The first reservation drops with the
+  decoded samples, the second when the import returns. Each side states
+  its own cost from its own input and checks the reservation it is handed
+  against it, so the engine never learns how a decoder or converter
+  works, and the header is read twice rather than carrying a half-open
+  decoder between two calls.
 - **Live effects will reserve at instantiation, on the control side.** A
   delay line or a reverb owns fixed buffers for its whole life, and the
   render path may not allocate, so they are built when the effect is
@@ -501,10 +534,11 @@ thing the engine holds in RAM that the resident set cannot serve.
   for samples, which is true on the hardware and should be true in the
   number.
 - **The number is only true if every large audio allocation asks first.**
-  One uncounted buffer and the figure is a lie again. The ledger is the
-  only way the crate gets a big buffer, not an optional thing a site can
-  skip, and that is the thing to check in review of every later step.
-- **What a reservation is for is a label, not a mechanism.** A ticket can
+  One uncounted buffer and the figure is a lie again. The reservation
+  parameter makes that structural for the allocators that exist; the
+  thing to check in review of every later step is that a new one takes
+  it too.
+- **What a reservation is for is a label, not a mechanism.** A reservation can
   carry a sample id, a take, an effect, so a panel can show RAM in use by
   kind. Nothing enforces anything per kind, so the label arrives with the
   panel that reads it. Sub-budgets, eviction, priorities and a custom
@@ -518,6 +552,17 @@ thing the engine holds in RAM that the resident set cannot serve.
 
 - **The public surface is kept minimal.** Convenience methods are added
   when a caller exists, not before.
+- **Audio never leaves the engine.** There is no method that returns a
+  sample's buffer. A copy in a caller's hands would be memory the ledger
+  does not count, and nothing outside needs it: playback hears loaded
+  audio through the renderer, a print will change audio inside the engine,
+  export will stream from storage to a file, and a display asks
+  questions with small answers. A waveform is the one that looks like it
+  needs the samples and does not: given a frame range and a column count
+  the engine returns one min and max per column, or the sample values
+  when the range holds fewer frames than columns, so the answer is sized
+  by the screen and never by the audio. That method arrives with the
+  panel that calls it.
 - **Nothing is settled by having been written.** The step 1 model was
   removed in step 3 when it stopped fitting. New steps are designed from
   the decision, then existing code is changed to fit, not the other way
@@ -541,12 +586,12 @@ changes to it.
 
 ## Deferred ideas
 
-- Effects move into the render side. An effect runs live on a voice or the bus,
-  heard through the renderer, and a print becomes the committed render of
+- Effects live on the render side. An effect runs live on a voice or the bus,
+  heard through the renderer, and a print is the committed render of
   what was heard: the same effect code with the same parameters, driven
-  offline, stored as a new generation. Today's `print`, an offline function
-  over a buffer, is the stand-in until then; the operation it performs,
-  commit a new generation, stays the centre of the engine.
+  offline, stored as a new generation. The step 2 `print`, an offline
+  function over a buffer, stood in for this until step 5 removed it; the
+  operation, commit a new generation, stays the centre of the engine.
 - A replayable recipe on prints, so a chain applied to one sample can be
   applied to others as a preset. Needs effects-as-data first. Not every
   print is replayable, so a label-only form must remain.
@@ -562,12 +607,23 @@ changes to it.
   rather than read a clock.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
-- Unloading a sample while a voice plays it leaves the voice as the last
-  holder of the audio, so the free happens on the audio thread. Fix:
-  unload keeps the removed `Arc`, and the engine keeps a retiring
-  list it sweeps on the control side for entries whose count has dropped
-  to one. Not an audible problem today; a rule to keep before the device
-  is the target.
+- **TODO: unload stops every voice playing the sample.** Decided
+  2026-11-06. Today a voice still playing an unloaded sample keeps its
+  `Arc` and plays to the end, so sound comes from memory the engine says
+  it no longer holds; unload should mean gone from RAM. The fix is a
+  third command keyed the third way: `Stop` is by voice, `StopAll` by
+  nothing, `Evict` by buffer address. The engine sends the address of the
+  buffer it is removing, and the renderer drops every voice whose `Arc`
+  points at it, one pass over at most `VOICE_COUNT` voices. The render
+  side still never learns a sample id. `unload` sends first and fails
+  with `CommandsFull` if the ring is full, like `play` and `stop`. Takes
+  effect on the renderer's next period, and cuts hard, as `stop` does.
+  Own PR after step 5 lands.
+- The free of an unloaded buffer still happens on the audio thread, since
+  the renderer's voice is the last holder when it drops. Fix: unload keeps
+  the removed `Arc`, and the engine keeps a retiring list it sweeps on
+  the control side for entries whose count has dropped to one. Not an
+  audible problem today; a rule to keep before the device is the target.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the
   control side through `Stream::error`; the example prints them at the

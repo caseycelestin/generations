@@ -9,25 +9,45 @@ use std::path::Path;
 use hound::{SampleFormat, WavReader};
 
 use super::{DecodeError, Decoded, Samples};
+use crate::ledger::Reservation;
 
-pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
-    let malformed = |reason: String| DecodeError::Malformed {
-        path: path.into(),
-        reason,
-    };
+/// What [`decode`] will allocate for this file, from the header alone:
+/// every width is carried in a four-byte type, `i32` or `f32`. A file `decode`
+/// would refuse is refused here, with the same error, so a bad file is
+/// named as bad rather than as too big.
+pub fn byte_cost(path: &Path) -> Result<usize, DecodeError> {
+    let reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
+    check_width(path, reader.spec())?;
+    bytes(path, &reader)
+}
+
+/// Bytes the samples of an open reader will take.
+fn bytes<R: std::io::Read>(path: &Path, reader: &WavReader<R>) -> Result<usize, DecodeError> {
+    (reader.len() as usize).checked_mul(4).ok_or_else(|| {
+        malformed(
+            path,
+            format!("{} samples do not fit in memory", reader.len()),
+        )
+    })
+}
+
+pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeError> {
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
-    let samples = match (spec.sample_format, spec.bits_per_sample) {
-        (SampleFormat::Float, 32) => Samples::Float(collect(path, reader.samples::<f32>())?),
-        (SampleFormat::Int, bits @ 1..=32) => Samples::Int {
+    let width = check_width(path, spec)?;
+    reservation
+        .can_hold(bytes(path, &reader)?)
+        .map_err(|source| DecodeError::ShortReservation {
+            path: path.into(),
+            source,
+        })?;
+    let len = reader.len() as usize;
+    let samples = match width {
+        Width::Float => Samples::Float(collect(path, len, reader.samples::<f32>())?),
+        Width::Int(bits) => Samples::Int {
             bits,
-            samples: collect(path, reader.samples::<i32>())?,
+            samples: collect(path, len, reader.samples::<i32>())?,
         },
-        (format, bits) => {
-            return Err(malformed(format!(
-                "{bits}-bit {format:?} samples are not supported"
-            )));
-        }
     };
     Ok(Decoded {
         rate: spec.sample_rate,
@@ -36,14 +56,47 @@ pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
     })
 }
 
-/// Drains a sample iterator, attributing any failure to `path`.
+/// The sample widths this decoder reads, and how it carries each.
+enum Width {
+    Float,
+    Int(u16),
+}
+
+/// Refuses a header whose samples this decoder does not read.
+fn check_width(path: &Path, spec: hound::WavSpec) -> Result<Width, DecodeError> {
+    match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Float, 32) => Ok(Width::Float),
+        (SampleFormat::Int, bits @ 1..=32) => Ok(Width::Int(bits)),
+        (format, bits) => Err(malformed(
+            path,
+            format!("{bits}-bit {format:?} samples are not supported"),
+        )),
+    }
+}
+
+/// Drains a sample iterator into a buffer of exactly `len` capacity,
+/// attributing any failure to `path`.
+///
+/// Not `collect`: collecting through a `Result` loses the exact size hint
+/// and the buffer grows by doubling, so it would end up with as much as
+/// twice the capacity [`byte_cost`] reserved for it.
 fn collect<T>(
     path: &Path,
+    len: usize,
     samples: impl Iterator<Item = hound::Result<T>>,
 ) -> Result<Vec<T>, DecodeError> {
-    samples
-        .collect::<hound::Result<Vec<T>>>()
-        .map_err(|e| hound_error(path, e))
+    let mut out = Vec::with_capacity(len);
+    for sample in samples {
+        out.push(sample.map_err(|e| hound_error(path, e))?);
+    }
+    Ok(out)
+}
+
+fn malformed(path: &Path, reason: String) -> DecodeError {
+    DecodeError::Malformed {
+        path: path.into(),
+        reason,
+    }
 }
 
 fn hound_error(path: &Path, e: hound::Error) -> DecodeError {
@@ -64,6 +117,35 @@ mod tests {
     use hound::{WavSpec, WavWriter};
 
     use super::*;
+    use crate::ledger::{Ledger, ShortReservation};
+    use crate::testing::paid;
+
+    /// Decodes with a reservation that pays for anything.
+    fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+        super::decode(path, &paid())
+    }
+
+    #[test]
+    fn a_short_reservation_is_refused_before_decoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("short.wav");
+        write(&path, spec(1, 48_000, 16, SampleFormat::Int), &[0i16; 10]);
+        assert_eq!(byte_cost(&path).unwrap(), 40);
+        let ledger = Ledger::new(100);
+        let enough = ledger.reserve(40).unwrap();
+        assert!(super::decode(&path, &enough).is_ok());
+        let short = ledger.reserve(39).unwrap();
+        assert!(matches!(
+            super::decode(&path, &short).unwrap_err(),
+            DecodeError::ShortReservation {
+                source: ShortReservation {
+                    needed: 40,
+                    reserved: 39
+                },
+                ..
+            }
+        ));
+    }
 
     fn spec(channels: u16, rate: u32, bits: u16, format: SampleFormat) -> WavSpec {
         WavSpec {

@@ -19,6 +19,7 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
+use crate::ledger::{Reservation, ShortReservation};
 use crate::project::{Sample, SampleId};
 
 /// Reasons storage cannot do what was asked.
@@ -36,6 +37,14 @@ pub enum StorageError {
     /// Stored audio is not in the engine's one fixed format.
     #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
     BadAudioFormat { id: SampleId, detail: String },
+    /// The reservation offered does not pay for the sample's audio.
+    /// Nothing was allocated.
+    #[error("reading sample {} {source}", .id.0)]
+    ShortReservation {
+        id: SampleId,
+        #[source]
+        source: ShortReservation,
+    },
     /// Something failed underneath: the filesystem, a codec, a database.
     #[error(transparent)]
     Backend(Box<dyn Error + Send + Sync>),
@@ -57,16 +66,27 @@ pub trait Storage {
     ///
     /// `channels` and `frames` must describe exactly the bytes [`audio`]
     /// will return for the same id: the engine reserves memory from them
-    /// before it reads, and treats any disagreement as corruption. A
-    /// backend may need to look at the audio to answer, so this can fail
-    /// where the audio is unreadable.
+    /// before it reads. If the audio has grown in between, `audio` refuses
+    /// the reservation as short; if it has shrunk, it is read and the
+    /// reservation over-counts until it is dropped. A backend may need to
+    /// look at the audio to answer, so this can fail where the audio is
+    /// unreadable.
     ///
     /// [`audio`]: Storage::audio
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
 
     /// The stored audio of the sample with this id, or `None` if there is
     /// none.
-    fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError>;
+    ///
+    /// `reservation` must cover the audio's bytes, as the record's
+    /// `channels` and `frames` give them; a short one is refused before
+    /// anything is allocated. The caller keeps it for as long as the audio
+    /// lives.
+    fn audio(
+        &self,
+        id: SampleId,
+        reservation: &Reservation,
+    ) -> Result<Option<AudioBuffer>, StorageError>;
 
     /// Whether any stored sample has this one as its parent.
     fn has_children(&self, id: SampleId) -> Result<bool, StorageError>;

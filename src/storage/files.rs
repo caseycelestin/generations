@@ -32,6 +32,7 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::{MAX_CHANNELS, Pcm, SAMPLE_RATE};
+use crate::ledger::Reservation;
 use crate::project::{Sample, SampleId};
 use crate::storage::{Storage, StorageError};
 
@@ -224,14 +225,26 @@ impl FileStorage {
         Ok(reader)
     }
 
-    fn read_wav(&self, id: SampleId) -> Result<AudioBuffer, StorageError> {
+    fn read_wav(
+        &self,
+        id: SampleId,
+        reservation: &Reservation,
+    ) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
         let spec = reader.spec();
-        let data = reader
-            .samples::<Pcm>()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| at(&path, e))?;
+        reservation
+            .can_hold(AudioBuffer::bytes_for(
+                spec.channels,
+                reader.duration() as usize,
+            ))
+            .map_err(|source| StorageError::ShortReservation { id, source })?;
+        // Exactly the capacity reserved: collecting through a `Result`
+        // loses the size hint and grows by doubling.
+        let mut data = Vec::with_capacity(reader.len() as usize);
+        for sample in reader.samples::<Pcm>() {
+            data.push(sample.map_err(|e| at(&path, e))?);
+        }
         AudioBuffer::new(spec.channels, data).map_err(|e| at(&path, e))
     }
 }
@@ -290,11 +303,15 @@ impl Storage for FileStorage {
         }))
     }
 
-    fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
+    fn audio(
+        &self,
+        id: SampleId,
+        reservation: &Reservation,
+    ) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
         }
-        self.read_wav(id).map(Some)
+        self.read_wav(id, reservation).map(Some)
     }
 
     fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
@@ -365,7 +382,27 @@ impl Storage for FileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::reverse;
+    use crate::ledger::{Ledger, ShortReservation};
+    use crate::testing::paid;
+
+    #[test]
+    fn a_short_reservation_is_refused_before_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let id = s.add_sample(None, &ramp(2, 3)).unwrap();
+        let needed = ramp(2, 3).bytes();
+        let ledger = Ledger::new(usize::MAX);
+        assert!(
+            s.audio(id, &ledger.reserve(needed).unwrap())
+                .unwrap()
+                .is_some()
+        );
+        assert!(matches!(
+            s.audio(id, &ledger.reserve(needed - 1).unwrap()).unwrap_err(),
+            StorageError::ShortReservation { id: i, source: ShortReservation { needed: n, reserved: r } }
+                if i == id && n == needed && r == needed - 1
+        ));
+    }
 
     fn ramp(channels: u16, frames: i16) -> AudioBuffer {
         let data: Vec<i16> = (0..frames * channels as i16)
@@ -417,20 +454,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let root = s.add_sample(None, &ramp(2, 16)).unwrap();
-        let rev = s
-            .add_sample(Some(root), &reverse(&s.audio(root).unwrap().unwrap()))
-            .unwrap();
-        let back = s
-            .add_sample(Some(rev), &reverse(&s.audio(rev).unwrap().unwrap()))
-            .unwrap();
+        let rev = s.add_sample(Some(root), &ramp(2, 8)).unwrap();
+        let back = s.add_sample(Some(rev), &ramp(2, 16)).unwrap();
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
         assert_eq!(s.sample(rev).unwrap().unwrap().parent, Some(root));
         assert_eq!(s.sample(back).unwrap().unwrap().parent, Some(rev));
-        assert_eq!(s.audio(root).unwrap().unwrap(), ramp(2, 16));
-        // Reverse twice is exact, through the disk too.
-        assert_eq!(s.audio(back).unwrap(), s.audio(root).unwrap());
+        assert_eq!(s.audio(root, &paid()).unwrap().unwrap(), ramp(2, 16));
+        assert_eq!(s.audio(rev, &paid()).unwrap().unwrap(), ramp(2, 8));
+        assert_eq!(s.audio(back, &paid()).unwrap().unwrap(), ramp(2, 16));
     }
 
     #[test]
@@ -438,7 +471,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = created(dir.path());
         assert!(s.sample(SampleId(9)).unwrap().is_none());
-        assert!(s.audio(SampleId(9)).unwrap().is_none());
+        assert!(s.audio(SampleId(9), &paid()).unwrap().is_none());
     }
 
     #[test]
@@ -479,7 +512,10 @@ mod tests {
         // The record takes the audio's shape from the WAV header, so it
         // cannot be read either; existence can, from the manifest.
         assert!(matches!(s.sample(id), Err(StorageError::Backend(_))));
-        assert!(matches!(s.audio(id), Err(StorageError::Backend(_))));
+        assert!(matches!(
+            s.audio(id, &paid()),
+            Err(StorageError::Backend(_))
+        ));
         assert!(s.has_sample(id).unwrap());
     }
 
@@ -508,7 +544,7 @@ mod tests {
         w.write_sample(0i16).unwrap();
         w.finalize().unwrap();
         assert!(matches!(
-            s.audio(id),
+            s.audio(id, &paid()),
             Err(StorageError::BadAudioFormat { id: i, .. }) if i == id
         ));
     }

@@ -1,9 +1,10 @@
 //! The engine behind the generations sampler.
 //!
-//! Audio moves forward by printing: applying an effect to a sample commits
-//! the result as a new generation of that sample, and the previous one is
-//! kept. See the README for the idea; this crate is the engine underneath
-//! it.
+//! Audio moves forward by printing: committing a change to a sample as a
+//! new generation of it, with the previous one kept. See the README for
+//! the idea; this crate is the engine underneath it. The data model knows
+//! generations today; the effects that will make them arrive with the
+//! render side (see the roadmap), so nothing prints yet.
 //!
 //! # Architecture
 //!
@@ -13,7 +14,8 @@
 //! engine     coordinates: what a UI or front panel calls. Also the control
 //!   │        side of sound: holds the audio in RAM and sends the commands
 //!   │
-//!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
+//!   ├─ ledger    one memory budget; every buffer that scales with audio
+//!   │            is reserved here before it is allocated
 //!   │
 //!   ├─ decode    reads a file into plain samples, whatever format it is in
 //!   │   └─ convert   takes those to the project format: resample, quantise
@@ -33,11 +35,11 @@
 //!
 //! - **[`engine`]** is the only code that touches more than one role, and
 //!   the only way in from outside the crate: every other role is reachable
-//!   through it or not at all, so there is one path to each action. A
-//!   print is: read the source's audio from the project, run the effect,
-//!   add the result to the project as the source's child. A load is: read
-//!   the audio from the project into RAM, mark the sample loaded. A play
-//!   is: find the loaded audio, send a command. The engine is the control
+//!   through it or not at all, so there is one path to each action. An
+//!   import is: reserve, decode, reserve, convert, add the result to the
+//!   project as a root. A load is: reserve, read the audio from the project
+//!   into RAM, mark the sample loaded. A play is: find the loaded audio,
+//!   send a command. The engine is the control
 //!   side of sound: it owns the ledger (one memory budget for everything it
 //!   holds in RAM), the loaded audio (each buffer with its reservation) and
 //!   the sending end of a lock-free command ring, and nothing it does can
@@ -60,8 +62,10 @@
 //! - **`storage`** is a trait so the medium can change (a directory today,
 //!   perhaps a database later) without the rules moving. A storage always
 //!   holds a whole, valid project; opening one creates or validates it.
-//! - **[`effects`]** are offline functions over an [`AudioBuffer`]. Only
-//!   playback, mixing and sequencing will ever be real-time.
+//! - **`ledger`** is the one memory budget. Decode, convert and the storage
+//!   read each take a reservation and refuse one that does not cover what
+//!   they will allocate, so nothing that scales with audio exists uncounted.
+//!   Audio never leaves the engine for the same reason.
 //! - **`decode`** and **`convert`** are the boundary between the world's
 //!   audio and the project's. A decoder reads one file format into a plain
 //!   value (rate, channels, interleaved `f32`); `convert` resamples and
@@ -91,25 +95,27 @@
 //!
 //! # Where to start
 //!
-//! [`Engine`] for what a caller does; `examples/first_print.rs` for the
-//! whole path on real files and `examples/first_sound.rs` for the same
-//! through a speaker; `docs/roadmap.md` for the plan and the decisions
-//! behind it.
+//! [`Engine`] for what a caller does; `examples/first_sound.rs` for the
+//! whole path, file to speaker; `docs/roadmap.md` for the plan and the
+//! decisions behind it.
 
 pub mod audio;
 pub mod config;
 pub(crate) mod convert;
 pub(crate) mod decode;
-pub mod effects;
 pub mod engine;
+pub(crate) mod ledger;
 pub mod project;
 pub(crate) mod render;
 pub(crate) mod storage;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use convert::ConvertError;
 pub use decode::DecodeError;
-pub use engine::{Engine, EngineError, OverBudget};
+pub use engine::{Engine, EngineError};
+pub use ledger::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use render::{Renderer, VoiceId};
 pub use storage::StorageError;

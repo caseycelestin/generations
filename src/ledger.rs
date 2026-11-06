@@ -13,8 +13,16 @@
 //! The only comparison against the budget is inside [`Ledger::reserve`].
 //! A reservation is held next to the buffer it paid for and gives the
 //! bytes back when it is dropped, so release is automatic and cannot be
-//! forgotten or counted twice. Every large audio allocation in the crate
-//! asks here first; one that does not makes the figure a lie.
+//! forgotten or counted twice.
+//!
+//! Every function in the crate that allocates in proportion to audio
+//! length takes a `&Reservation` and refuses to run if it does not cover
+//! what is about to be allocated. So asking first is not a rule a call
+//! site can forget: without a reservation the call does not compile, and
+//! with a short one it fails before a byte is allocated. The allocators
+//! only ever borrow the reservation; the caller keeps it, and so decides
+//! when the bytes are given back. None of them learns the budget or what
+//! else is in RAM, only that these bytes were paid for.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,6 +42,15 @@ pub struct OverBudget {
     pub in_use: usize,
     /// The budget the engine was opened with.
     pub budget: usize,
+}
+
+/// The bytes an allocator asked a reservation to pay for are more than it
+/// holds. Nothing was allocated.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("needs {needed} bytes but {reserved} were reserved")]
+pub struct ShortReservation {
+    pub needed: usize,
+    pub reserved: usize,
 }
 
 /// What the ledger and its reservations share: the figure and the count.
@@ -107,8 +124,24 @@ pub struct Reservation {
 
 impl Reservation {
     /// The bytes this reservation holds.
+    #[cfg(test)]
     pub fn bytes(&self) -> usize {
         self.bytes
+    }
+
+    /// Checks that `bytes` fit in this reservation. What an allocator asks
+    /// before it allocates; on `Err` it allocates nothing. Compares two
+    /// numbers and changes nothing: the bytes were counted when the
+    /// reservation was made.
+    pub fn can_hold(&self, bytes: usize) -> Result<(), ShortReservation> {
+        if bytes <= self.bytes {
+            Ok(())
+        } else {
+            Err(ShortReservation {
+                needed: bytes,
+                reserved: self.bytes,
+            })
+        }
     }
 }
 
@@ -167,6 +200,21 @@ mod tests {
         assert!(ledger.reserve(1).is_err());
         drop(a);
         assert!(ledger.reserve(40).is_ok());
+    }
+
+    #[test]
+    fn a_reservation_holds_up_to_its_bytes() {
+        let ledger = Ledger::new(10);
+        let r = ledger.reserve(4).unwrap();
+        assert_eq!(r.can_hold(0), Ok(()));
+        assert_eq!(r.can_hold(4), Ok(()));
+        assert_eq!(
+            r.can_hold(5),
+            Err(ShortReservation {
+                needed: 5,
+                reserved: 4
+            })
+        );
     }
 
     #[test]

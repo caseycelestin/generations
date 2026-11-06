@@ -38,10 +38,12 @@ the hardware unit all sit on top of. It is responsible for:
 
 ## Status
 
-Early. The engine opens a project on disk, imports audio, prints one effect
-(reverse) as a new generation, keeps the lineage durable across a
-power-down, and plays loaded samples through whatever output the caller
-gives it; the engine itself needs no audio device.
+Early. The engine opens a project on disk, imports audio, keeps the project
+durable across a power-down, holds loaded samples in RAM under one memory
+budget, and plays them through whatever output the caller gives it; the
+engine itself needs no audio device. The generation model is in place;
+the effects that will print new generations arrive with the real-time
+side.
 See [docs/roadmap.md](docs/roadmap.md) for
 the plan and the decisions behind it, and `cargo doc --open` for the
 architecture.
@@ -53,7 +55,6 @@ audio dependency; the demos are examples.
 
 ```sh
 cargo test
-cargo run --example first_print -- /tmp/myproject
 cargo run --example first_sound -- /tmp/myproject   # needs an output device
 ```
 

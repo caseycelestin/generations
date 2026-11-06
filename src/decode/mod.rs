@@ -20,6 +20,7 @@ use std::path::Path;
 use thiserror::Error;
 
 pub use crate::convert::{Decoded, Samples};
+use crate::ledger::{Reservation, ShortReservation};
 
 /// Reasons a file could not be read into samples.
 #[derive(Debug, Error)]
@@ -36,6 +37,14 @@ pub enum DecodeError {
     /// The file is a known format but malformed or a variant not handled.
     #[error("{path}: {reason}")]
     Malformed { path: Box<Path>, reason: String },
+    /// The reservation offered does not pay for the decoded samples.
+    /// Nothing was allocated.
+    #[error("{path}: decoding {source}")]
+    ShortReservation {
+        path: Box<Path>,
+        #[source]
+        source: ShortReservation,
+    },
 }
 
 /// File formats this crate reads.
@@ -53,17 +62,36 @@ fn sniff(head: &[u8]) -> Option<Format> {
 }
 
 /// Reads an audio file into samples at its own rate and channel count.
-pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+///
+/// `reservation` must cover [`byte_cost`] of the file as it is now; a short one
+/// is refused before anything is allocated. The caller keeps it for as
+/// long as the samples live.
+pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeError> {
+    match format(path)? {
+        Format::Wav => wav::decode(path, reservation),
+    }
+}
+
+/// What [`decode`] will allocate for this file, in bytes: the samples it
+/// returns. Read from the file's header without decoding any audio, so
+/// the memory can be reserved before it is allocated. Opens the file again when `decode`
+/// follows; a header is a few bytes and the second open is cheaper than a
+/// decoder that carries state between two calls.
+pub fn byte_cost(path: &Path) -> Result<usize, DecodeError> {
+    match format(path)? {
+        Format::Wav => wav::byte_cost(path),
+    }
+}
+
+/// The format of the file at `path`, from its first bytes.
+fn format(path: &Path) -> Result<Format, DecodeError> {
     let io = |source| DecodeError::Io {
         path: path.into(),
         source,
     };
     let mut head = [0u8; 12];
     let n = read_head(&mut File::open(path).map_err(io)?, &mut head).map_err(io)?;
-    match sniff(&head[..n]) {
-        Some(Format::Wav) => wav::decode(path),
-        None => Err(DecodeError::UnknownFormat { path: path.into() }),
-    }
+    sniff(&head[..n]).ok_or_else(|| DecodeError::UnknownFormat { path: path.into() })
 }
 
 /// Fills `buf` as far as the reader goes; a short file is not an error.
@@ -81,6 +109,7 @@ fn read_head(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::paid;
 
     #[test]
     fn sniff_knows_wav_and_nothing_else() {
@@ -97,7 +126,11 @@ mod tests {
         let path = dir.path().join("noise.bin");
         std::fs::write(&path, b"hello").unwrap();
         assert!(matches!(
-            decode(&path).unwrap_err(),
+            decode(&path, &paid()).unwrap_err(),
+            DecodeError::UnknownFormat { path: p } if *p == *path
+        ));
+        assert!(matches!(
+            byte_cost(&path).unwrap_err(),
             DecodeError::UnknownFormat { path: p } if *p == *path
         ));
     }
@@ -107,7 +140,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("absent.wav");
         assert!(matches!(
-            decode(&path).unwrap_err(),
+            decode(&path, &paid()).unwrap_err(),
             DecodeError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound
         ));
     }
