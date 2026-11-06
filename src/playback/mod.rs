@@ -29,7 +29,7 @@
 
 pub mod control;
 pub mod renderer;
-pub(crate) mod resident;
+pub mod resident;
 pub mod voice;
 
 use thiserror::Error;
@@ -39,7 +39,7 @@ use crate::project::SampleId;
 
 pub use control::Playback;
 pub use renderer::{Command, Renderer, VoiceId};
-pub(crate) use resident::ResidentSet;
+pub use resident::ResidentSet;
 
 /// Reasons playback cannot do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

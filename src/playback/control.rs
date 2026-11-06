@@ -72,7 +72,7 @@ impl Playback {
 
     /// The audio resident in RAM. For the engine, which checks residency
     /// before reading from disk, and for tests.
-    pub(crate) fn resident(&self) -> &ResidentSet {
+    pub fn resident(&self) -> &ResidentSet {
         &self.resident
     }
 

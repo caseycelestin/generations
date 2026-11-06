@@ -21,7 +21,7 @@ use crate::project::SampleId;
 /// plays. Only the control thread inserts and removes; the set is not for
 /// the renderer, which only ever reads the clones it was handed.
 #[derive(Debug)]
-pub(crate) struct ResidentSet {
+pub struct ResidentSet {
     budget: usize,
     bytes: usize,
     audio: HashMap<SampleId, Arc<AudioBuffer>>,
@@ -29,7 +29,7 @@ pub(crate) struct ResidentSet {
 
 impl ResidentSet {
     /// An empty set that will hold at most `budget` bytes of audio.
-    pub(crate) fn new(budget: usize) -> Self {
+    pub fn new(budget: usize) -> Self {
         Self {
             budget,
             bytes: 0,
@@ -42,7 +42,7 @@ impl ResidentSet {
     /// Refused, with nothing changed, if it would exceed the budget. A
     /// sample's audio never changes, so inserting an id that is already
     /// resident changes nothing and costs nothing.
-    pub(crate) fn insert(&mut self, id: SampleId, audio: AudioBuffer) -> Result<(), PlaybackError> {
+    pub fn insert(&mut self, id: SampleId, audio: AudioBuffer) -> Result<(), PlaybackError> {
         if self.audio.contains_key(&id) {
             return Ok(());
         }
@@ -64,7 +64,7 @@ impl ResidentSet {
     ///
     /// The bytes come off the count at once, even if a voice still holds a
     /// clone; the memory itself is freed when the last holder lets go.
-    pub(crate) fn remove(&mut self, id: SampleId) {
+    pub fn remove(&mut self, id: SampleId) {
         if let Some(audio) = self.audio.remove(&id) {
             self.bytes -= audio.bytes();
         }
@@ -72,19 +72,19 @@ impl ResidentSet {
 
     /// The resident audio of sample `id`, shared, or `None` if it is not
     /// resident.
-    pub(crate) fn get(&self, id: SampleId) -> Option<Arc<AudioBuffer>> {
+    pub fn get(&self, id: SampleId) -> Option<Arc<AudioBuffer>> {
         self.audio.get(&id).cloned()
     }
 
     /// Whether sample `id` is resident.
-    pub(crate) fn contains(&self, id: SampleId) -> bool {
+    pub fn contains(&self, id: SampleId) -> bool {
         self.audio.contains_key(&id)
     }
 
     /// Bytes of audio resident right now. A front panel will want this;
     /// until then only tests ask.
     #[cfg(test)]
-    pub(crate) fn bytes(&self) -> usize {
+    pub fn bytes(&self) -> usize {
         self.bytes
     }
 }
