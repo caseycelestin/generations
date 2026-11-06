@@ -50,15 +50,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Walk the lineage from the print back to the root, on a fresh open.
     let engine = Engine::open(&dir, SAMPLE_RAM_BUDGET)?;
-    let project = engine.project();
     let mut cur = Some(printed);
     while let Some(id) = cur {
-        let sample = project.sample(id)?;
+        let sample = engine.project().sample(id)?;
         println!(
             "id {} parent {:?} samples {:?}",
             id.0,
             sample.parent.map(|p| p.0),
-            project.audio(id)?.samples()
+            engine.audio(id)?.samples()
         );
         cur = sample.parent;
     }

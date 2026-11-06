@@ -13,8 +13,16 @@
 //! The only comparison against the budget is inside [`Ledger::reserve`].
 //! A reservation is held next to the buffer it paid for and gives the
 //! bytes back when it is dropped, so release is automatic and cannot be
-//! forgotten or counted twice. Every large audio allocation in the crate
-//! asks here first; one that does not makes the figure a lie.
+//! forgotten or counted twice.
+//!
+//! Every function in the crate that allocates in proportion to audio
+//! length takes a `&Reservation` and refuses to run if it does not cover
+//! what is about to be allocated. So asking first is not a rule a call
+//! site can forget: without a reservation the call does not compile, and
+//! with a short one it fails before a byte is allocated. The allocators
+//! only ever borrow the reservation; the caller keeps it, and so decides
+//! when the bytes are given back. None of them learns the budget or what
+//! else is in RAM, only that these bytes were paid for.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -110,6 +118,12 @@ impl Reservation {
     pub fn bytes(&self) -> usize {
         self.bytes
     }
+
+    /// Whether this reservation pays for `bytes`. What an allocator asks
+    /// before it allocates.
+    pub fn covers(&self, bytes: usize) -> bool {
+        bytes <= self.bytes
+    }
 }
 
 impl Drop for Reservation {
@@ -167,6 +181,15 @@ mod tests {
         assert!(ledger.reserve(1).is_err());
         drop(a);
         assert!(ledger.reserve(40).is_ok());
+    }
+
+    #[test]
+    fn a_reservation_covers_up_to_its_bytes() {
+        let ledger = Ledger::new(10);
+        let r = ledger.reserve(4).unwrap();
+        assert!(r.covers(0));
+        assert!(r.covers(4));
+        assert!(!r.covers(5));
     }
 
     #[test]

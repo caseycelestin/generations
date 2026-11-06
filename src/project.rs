@@ -8,6 +8,7 @@
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
+use crate::ledger::Reservation;
 use crate::storage::{Storage, StorageError};
 
 /// Identity of a sample within one project.
@@ -19,8 +20,10 @@ use crate::storage::{Storage, StorageError};
 pub struct SampleId(pub u32);
 
 /// Everything stored about one sample except its audio, which is read
-/// separately with [`Project::audio`]. More fields arrive as the project
+/// separately with [`Engine::audio`]. More fields arrive as the project
 /// grows.
+///
+/// [`Engine::audio`]: crate::engine::Engine::audio
 ///
 /// "Generation" is not a type. It is the relationship between a sample and
 /// its parent: the sample one generation behind it. Lineage is the tree
@@ -140,9 +143,17 @@ impl Project {
     }
 
     /// The audio of the sample with this id, read from storage.
-    pub fn audio(&self, id: SampleId) -> Result<AudioBuffer, ProjectError> {
+    ///
+    /// Crate-private because reading allocates the whole buffer, so the
+    /// read must be paid for first; the engine does that and is the one
+    /// place a caller gets audio from.
+    pub(crate) fn audio(
+        &self,
+        id: SampleId,
+        reservation: &Reservation,
+    ) -> Result<AudioBuffer, ProjectError> {
         self.storage
-            .audio(id)?
+            .audio(id, reservation)?
             .ok_or(ProjectError::UnknownSample(id))
     }
 }
@@ -177,9 +188,22 @@ pub(crate) mod tests {
             Ok(self.find(id).map(|(s, _)| s))
         }
 
-        fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
+        fn audio(
+            &self,
+            id: SampleId,
+            reservation: &Reservation,
+        ) -> Result<Option<AudioBuffer>, StorageError> {
             self.0.borrow_mut().audio_reads += 1;
-            Ok(self.find(id).map(|(_, a)| a))
+            match self.find(id) {
+                Some((s, a)) if !reservation.covers(a.bytes()) => {
+                    Err(StorageError::ShortReservation {
+                        id: s.id,
+                        needed: a.bytes(),
+                        reserved: reservation.bytes(),
+                    })
+                }
+                found => Ok(found.map(|(_, a)| a)),
+            }
         }
 
         fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
@@ -270,6 +294,13 @@ pub(crate) mod tests {
         AudioBuffer::new(1, vec![0, 1, 2, 3]).unwrap()
     }
 
+    /// A reservation that pays for anything.
+    fn paid() -> Reservation {
+        crate::ledger::Ledger::new(usize::MAX)
+            .reserve(usize::MAX)
+            .unwrap()
+    }
+
     fn structure(state: &Rc<RefCell<State>>) -> Vec<(SampleId, Option<SampleId>)> {
         state
             .borrow()
@@ -310,7 +341,7 @@ pub(crate) mod tests {
                 frames: 4,
             }
         );
-        assert_eq!(p.audio(child).unwrap(), tone());
+        assert_eq!(p.audio(child, &paid()).unwrap(), tone());
     }
 
     #[test]
@@ -329,7 +360,10 @@ pub(crate) mod tests {
         let (p, _state) = project();
         let bogus = SampleId(7);
         assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
-        assert!(matches!(p.audio(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
+        assert!(matches!(
+            p.audio(bogus, &paid()),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
     }
 
     #[test]

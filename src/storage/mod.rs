@@ -19,6 +19,7 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
+use crate::ledger::Reservation;
 use crate::project::{Sample, SampleId};
 
 /// Reasons storage cannot do what was asked.
@@ -36,6 +37,17 @@ pub enum StorageError {
     /// Stored audio is not in the engine's one fixed format.
     #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
     BadAudioFormat { id: SampleId, detail: String },
+    /// The reservation offered does not pay for the sample's audio.
+    /// Nothing was allocated.
+    #[error(
+        "reading sample {} needs {needed} bytes but {reserved} were reserved",
+        .id.0
+    )]
+    ShortReservation {
+        id: SampleId,
+        needed: usize,
+        reserved: usize,
+    },
     /// Something failed underneath: the filesystem, a codec, a database.
     #[error(transparent)]
     Backend(Box<dyn Error + Send + Sync>),
@@ -66,7 +78,16 @@ pub trait Storage {
 
     /// The stored audio of the sample with this id, or `None` if there is
     /// none.
-    fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError>;
+    ///
+    /// `reservation` must cover the audio's bytes, as the record's
+    /// `channels` and `frames` give them; a short one is refused before
+    /// anything is allocated. The caller keeps it for as long as the audio
+    /// lives.
+    fn audio(
+        &self,
+        id: SampleId,
+        reservation: &Reservation,
+    ) -> Result<Option<AudioBuffer>, StorageError>;
 
     /// Whether any stored sample has this one as its parent.
     fn has_children(&self, id: SampleId) -> Result<bool, StorageError>;

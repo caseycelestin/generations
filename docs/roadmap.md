@@ -443,10 +443,23 @@ thing the engine holds in RAM that the resident set cannot serve.
   figure is inside the ledger's reserve. A reservation is a value held
   next to the buffer it paid for and gives the bytes back when it is
   dropped, so release is automatic and cannot be forgotten or counted
-  twice. Call sites are many but identical: ask once, hold the ticket,
-  drop it. None of them knows the figure or what else is in RAM. A single
-  budget checked by arithmetic at several sites was rejected as the thing
-  that would get messy.
+  twice. Call sites are many but identical: ask once, hold the
+  reservation, drop it. None of them knows the figure or what else is in
+  RAM. A single budget checked by arithmetic at several sites was
+  rejected as the thing that would get messy.
+- **Whatever allocates in proportion to audio length takes a reservation.**
+  Decode, convert and the storage read each take a `&Reservation` and
+  refuse, before allocating, one that does not cover what they are about
+  to allocate. So asking first is not a rule a call site can forget: a
+  call without a reservation does not compile, and the size check sits
+  in the one function that knows the real size, not in the engine after
+  the fact. The allocators only borrow the reservation; the engine keeps
+  it and decides when the bytes go back. They never learn the figure.
+  Effects are exempt because they are placeholders for the render side,
+  and so is everything that does not scale with audio: the manifest, id
+  lists, error strings, a decoder's read buffer, the resampler's
+  chunk-sized state. That is the fixed overhead the deployment sets the
+  figure below.
 - **The reservation comes before the allocation, so the size is known
   first.** A load that read the audio and then asked would hold memory
   the ledger never approved, for exactly the moment the budget is meant
@@ -454,8 +467,8 @@ thing the engine holds in RAM that the resident set cannot serve.
   count, the engine reserves from those, and only then reads. The file
   backend takes them from the WAV header rather than repeating them in
   the manifest, so there is one record of the shape and nothing to fall
-  out of step; the read is refused as corrupt if the audio comes back a
-  different size than the header said. Import and print have their sizes
+  out of step; the storage read refuses a reservation that does not
+  cover what the header says before it reads. Import and print have their sizes
   in hand before they allocate (the file header, the source sample) and
   reserve the same way. Asking whether a sample exists stays a
   manifest-only question, so a sample whose WAV has gone bad can still be
@@ -491,16 +504,18 @@ thing the engine holds in RAM that the resident set cannot serve.
   f32, and the effect's allocations land inside that estimate. It is
   accurate for every effect that exists and becomes exact when effects
   move into the render side and the engine owns their buffers.
-- **An import holds two tickets, each taken from the thing in hand.** The
+- **An import holds two reservations, each taken from the thing in hand.** The
   decoder reads the file's header and says how large its samples will be;
   the engine reserves that, then decodes. The converter looks at the
   decoded audio and says what it will allocate on the path it is about to
   take (the exact path only the result; the same-rate path an f32 copy
   too; resampling an f32 copy, the f32 output and the result); the engine
-  reserves that, then converts. Both tickets drop when the import returns.
-  Each side states its own cost from its own input, so the engine never
-  learns how a decoder or converter works, and the header is read twice
-  rather than carrying a half-open decoder between two calls.
+  reserves that, then converts. The first reservation drops with the
+  decoded samples, the second when the import returns. Each side states
+  its own cost from its own input and checks the reservation it is handed
+  against it, so the engine never learns how a decoder or converter
+  works, and the header is read twice rather than carrying a half-open
+  decoder between two calls.
 - **Live effects will reserve at instantiation, on the control side.** A
   delay line or a reverb owns fixed buffers for its whole life, and the
   render path may not allocate, so they are built when the effect is
@@ -510,10 +525,11 @@ thing the engine holds in RAM that the resident set cannot serve.
   for samples, which is true on the hardware and should be true in the
   number.
 - **The number is only true if every large audio allocation asks first.**
-  One uncounted buffer and the figure is a lie again. The ledger is the
-  only way the crate gets a big buffer, not an optional thing a site can
-  skip, and that is the thing to check in review of every later step.
-- **What a reservation is for is a label, not a mechanism.** A ticket can
+  One uncounted buffer and the figure is a lie again. The reservation
+  parameter makes that structural for the allocators that exist; the
+  thing to check in review of every later step is that a new one takes
+  it too.
+- **What a reservation is for is a label, not a mechanism.** A reservation can
   carry a sample id, a take, an effect, so a panel can show RAM in use by
   kind. Nothing enforces anything per kind, so the label arrives with the
   panel that reads it. Sub-budgets, eviction, priorities and a custom
@@ -526,7 +542,10 @@ thing the engine holds in RAM that the resident set cannot serve.
 ### Process
 
 - **The public surface is kept minimal.** Convenience methods are added
-  when a caller exists, not before.
+  when a caller exists, not before. `Engine::audio` exists because
+  `Project::audio` had to take a reservation and so go crate-private, and
+  the print example reads audio to show its lineage; the engine pays for
+  the read and hands over a copy that is then the caller's.
 - **Nothing is settled by having been written.** The step 1 model was
   removed in step 3 when it stopped fitting. New steps are designed from
   the decision, then existing code is changed to fit, not the other way

@@ -15,8 +15,6 @@
 //! into the render side. The engine never touches a device; whoever has
 //! one hands it the output.
 
-pub(crate) mod ledger;
-
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -32,8 +30,7 @@ use crate::project::{Project, ProjectError, SampleId};
 use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
-pub use ledger::OverBudget;
-use ledger::{Ledger, Reservation};
+use crate::ledger::{Ledger, OverBudget, Reservation};
 
 /// Reasons an engine operation can fail.
 #[derive(Debug, Error)]
@@ -154,20 +151,9 @@ impl Engine {
             // Scoped with the decoded samples: both go when convert has
             // consumed them.
             let decoding = self.ledger.reserve(decode::size(file)?)?;
-            let decoded = decode::decode(file)?;
-            if decoded.bytes() != decoding.bytes() {
-                return Err(DecodeError::Malformed {
-                    path: file.into(),
-                    reason: format!(
-                        "decoded to {} bytes but its header promised {}",
-                        decoded.bytes(),
-                        decoding.bytes()
-                    ),
-                }
-                .into());
-            }
+            let decoded = decode::decode(file, &decoding)?;
             let converting = self.ledger.reserve(convert::working_bytes(&decoded)?)?;
-            (convert::convert(decoded)?, converting)
+            (convert::convert(decoded, &converting)?, converting)
         };
         Ok(self.import_audio(&audio)?)
     }
@@ -251,31 +237,30 @@ impl Engine {
         if self.loaded.contains_key(&id) {
             return Ok(());
         }
-        let sample = self.project.sample(id)?;
-        let bytes = AudioBuffer::bytes_for(sample.channels, sample.frames);
-        let reservation = self.ledger.reserve(bytes)?;
-        let audio = self.read_checked(id, bytes)?;
+        let reservation = self.reserve_for(id)?;
+        let audio = self.project.audio(id, &reservation)?;
         self.loaded.insert(id, (Arc::new(audio), reservation));
         Ok(())
     }
 
-    /// Reads `id`'s audio, which its record said would be `bytes` long,
-    /// and refuses any other length as corrupt storage: whoever called
-    /// reserved from the record, and a buffer of another size would make
-    /// the ledger wrong. Smaller included: it would fit, but the record and
-    /// the file disagree, and a project that disagrees with itself is
-    /// refused rather than guessed at.
-    fn read_checked(&self, id: SampleId, bytes: usize) -> Result<AudioBuffer, EngineError> {
-        let audio = self.project.audio(id)?;
-        if audio.bytes() != bytes {
-            return Err(StorageError::Corrupt(format!(
-                "sample {} is {} bytes of audio but its record says {bytes}",
-                id.0,
-                audio.bytes(),
-            ))
-            .into());
-        }
-        Ok(audio)
+    /// Reserves what `id`'s audio takes, from its record, without reading
+    /// it.
+    fn reserve_for(&self, id: SampleId) -> Result<Reservation, EngineError> {
+        let sample = self.project.sample(id)?;
+        Ok(self
+            .ledger
+            .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?)
+    }
+
+    /// A copy of `id`'s audio, read from the project.
+    ///
+    /// For looking at a sample: tooling, a display, a test. It is paid for
+    /// while it is read and then handed over, so the copy is the caller's
+    /// and no longer counted; playback never goes this way, it reads
+    /// loaded audio. Nothing is read if the audio does not fit the budget.
+    pub fn audio(&self, id: SampleId) -> Result<AudioBuffer, EngineError> {
+        let reservation = self.reserve_for(id)?;
+        Ok(self.project.audio(id, &reservation)?)
     }
 
     /// Prints `effect` applied to `source` as the next generation of its
@@ -298,8 +283,8 @@ impl Engine {
         let sample = self.project.sample(source)?;
         let pcm_bytes = AudioBuffer::bytes_for(sample.channels, sample.frames);
         let f32_bytes = sample.frames * usize::from(sample.channels) * size_of::<f32>();
-        let _printing = self.ledger.reserve(2 * (pcm_bytes + f32_bytes))?;
-        let input = self.read_checked(source, pcm_bytes)?;
+        let printing = self.ledger.reserve(2 * (pcm_bytes + f32_bytes))?;
+        let input = self.project.audio(source, &printing)?;
         let output = effect(&input);
         Ok(self.project.add_sample(Some(source), &output)?)
     }
@@ -372,7 +357,7 @@ mod tests {
         let path = wav(dir.path(), "a.wav", 48_000, &[0, 1000, -1000, 32_767]);
         let (mut e, _r) = engine();
         let id = e.import(&path).unwrap();
-        let audio = e.project().audio(id).unwrap();
+        let audio = e.audio(id).unwrap();
         assert_eq!(audio.channels(), 1);
         assert_eq!(audio.frames(), 4);
         // Already the project format: stored byte for byte.
@@ -386,7 +371,7 @@ mod tests {
         let path = wav(dir.path(), "b.wav", 44_100, &[0; 44_100]);
         let (mut e, _r) = engine();
         let id = e.import(&path).unwrap();
-        let frames = e.project().audio(id).unwrap().frames() as i64;
+        let frames = e.audio(id).unwrap().frames() as i64;
         assert!((frames - 48_000).abs() <= 2, "{frames}");
     }
 
@@ -431,7 +416,7 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.import_audio(&ramp(4)).unwrap();
         assert_eq!(e.project().sample(id).unwrap().parent, None);
-        assert_eq!(e.project().audio(id).unwrap(), ramp(4));
+        assert_eq!(e.audio(id).unwrap(), ramp(4));
     }
 
     #[test]
@@ -660,9 +645,9 @@ mod tests {
         let child = e.print(root, reverse).unwrap();
 
         assert_eq!(e.project().sample(child).unwrap().parent, Some(root));
-        assert_eq!(e.project().audio(child).unwrap().samples(), &[3, 2, 1, 0]);
+        assert_eq!(e.audio(child).unwrap().samples(), &[3, 2, 1, 0]);
         // The source is untouched.
-        assert_eq!(e.project().audio(root).unwrap().samples(), &[0, 1, 2, 3]);
+        assert_eq!(e.audio(root).unwrap().samples(), &[0, 1, 2, 3]);
     }
 
     #[test]

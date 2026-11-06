@@ -20,6 +20,7 @@ use std::path::Path;
 use thiserror::Error;
 
 pub use crate::convert::{Decoded, Samples};
+use crate::ledger::Reservation;
 
 /// Reasons a file could not be read into samples.
 #[derive(Debug, Error)]
@@ -36,6 +37,14 @@ pub enum DecodeError {
     /// The file is a known format but malformed or a variant not handled.
     #[error("{path}: {reason}")]
     Malformed { path: Box<Path>, reason: String },
+    /// The reservation offered does not pay for the decoded samples.
+    /// Nothing was allocated.
+    #[error("{path}: decoding needs {needed} bytes but {reserved} were reserved")]
+    ShortReservation {
+        path: Box<Path>,
+        needed: usize,
+        reserved: usize,
+    },
 }
 
 /// File formats this crate reads.
@@ -53,9 +62,13 @@ fn sniff(head: &[u8]) -> Option<Format> {
 }
 
 /// Reads an audio file into samples at its own rate and channel count.
-pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+///
+/// `reservation` must cover [`size`] of the file as it is now; a short one
+/// is refused before anything is allocated. The caller keeps it for as
+/// long as the samples live.
+pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeError> {
     match format(path)? {
-        Format::Wav => wav::decode(path),
+        Format::Wav => wav::decode(path, reservation),
     }
 }
 
@@ -94,8 +107,15 @@ fn read_head(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::ledger::Ledger;
+
+    /// A reservation that pays for anything, for tests of the decoding
+    /// itself.
+    pub(crate) fn paid() -> Reservation {
+        Ledger::new(usize::MAX).reserve(usize::MAX).unwrap()
+    }
 
     #[test]
     fn sniff_knows_wav_and_nothing_else() {
@@ -112,7 +132,7 @@ mod tests {
         let path = dir.path().join("noise.bin");
         std::fs::write(&path, b"hello").unwrap();
         assert!(matches!(
-            decode(&path).unwrap_err(),
+            decode(&path, &paid()).unwrap_err(),
             DecodeError::UnknownFormat { path: p } if *p == *path
         ));
         assert!(matches!(
@@ -126,7 +146,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("absent.wav");
         assert!(matches!(
-            decode(&path).unwrap_err(),
+            decode(&path, &paid()).unwrap_err(),
             DecodeError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound
         ));
     }

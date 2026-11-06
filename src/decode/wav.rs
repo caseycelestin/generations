@@ -9,6 +9,7 @@ use std::path::Path;
 use hound::{SampleFormat, WavReader};
 
 use super::{DecodeError, Decoded, Samples};
+use crate::ledger::Reservation;
 
 /// Bytes the samples of [`decode`] will take, from the header alone: every
 /// width is carried in a four-byte type, `i32` or `f32`. A file `decode`
@@ -17,6 +18,11 @@ use super::{DecodeError, Decoded, Samples};
 pub fn size(path: &Path) -> Result<usize, DecodeError> {
     let reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     check_width(path, reader.spec())?;
+    bytes(path, &reader)
+}
+
+/// Bytes the samples of an open reader will take.
+fn bytes<R: std::io::Read>(path: &Path, reader: &WavReader<R>) -> Result<usize, DecodeError> {
     (reader.len() as usize).checked_mul(4).ok_or_else(|| {
         malformed(
             path,
@@ -25,11 +31,20 @@ pub fn size(path: &Path) -> Result<usize, DecodeError> {
     })
 }
 
-pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeError> {
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
+    let width = check_width(path, spec)?;
+    let needed = bytes(path, &reader)?;
+    if !reservation.covers(needed) {
+        return Err(DecodeError::ShortReservation {
+            path: path.into(),
+            needed,
+            reserved: reservation.bytes(),
+        });
+    }
     let len = reader.len() as usize;
-    let samples = match check_width(path, spec)? {
+    let samples = match width {
         Width::Float => Samples::Float(collect(path, len, reader.samples::<f32>())?),
         Width::Int(bits) => Samples::Int {
             bits,
@@ -104,6 +119,33 @@ mod tests {
     use hound::{WavSpec, WavWriter};
 
     use super::*;
+    use crate::decode::tests::paid;
+    use crate::ledger::Ledger;
+
+    /// Decodes with a reservation that pays for anything.
+    fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+        super::decode(path, &paid())
+    }
+
+    #[test]
+    fn a_short_reservation_is_refused_before_decoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("short.wav");
+        write(&path, spec(1, 48_000, 16, SampleFormat::Int), &[0i16; 10]);
+        assert_eq!(size(&path).unwrap(), 40);
+        let ledger = Ledger::new(100);
+        let enough = ledger.reserve(40).unwrap();
+        assert!(super::decode(&path, &enough).is_ok());
+        let short = ledger.reserve(39).unwrap();
+        assert!(matches!(
+            super::decode(&path, &short).unwrap_err(),
+            DecodeError::ShortReservation {
+                needed: 40,
+                reserved: 39,
+                ..
+            }
+        ));
+    }
 
     fn spec(channels: u16, rate: u32, bits: u16, format: SampleFormat) -> WavSpec {
         WavSpec {

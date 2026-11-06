@@ -14,6 +14,7 @@ use thiserror::Error;
 
 use crate::audio::{AudioBuffer, AudioError, check_channels};
 use crate::config::{Pcm, SAMPLE_RATE};
+use crate::ledger::Reservation;
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
 /// not the result: the whole clip goes through in one call.
@@ -43,14 +44,6 @@ pub enum Samples {
     /// Floats normalised to `-1.0..=1.0`, with no promise of staying in
     /// range; conversion clamps.
     Float(Vec<f32>),
-}
-
-impl Decoded {
-    /// Bytes the samples occupy: every width is carried in a four-byte
-    /// type.
-    pub fn bytes(&self) -> usize {
-        self.samples.len() * 4
-    }
 }
 
 impl Samples {
@@ -86,6 +79,10 @@ pub enum ConvertError {
         rate: u32,
         source: ResamplerConstructionError,
     },
+    /// The reservation offered does not pay for the conversion's working
+    /// set. Nothing was allocated.
+    #[error("converting needs {needed} bytes but {reserved} were reserved")]
+    ShortReservation { needed: usize, reserved: usize },
     /// The resampler failed on the audio itself.
     #[error(transparent)]
     Resample(#[from] ResampleError),
@@ -155,7 +152,18 @@ fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
 /// there is only quantised. Channel count is kept as is: mono stays mono,
 /// stereo stays stereo. More channels than a buffer holds is an error, not
 /// a mixdown.
-pub fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
+///
+/// `reservation` must cover [`working_bytes`] of the audio; a short one is
+/// refused before anything is allocated. The caller keeps it for as long
+/// as the result lives.
+pub fn convert(decoded: Decoded, reservation: &Reservation) -> Result<AudioBuffer, ConvertError> {
+    let needed = working_bytes(&decoded)?;
+    if !reservation.covers(needed) {
+        return Err(ConvertError::ShortReservation {
+            needed,
+            reserved: reservation.bytes(),
+        });
+    }
     let (channels, frames) = check_shape(&decoded)?;
 
     if decoded.rate == SAMPLE_RATE {
@@ -206,6 +214,28 @@ fn resample(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::Ledger;
+
+    /// Converts with a reservation that pays for anything.
+    fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
+        super::convert(decoded, &paid())
+    }
+
+    fn paid() -> Reservation {
+        Ledger::new(usize::MAX).reserve(usize::MAX).unwrap()
+    }
+
+    #[test]
+    fn a_short_reservation_is_refused_before_converting() {
+        let d = int(SAMPLE_RATE, 1, 24, vec![0; 10]);
+        let needed = working_bytes(&d).unwrap();
+        let ledger = Ledger::new(usize::MAX);
+        assert!(super::convert(d.clone(), &ledger.reserve(needed).unwrap()).is_ok());
+        assert!(matches!(
+            super::convert(d, &ledger.reserve(needed - 1).unwrap()).unwrap_err(),
+            ConvertError::ShortReservation { needed: n, reserved: r } if n == needed && r == needed - 1
+        ));
+    }
 
     fn at(rate: u32, channels: u16, samples: Vec<f32>) -> Decoded {
         Decoded {
