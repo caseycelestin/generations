@@ -232,7 +232,7 @@ the code follows them.
   output, because that is what the caller holds; the type is named for
   what it does. A separate `Output` wrapper type was tried and removed:
   it added a name without adding behaviour. Commands sent before the
-  output is taken wait in the ring. One resident set and one ring per
+  output is taken wait in the ring. One set of loaded audio and one ring per
   live renderer; if a second output (a cue out) ever exists, the engine
   routes to it and the render side never learns there is another.
 - **Playback reads only audio already in RAM.** The real-time thread never
@@ -258,11 +258,11 @@ the code follows them.
   read of bytes the engine was just holding, a few milliseconds per print.
 - **The budget is enforced where RAM is managed.** The caller passes the
   budget to `Engine::open`; the project never learns about RAM. In step 4
-  the resident set checked it, being the one thing that knew how many
-  bytes it held. Step 5 moves the check into a ledger the set draws from,
-  under Memory below. `Engine::load` puts the audio in RAM first and sets
-  the flag only if that succeeded, so the flag is never true for a sample
-  that is not resident. The set is private to the crate: "is this loaded"
+  a resident set checked it, being the one thing that knew how many
+  bytes it held. Step 5 moved the check into a ledger, under Memory
+  below. `Engine::load` puts the audio in RAM first and sets the flag
+  only if that succeeded, so the flag is never true for a sample that is
+  not in RAM. The loaded audio is private to the engine: "is this loaded"
   is answered by the sample's flag, and "how much RAM is in use" gets a
   number on the engine when a panel asks for it, not a lent struct.
 - **Resident audio is ordinary heap allocation; the OS guarantees the
@@ -304,10 +304,10 @@ the code follows them.
   is no separate mixer: a list of voices with a sum is a method, not a
   concept. The pattern is JUCE's `Synthesiser` and Kira's `Renderer`; the
   name is Kira's, and "controller" was rejected because the engine gives
-  the orders and this side carries them out. The resident set and the
+  the orders and this side carries them out. The loaded audio and the
   voices do not overlap: one says which samples are in RAM, keyed by
-  sample and budgeted; the other says what is sounding now and where in
-  it, keyed by voice. They share only an `Arc` to the same bytes.
+  sample; the other says what is sounding now and where in it, keyed by
+  voice. They share only an `Arc` to the same bytes.
 - **Voices add into the caller's buffer, voice-major.** Whoever drives
   the renderer owns the period buffer and hands it in; the renderer never
   allocates one.
@@ -458,15 +458,20 @@ thing the engine holds in RAM that the resident set cannot serve.
   different size than the header said. Import and print have their sizes
   in hand before they allocate (the file header, the source sample) and
   reserve the same way.
-- **The resident set becomes a client.** It stores each buffer with its
-  reservation and loses the job of being the ledger. Its contract stays:
-  every entry is keyed by a sample id, immutable behind an `Arc` so a
-  voice can hold it, and playable now.
+- **The resident set dissolved into a map on the engine.** Once the
+  ledger took the counting, the set was a `HashMap` behind four one-line
+  methods, one of which repeated a check the engine already made. It is
+  now the engine's `loaded` field: sample id to the buffer and the
+  reservation that paid for it. Its contract is unchanged and lives on
+  the field: every entry is immutable behind an `Arc` so a voice can
+  hold it, and playable now. The name matches the project's `loaded`
+  flag, because they are two views of one fact. A type can be pulled
+  back out when a second output or an eviction policy gives it work.
 - **A take in progress is an in-flight buffer, not a resident one.** It
   has no id, because storage mints ids and a sample does not exist until
   stored; it grows, so it cannot be an immutable shared buffer; and it is
-  not playable. Fitting it into the resident set would cost that type an
-  optional id, interior mutability and an unplayable flag. So the engine's
+  not playable. Fitting it in with the loaded audio would cost that map an
+  optional key, interior mutability and an unplayable flag. So the engine's
   recording state owns it on the control side, holds one reservation and
   asks to grow it as frames arrive, and the take ends when growth is
   refused, the way a tape runs out. When it ends it goes through the same
@@ -524,11 +529,11 @@ thing the engine holds in RAM that the resident set cannot serve.
 ```
 SD card   kept projects; a copy of the active one, made on request
 eMMC      the active project; every change lands here at once
-RAM       whatever playback needs resident; the ResidentSet, under a budget
+RAM       whatever playback needs resident; the engine's loaded audio, under the ledger
 ```
 
 The storage layer does not know about tiers. A copy to the card and the
-resident set for playback are both layers beside or in front of it, not
+loaded audio for playback are both layers beside or in front of it, not
 changes to it.
 
 ## Deferred ideas
@@ -556,7 +561,7 @@ changes to it.
   pads clipping is a complaint rather than a design.
 - Unloading a sample while a voice plays it leaves the voice as the last
   holder of the audio, so the free happens on the audio thread. Fix:
-  `ResidentSet::remove` returns the `Arc`, and the engine keeps a retiring
+  unload keeps the removed `Arc`, and the engine keeps a retiring
   list it sweeps on the control side for entries whose count has dropped
   to one. Not an audible problem today; a rule to keep before the device
   is the target.

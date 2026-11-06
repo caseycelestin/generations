@@ -2,14 +2,13 @@
 //!
 //! Every role in the crate knows one thing. The engine is where an action
 //! that needs two of them is written: a print reads the project and runs
-//! an effect, a load reads the project and fills the resident set, a play
-//! checks the resident set and, on failure, asks the project why. Nothing
+//! an effect, a load reads the project and brings the audio into RAM, a
+//! play looks for it there and, on failure, asks the project why. Nothing
 //! below the engine is reachable from outside the crate except read-only,
 //! so there is one path to every action and the rules hold on it.
 //!
 //! The engine is also the control side of sound. It owns the memory budget
-//! (`Ledger`), the audio in RAM (`ResidentSet`) and the sending end of the
-//! command ring; the other end
+//! (`Ledger`), the loaded audio and the sending end of the command ring; the other end
 //! is the [`Renderer`] it mints as its output, which turns commands into
 //! frames wherever the caller drives it. Nothing the engine does can block that: every
 //! change to what is heard is a command pushed on the ring, never a call
@@ -17,9 +16,10 @@
 //! one hands it the output.
 
 pub(crate) mod ledger;
-pub(crate) mod resident;
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
@@ -32,9 +32,8 @@ use crate::project::{Project, ProjectError, SampleId};
 use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
-use ledger::Ledger;
 pub use ledger::OverBudget;
-use resident::ResidentSet;
+use ledger::{Ledger, Reservation};
 
 /// Reasons an engine operation can fail.
 #[derive(Debug, Error)]
@@ -49,7 +48,7 @@ pub enum EngineError {
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Convert(#[from] ConvertError),
-    /// The sample exists but is not loaded, so there is nothing resident
+    /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
     NotLoaded(SampleId),
@@ -64,8 +63,16 @@ pub struct Engine {
     /// The memory budget; everything the engine holds in RAM is reserved
     /// here first.
     ledger: Ledger,
-    /// Audio in RAM, each buffer with its reservation.
-    resident: ResidentSet,
+    /// The loaded samples: their audio in RAM, each with the reservation
+    /// that paid for it. This is the engine's cache in front of storage
+    /// and the control side's answer to "which samples are in RAM". Every
+    /// entry is immutable behind an `Arc` so a voice can hold it while it
+    /// plays; the render side only ever sees the clones it was handed.
+    /// The memory itself is ordinary heap allocation: the guarantee that
+    /// the budget's worth of RAM exists is the operating system's job (a
+    /// reservation for the engine's process on the device), not the
+    /// engine's.
+    loaded: HashMap<SampleId, (Arc<AudioBuffer>, Reservation)>,
     /// The sending end of the command ring; the renderer has the other.
     commands: Producer<Command>,
     /// The next voice id to mint. Only goes up, and this is the one
@@ -102,13 +109,13 @@ impl Engine {
         let mut engine = Self {
             project,
             ledger: Ledger::new(budget),
-            resident: ResidentSet::new(),
+            loaded: HashMap::new(),
             commands: producer,
             next_voice: 0,
             output: Some(Renderer::new(consumer)),
         };
         for id in engine.project.loaded_samples()? {
-            engine.make_resident(id)?;
+            engine.bring_in(id)?;
         }
         Ok(engine)
     }
@@ -154,21 +161,22 @@ impl Engine {
     /// stays loaded across a reopen.
     ///
     /// The audio goes into RAM first and the flag is set only if that
-    /// succeeded, so the flag is never true for a sample that is not
-    /// resident. A sample that does not fit the budget is refused and
-    /// nothing changes. Loading a loaded sample changes nothing.
+    /// succeeded, so the flag is never true for a sample that is not in
+    /// RAM. A sample that does not fit the budget is refused and nothing
+    /// changes. Loading a loaded sample changes nothing.
     pub fn load(&mut self, id: SampleId) -> Result<(), EngineError> {
-        self.make_resident(id)?;
+        self.bring_in(id)?;
         self.project.set_loaded(id, true)?;
         Ok(())
     }
 
-    /// Unloads `id`: clears the flag and drops its audio from RAM. Any
-    /// voice still playing it keeps the audio alive until it finishes.
-    /// Unloading an unloaded sample changes nothing.
+    /// Unloads `id`: clears the flag and drops its audio from RAM. The
+    /// reservation is released at once; any voice still playing the sample
+    /// keeps the audio itself alive until it finishes. Unloading an
+    /// unloaded sample changes nothing.
     pub fn unload(&mut self, id: SampleId) -> Result<(), EngineError> {
         self.project.set_loaded(id, false)?;
-        self.resident.remove(id);
+        self.loaded.remove(&id);
         Ok(())
     }
 
@@ -180,12 +188,13 @@ impl Engine {
     /// render. A play never fails for want of a free voice: the renderer
     /// steals the oldest.
     pub fn play(&mut self, id: SampleId) -> Result<VoiceId, EngineError> {
-        let Some(audio) = self.resident.get(id) else {
+        let Some((audio, _)) = self.loaded.get(&id) else {
             // Unknown and unloaded are different mistakes; say which.
             self.project.sample(id)?;
             return Err(EngineError::NotLoaded(id));
         };
         let voice = VoiceId(self.next_voice);
+        let audio = Arc::clone(audio);
         self.send(Command::Play { id: voice, audio })?;
         // Minted only once the command is in; a refused press burns no id.
         self.next_voice += 1;
@@ -215,8 +224,8 @@ impl Engine {
     /// The memory is reserved before the read, from the size the project
     /// records for the sample, so a refused load never allocates. Audio
     /// that comes back a different size than recorded is corrupt storage.
-    fn make_resident(&mut self, id: SampleId) -> Result<(), EngineError> {
-        if self.resident.contains(id) {
+    fn bring_in(&mut self, id: SampleId) -> Result<(), EngineError> {
+        if self.loaded.contains_key(&id) {
             return Ok(());
         }
         let sample = self.project.sample(id)?;
@@ -233,7 +242,7 @@ impl Engine {
             ))
             .into());
         }
-        self.resident.insert(id, audio, reservation);
+        self.loaded.insert(id, (Arc::new(audio), reservation));
         Ok(())
     }
 
@@ -363,17 +372,17 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.import_audio(&ramp(4)).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
-        assert!(!e.resident.contains(id));
+        assert!(!e.loaded.contains_key(&id));
     }
 
     #[test]
-    fn load_makes_audio_resident_and_sets_the_flag() {
+    fn load_brings_audio_into_ram_and_sets_the_flag() {
         let (mut e, _r) = engine();
         let id = e.import_audio(&ramp(4)).unwrap();
 
         e.load(id).unwrap();
         assert!(e.project().sample(id).unwrap().loaded);
-        assert_eq!(e.resident.get(id).unwrap().samples(), &[0, 1, 2, 3]);
+        assert_eq!(e.loaded[&id].0.samples(), &[0, 1, 2, 3]);
         assert_eq!(e.ledger.in_use(), ramp(4).bytes());
 
         // Loading again changes nothing.
@@ -389,7 +398,7 @@ mod tests {
 
         e.unload(id).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
-        assert!(!e.resident.contains(id));
+        assert!(!e.loaded.contains_key(&id));
         assert_eq!(e.ledger.in_use(), 0);
 
         // Unloading again changes nothing.
@@ -406,7 +415,7 @@ mod tests {
 
         assert!(matches!(e.load(b), Err(EngineError::OverBudget(_))));
         assert!(!e.project().sample(b).unwrap().loaded);
-        assert!(!e.resident.contains(b));
+        assert!(!e.loaded.contains_key(&b));
         assert!(e.project().sample(a).unwrap().loaded);
     }
 
@@ -436,7 +445,7 @@ mod tests {
             e.unload(bogus),
             Err(EngineError::Project(ProjectError::UnknownSample(id))) if id == bogus
         ));
-        assert!(!e.resident.contains(bogus));
+        assert!(!e.loaded.contains_key(&bogus));
     }
 
     #[test]
@@ -495,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn unload_keeps_a_playing_voice_alive() {
+    fn unload_keeps_a_playing_voice_alive_but_frees_the_budget() {
         let (mut e, mut r) = engine();
         let id = e.import_audio(&ramp(100)).unwrap();
         e.load(id).unwrap();
@@ -503,7 +512,8 @@ mod tests {
         period(&mut r, 4);
 
         e.unload(id).unwrap();
-        assert!(!e.resident.contains(id));
+        assert!(!e.loaded.contains_key(&id));
+        assert_eq!(e.ledger.in_use(), 0);
         period(&mut r, 4);
         assert!(r.is_playing(voice));
     }
@@ -543,8 +553,8 @@ mod tests {
         drop(e);
 
         let e = Engine::open(dir.path(), usize::MAX).unwrap();
-        assert!(e.resident.contains(kept));
-        assert!(!e.resident.contains(dropped));
+        assert!(e.loaded.contains_key(&kept));
+        assert!(!e.loaded.contains_key(&dropped));
         assert_eq!(e.ledger.in_use(), ramp(4).bytes());
     }
 
