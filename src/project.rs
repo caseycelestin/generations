@@ -197,7 +197,7 @@ pub(crate) mod tests {
                 return Ok(None);
             };
             reservation
-                .claim(audio.bytes())
+                .can_hold(audio.bytes())
                 .map_err(|source| StorageError::ShortReservation { id, source })?;
             Ok(Some(audio))
         }

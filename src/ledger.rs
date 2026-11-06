@@ -129,9 +129,11 @@ impl Reservation {
         self.bytes
     }
 
-    /// Checks that this reservation pays for `bytes`. What an allocator
-    /// does before it allocates; on `Err` it allocates nothing.
-    pub fn claim(&self, bytes: usize) -> Result<(), ShortReservation> {
+    /// Checks that `bytes` fit in this reservation. What an allocator asks
+    /// before it allocates; on `Err` it allocates nothing. Compares two
+    /// numbers and changes nothing: the bytes were counted when the
+    /// reservation was made.
+    pub fn can_hold(&self, bytes: usize) -> Result<(), ShortReservation> {
         if bytes <= self.bytes {
             Ok(())
         } else {
@@ -201,13 +203,13 @@ mod tests {
     }
 
     #[test]
-    fn a_reservation_pays_up_to_its_bytes() {
+    fn a_reservation_holds_up_to_its_bytes() {
         let ledger = Ledger::new(10);
         let r = ledger.reserve(4).unwrap();
-        assert_eq!(r.claim(0), Ok(()));
-        assert_eq!(r.claim(4), Ok(()));
+        assert_eq!(r.can_hold(0), Ok(()));
+        assert_eq!(r.can_hold(4), Ok(()));
         assert_eq!(
-            r.claim(5),
+            r.can_hold(5),
             Err(ShortReservation {
                 needed: 5,
                 reserved: 4

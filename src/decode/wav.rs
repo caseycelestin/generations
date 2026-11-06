@@ -36,7 +36,7 @@ pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeE
     let spec = reader.spec();
     let width = check_width(path, spec)?;
     reservation
-        .claim(bytes(path, &reader)?)
+        .can_hold(bytes(path, &reader)?)
         .map_err(|source| DecodeError::ShortReservation {
             path: path.into(),
             source,

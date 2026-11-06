@@ -175,7 +175,7 @@ fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
 /// as the result lives.
 pub fn convert(decoded: Decoded, reservation: &Reservation) -> Result<AudioBuffer, ConvertError> {
     let (channels, frames) = check_shape(&decoded)?;
-    reservation.claim(cost(&decoded, channels, frames)?)?;
+    reservation.can_hold(cost(&decoded, channels, frames)?)?;
 
     if decoded.rate == SAMPLE_RATE {
         if let Samples::Int { bits, samples } = &decoded.samples

@@ -234,7 +234,7 @@ impl FileStorage {
         let mut reader = self.open_wav(id)?;
         let spec = reader.spec();
         reservation
-            .claim(AudioBuffer::bytes_for(
+            .can_hold(AudioBuffer::bytes_for(
                 spec.channels,
                 reader.duration() as usize,
             ))
