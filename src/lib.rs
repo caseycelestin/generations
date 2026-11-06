@@ -7,14 +7,15 @@
 //!
 //! # Architecture
 //!
-//! Six roles, each its own module, with one rule about who talks to whom:
+//! Seven roles, each its own module, with one rule about who talks to whom:
 //!
 //! ```text
 //! engine     coordinates: what a UI or front panel calls
 //!   │
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
 //!   │
-//!   ├─ playback  audio in RAM, and the renderer that turns it into periods
+//!   ├─ playback  the control side of sound: audio in RAM, commands sent
+//!   │    └─ render    the other side: turns commands into frames, wherever driven
 //!   │
 //!   ├─ device    the hardware: takes a callback, runs it on the audio thread
 //!   │
@@ -31,11 +32,12 @@
 //!   add the result to the project as the source's child. A load is: read
 //!   the audio from the project, put it in playback's resident set, mark
 //!   the sample loaded.
-//! - **`playback`** is two halves with one rule. The resident set holds
-//!   audio in RAM under a budget. The renderer turns commands and resident
-//!   audio into periods of output and is real-time safe, so a device can
-//!   drive it live and a bounce can drive it offline. Nothing in it knows
-//!   what a project or a device is.
+//! - **`playback`** is the control side of sound: the resident set holds
+//!   audio in RAM under a budget, and commands go out over a lock-free ring.
+//! - **`render`** is the other side of that ring. The renderer turns
+//!   commands and resident audio into frames and depends on nothing about
+//!   where it runs, so a device can drive it live and a bounce can drive it
+//!   offline. Nothing in it knows what a project or a device is.
 //! - **`device`** is the only code that knows the audio library or that
 //!   there is an audio thread. It takes a callback and calls it once per
 //!   period. The engine connects the two: it hands playback's renderer to
@@ -79,11 +81,13 @@ pub mod effects;
 pub mod engine;
 pub(crate) mod playback;
 pub mod project;
+pub(crate) mod render;
 pub(crate) mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use device::DeviceError;
 pub use engine::{Engine, EngineError};
-pub use playback::{PlaybackError, VoiceId};
+pub use playback::PlaybackError;
 pub use project::{Project, ProjectError, Sample, SampleId};
+pub use render::VoiceId;
 pub use storage::StorageError;
