@@ -61,11 +61,12 @@
 //!   holds a whole, valid project; opening one creates or validates it.
 //! - **[`effects`]** are offline functions over an [`AudioBuffer`]. Only
 //!   playback, mixing and sequencing will ever be real-time.
-//! - **[`mod@convert`]** is the boundary between the world's audio and the
-//!   project's. Whatever a file format turns out to hold, a decoder hands
-//!   over one plain [`Decoded`] value (rate, channels, interleaved `f32`)
-//!   and [`convert()`] resamples and quantises it. Formats are added by
-//!   writing a decoder; nothing about the project format moves.
+//! - **`decode`** and **`convert`** are the boundary between the world's
+//!   audio and the project's. A decoder reads one file format into a plain
+//!   value (rate, channels, interleaved `f32`); `convert` resamples and
+//!   quantises that into a buffer. Formats are added by writing a decoder;
+//!   nothing about the project format moves, and the caller never sees
+//!   either: it hands [`Engine::import`] a path.
 //! - **[`audio`]** and **[`config`]** hold the one fixed format every buffer
 //!   uses: 48 kHz, 16-bit PCM, 1 or 2 channels, with `f32` for processing.
 //!
