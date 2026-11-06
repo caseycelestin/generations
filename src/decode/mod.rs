@@ -16,7 +16,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-pub use crate::convert::Decoded;
+pub use crate::convert::{Decoded, Samples};
 
 /// Reasons a file could not be read into samples.
 #[derive(Debug, Error)]

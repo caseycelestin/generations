@@ -10,17 +10,14 @@ use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError};
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, AudioError, check_channels};
-use crate::config::SAMPLE_RATE;
+use crate::audio::{AudioBuffer, AudioError, SCALE, check_channels};
+use crate::config::{Pcm, SAMPLE_RATE};
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
 /// not the result: the whole clip goes through in one call.
 const RESAMPLE_CHUNK: usize = 1024;
 
-/// Audio as a decoder found it: not yet in the project format.
-///
-/// Samples are interleaved and normalised to `-1.0..=1.0`, with no promise
-/// that they stay in range; conversion clamps.
+/// Audio as a decoder found it, in whatever rate and width the file had.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decoded {
     /// Sample rate of the source, in Hz.
@@ -28,7 +25,31 @@ pub struct Decoded {
     /// Interleaved channel count of the source.
     pub channels: u16,
     /// Interleaved samples, `channels` per frame.
-    pub samples: Vec<f32>,
+    pub samples: Samples,
+}
+
+/// The samples of a [`Decoded`], as wide as the file stored them.
+///
+/// A decoder reports [`Pcm`](Samples::Pcm) when the file's samples were
+/// already the project's PCM width, so a file already in the project
+/// format is stored byte for byte. Everything else is [`Float`](Samples::Float),
+/// normalised to `-1.0..=1.0` with no promise of staying in range;
+/// conversion clamps.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Samples {
+    /// Exactly the project's PCM width: nothing to quantise.
+    Pcm(Vec<Pcm>),
+    /// Any other width, or float: quantised with dither on the way in.
+    Float(Vec<f32>),
+}
+
+impl Samples {
+    fn len(&self) -> usize {
+        match self {
+            Samples::Pcm(v) => v.len(),
+            Samples::Float(v) => v.len(),
+        }
+    }
 }
 
 /// Reasons decoded audio cannot become project audio.
@@ -62,7 +83,11 @@ pub fn convert(decoded: &Decoded) -> Result<AudioBuffer, ConvertError> {
         return Err(ConvertError::ZeroRate);
     }
     if decoded.rate == SAMPLE_RATE {
-        return Ok(AudioBuffer::from_f32(decoded.channels, &decoded.samples)?);
+        // Already the project rate: PCM is wrapped as is, float is quantised.
+        return Ok(match &decoded.samples {
+            Samples::Pcm(pcm) => AudioBuffer::new(decoded.channels, pcm.clone())?,
+            Samples::Float(f) => AudioBuffer::from_f32(decoded.channels, f)?,
+        });
     }
     // Check the shape before resampling so the error names the real
     // problem rather than a buffer-size mismatch inside the resampler.
@@ -76,7 +101,12 @@ pub fn convert(decoded: &Decoded) -> Result<AudioBuffer, ConvertError> {
         .into());
     }
     let frames = decoded.samples.len() / channels;
-    let resampled = resample(&decoded.samples, decoded.rate, channels, frames)?;
+    // Resampling is float work whatever the file held.
+    let float: Vec<f32> = match &decoded.samples {
+        Samples::Pcm(pcm) => pcm.iter().map(|&s| f32::from(s) / SCALE).collect(),
+        Samples::Float(f) => f.clone(),
+    };
+    let resampled = resample(&float, decoded.rate, channels, frames)?;
     Ok(AudioBuffer::from_f32(decoded.channels, &resampled)?)
 }
 
@@ -114,18 +144,64 @@ mod tests {
         Decoded {
             rate,
             channels,
-            samples,
+            samples: Samples::Float(samples),
+        }
+    }
+
+    fn pcm(rate: u32, channels: u16, samples: Vec<Pcm>) -> Decoded {
+        Decoded {
+            rate,
+            channels,
+            samples: Samples::Pcm(samples),
         }
     }
 
     #[test]
+    fn pcm_at_the_project_rate_is_stored_byte_for_byte() {
+        let b = convert(&pcm(
+            SAMPLE_RATE,
+            2,
+            vec![0, 1, -1, 2001, Pcm::MAX, Pcm::MIN],
+        ))
+        .unwrap();
+        assert_eq!(b.samples(), &[0, 1, -1, 2001, Pcm::MAX, Pcm::MIN]);
+        assert_eq!(b.channels(), 2);
+    }
+
+    #[test]
+    fn pcm_at_another_rate_is_resampled_like_float() {
+        let tone: Vec<Pcm> = sine(44_100, 440.0, 1.0)
+            .iter()
+            .map(|s| (s * 32_768.0) as Pcm)
+            .collect();
+        let b = convert(&pcm(44_100, 1, tone)).unwrap();
+        assert!((b.frames() as i64 - SAMPLE_RATE as i64).abs() <= 2);
+        assert!((rising_crossings(&b.to_f32()) as i64 - 440).abs() <= 2);
+    }
+
+    #[test]
+    fn pcm_shape_errors_are_the_same_as_float() {
+        assert!(matches!(
+            convert(&pcm(SAMPLE_RATE, 2, vec![0; 3])).unwrap_err(),
+            ConvertError::Audio(AudioError::RaggedFrames {
+                samples: 3,
+                channels: 2
+            })
+        ));
+        assert!(matches!(
+            convert(&pcm(44_100, 6, vec![0; 6])).unwrap_err(),
+            ConvertError::Audio(AudioError::BadChannelCount(6))
+        ));
+    }
+
+    #[test]
     fn same_rate_is_quantised_and_keeps_its_channels() {
-        let d = at(SAMPLE_RATE, 2, vec![0.0, 0.5, -0.5, 1.0]);
-        let b = convert(&d).unwrap();
+        let samples = vec![0.0, 0.5, -0.5, 1.0];
+        let b = convert(&at(SAMPLE_RATE, 2, samples.clone())).unwrap();
         assert_eq!(b.channels(), 2);
         assert_eq!(b.frames(), 2);
         let back = b.to_f32();
-        for (want, got) in d.samples.iter().zip(&back) {
+        for (want, got) in samples.iter().zip(&back) {
             assert!(
                 (want.clamp(-1.0, 1.0) - got).abs() < 0.001,
                 "{want} vs {got}"
