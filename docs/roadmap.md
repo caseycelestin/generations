@@ -10,9 +10,10 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 2 | First print: one real effect (reverse) and an engine that applies it | done |
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
-| 5 | Recording: audio input as a new root | |
-| 6 | Sequencing and mixing: the real-time side | |
-| 7 | Arrangement and more effects | |
+| 5 | RAM ledger: one figure for everything the engine holds in memory | |
+| 6 | Recording: audio input as a new root | |
+| 7 | Sequencing and mixing: the real-time side | |
+| 8 | Arrangement and more effects | |
 
 ## Why this order
 
@@ -217,7 +218,7 @@ the code follows them.
   `render` turns commands into frames and gives the same frames live from
   a device callback or offline in a loop, so "realtime" was rejected as a
   name (the code must run offline) and "process" was rejected (it collides
-  with the OS process this roadmap talks about). Recording in step 5 gets
+  with the OS process this roadmap talks about). Recording in step 6 gets
   a sibling `capture` module, a ring the other way; the pair is the data
   plane, named by direction, and the rules (no allocation, no lock, no
   disk, no error path, no clock) apply to both.
@@ -256,13 +257,14 @@ the code follows them.
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
 - **The budget is enforced where RAM is managed.** The caller passes the
-  budget to `Engine::open`. The resident set inside `engine` checks it, because it is the one thing that knows how many bytes it
-  holds; the project never learns about RAM. `Engine::load` puts the audio
-  in RAM first and sets the flag only if that succeeded, so the flag is
-  never true for a sample that is not resident. The set is private to the
-  crate: "is this loaded" is answered by the sample's flag, and "how much
-  RAM is in use" gets a number on the engine when a panel asks for it,
-  not a lent struct.
+  budget to `Engine::open`; the project never learns about RAM. In step 4
+  the resident set checked it, being the one thing that knew how many
+  bytes it held. Step 5 moves the check into a ledger the set draws from,
+  under Memory below. `Engine::load` puts the audio in RAM first and sets
+  the flag only if that succeeded, so the flag is never true for a sample
+  that is not resident. The set is private to the crate: "is this loaded"
+  is answered by the sample's flag, and "how much RAM is in use" gets a
+  number on the engine when a panel asks for it, not a lent struct.
 - **Resident audio is ordinary heap allocation; the OS guarantees the
   budget.** Each buffer owns its own block, wrapped in an `Arc` so a voice
   can hold it while it plays. There is no preallocated arena. Linux
@@ -410,6 +412,89 @@ the code follows them.
   define what a project is, and two machines must not disagree about the
   same files.
 
+### Memory
+
+Step 5. Decided before recording because a take in progress is the first
+thing the engine holds in RAM that the resident set cannot serve.
+
+- **One figure covers everything the engine holds in memory.** Resident
+  audio, buffers in flight (an import's decoded and converted buffers, a
+  print's input and output, a take in progress) and, later, the state of
+  live effects all count against the budget passed to `Engine::open`. A
+  separate bound on sample length was the earlier plan, so the deployment
+  could reserve the budget plus the largest transient. But the largest
+  transient is not one buffer: a print holds the i16 input, its f32 copy,
+  the f32 output and the i16 output at once, so the reservation would be
+  the budget plus several multiples of the bound, with the multiple
+  depending on the operation. That is the engine's arithmetic done from
+  outside by a formula the caller has to get right. One figure moves it
+  inside: the caller sets the number to what the cgroup gives the
+  process, less fixed overhead, and the engine never asks for more audio
+  memory than that.
+- **The ledger is a quota, not an allocator.** One crate-private type
+  holds the figure and the bytes currently promised. A client asks for so
+  many bytes and gets a reservation or a refusal, then allocates on the
+  ordinary heap, as decided under Playback; the OS reservation is still
+  the real guarantee. The ledger never owns a buffer and never hands out
+  a pointer. It adds the missing half of that decision: the engine never
+  promises more than the figure, so the cgroup only has to cover one
+  number.
+- **The check happens in one place.** The only comparison against the
+  figure is inside the ledger's reserve. A reservation is a value held
+  next to the buffer it paid for and gives the bytes back when it is
+  dropped, so release is automatic and cannot be forgotten or counted
+  twice. Call sites are many but identical: ask once, hold the ticket,
+  drop it. None of them knows the figure or what else is in RAM. A single
+  budget checked by arithmetic at several sites was rejected as the thing
+  that would get messy.
+- **The resident set becomes a client.** It stores each buffer with its
+  reservation and loses the job of being the ledger. Its contract stays:
+  every entry is keyed by a sample id, immutable behind an `Arc` so a
+  voice can hold it, and playable now.
+- **A take in progress is an in-flight buffer, not a resident one.** It
+  has no id, because storage mints ids and a sample does not exist until
+  stored; it grows, so it cannot be an immutable shared buffer; and it is
+  not playable. Fitting it into the resident set would cost that type an
+  optional id, interior mutability and an unplayable flag. So the engine's
+  recording state owns it on the control side, holds one reservation and
+  asks to grow it as frames arrive, and the take ends when growth is
+  refused, the way a tape runs out. When it ends it goes through the same
+  crate-private add as import and print, and loading it afterwards is a
+  separate read from disk, as already decided for prints.
+- **A fixed maximum record time is policy, not a RAM parameter.** Under
+  one figure, how long a take can run depends on what is loaded. If a
+  predictable limit matters as a product feature, it is the caller
+  stopping the take at N seconds, or a product constant chosen once like
+  the voice count. It is not a second number on `open`.
+- **Prints reserve their cost up front.** An effect is a plain function
+  that allocates its own f32 working copies, and the ledger cannot see
+  inside it. The engine reserves the print's known cost before calling
+  the effect, input and output in f32 plus the i16 result, and the
+  effect's allocations land inside that estimate. It is accurate for every
+  effect that exists and becomes exact when effects move into the render
+  side and the engine owns their buffers.
+- **Live effects will reserve at instantiation, on the control side.** A
+  delay line or a reverb owns fixed buffers for its whole life, and the
+  render path may not allocate, so they are built when the effect is
+  created, moved to the render side with it, and released when it is
+  removed: the same life cycle as a loaded sample. The render side never
+  learns there is a budget. A user who loads a big reverb has less room
+  for samples, which is true on the hardware and should be true in the
+  number.
+- **The number is only true if every large audio allocation asks first.**
+  One uncounted buffer and the figure is a lie again. The ledger is the
+  only way the crate gets a big buffer, not an optional thing a site can
+  skip, and that is the thing to check in review of every later step.
+- **What a reservation is for is a label, not a mechanism.** A ticket can
+  carry a sample id, a take, an effect, so a panel can show RAM in use by
+  kind. Nothing enforces anything per kind, so the label arrives with the
+  panel that reads it. Sub-budgets, eviction, priorities and a custom
+  arena are not part of this step and the ledger does not invite them.
+- **The ledger does nothing visible on a desktop.** Its value is entirely
+  on the target, where there is no swap and the cgroup cap means an
+  allocation past the figure is the OOM killer ending the engine
+  mid-performance rather than a refused call the panel can show.
+
 ### Process
 
 - **The public surface is kept minimal.** Convenience methods are added
@@ -469,12 +554,6 @@ changes to it.
   control side through `Stream::error`; the example prints them at the
   end. Where they go from there arrives with whatever reports events to a
   front panel.
-- A bound on sample length. Audio in flight (an import's buffer, a print's
-  input and output, a recording in progress) is not counted against the
-  budget, so the OS reservation must cover the budget plus the largest
-  transient. A maximum sample length bounds every transient at once,
-  including a recording, which has no other natural end. Needed before
-  step 5.
 - Streaming long recordings from eMMC instead of holding them resident,
   for audio that outgrows RAM. Needs a feeder thread and a prefetch window
   per voice, and has to stay clear of our own fsyncs.
