@@ -186,10 +186,13 @@ out; the short version of the argument is here so it is not had twice.
   user should make, not one the import makes silently.
 - **WAV covers integer PCM at 8 to 32 bits and 32-bit float.** Integers
   are scaled by their own width so every depth lands on the same range.
-- Open: a 16-bit 48 kHz source goes through `f32` and is re-dithered on
-  the way in, so its stored bytes can differ from the file by one LSB.
-  Whether the WAV decoder should bypass conversion for a file already in
-  the project format is undecided; it would be invisible to the caller.
+- **A file already in the project format is stored byte for byte.** A
+  decoder reports samples as wide as the file had them: the project's PCM
+  width as PCM, anything else as `f32`. At the project rate, PCM is
+  wrapped untouched and only `f32` is quantised with dither; at another
+  rate both are resampled. So re-importing a project's own WAV changes
+  nothing, and the decoder still knows nothing about the project format
+  beyond the width it is asked to match.
 
 ### Playback
 
