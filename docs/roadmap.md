@@ -217,9 +217,8 @@ the code follows them.
   would have to either refuse the add or store the sample unloaded anyway,
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
-- **The budget is enforced where RAM is managed.** `SAMPLE_RAM_BUDGET` in
-  `config.rs` bounds resident audio. The resident set inside `engine`
-  checks it, because it is the one thing that knows how many bytes it
+- **The budget is enforced where RAM is managed.** The caller passes the
+  budget to `Engine::open`. The resident set inside `engine` checks it, because it is the one thing that knows how many bytes it
   holds; the project never learns about RAM. `Engine::load` puts the audio
   in RAM first and sets the flag only if that succeeded, so the flag is
   never true for a sample that is not resident. The set is private to the
@@ -362,9 +361,9 @@ the code follows them.
   stays a constant until the target has variants that disagree. The
   budget is different: CM4s ship with 1, 2, 4 or 8 GB and the right
   number depends on the cgroup reservation and on what else runs, so no
-  constant can be right and the deployment has to supply it. It becomes a
-  parameter on `Engine::open` (not yet in code); `SAMPLE_RAM_BUDGET` stays
-  as the default the examples pass. The engine never reads the process
+  constant can be right and the deployment has to supply it. It is a
+  parameter on `Engine::open` and there is no constant for it in the
+  library; each example carries its own guess. The engine never reads the process
   environment; the binary may, and passes what it learns. The format
   constants (rate, PCM width, channels) are a different kind again: they
   define what a project is, and two machines must not disagree about the

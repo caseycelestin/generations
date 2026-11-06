@@ -25,6 +25,10 @@ use generations::{AudioBuffer, Engine, effects};
 mod device;
 use device::Device;
 
+/// RAM for loaded audio. The engine does not know the machine; this
+/// example does not either, so it guesses generously for a desktop.
+const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
+
 /// One second of A440, decaying from half scale to near silence.
 fn pluck() -> Result<AudioBuffer, Box<dyn Error>> {
     let samples: Vec<f32> = (0..SAMPLE_RATE)
@@ -42,7 +46,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: first_sound <project-dir>")?;
 
-    let mut engine = Engine::open(&dir)?;
+    let mut engine = Engine::open(&dir, SAMPLE_RAM_BUDGET)?;
     let mut output = engine.output().ok_or("output already taken")?;
     // Declared after `engine`, so it is dropped first: the audio thread
     // stops before the engine lets go of its audio.

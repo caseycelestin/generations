@@ -12,13 +12,17 @@ use std::path::PathBuf;
 
 use generations::{AudioBuffer, Engine, effects};
 
+/// RAM for loaded audio. The engine does not know the machine; this
+/// example does not either, so it guesses generously for a desktop.
+const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
+
 fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
         .ok_or("usage: first_print <project-dir>")?;
 
-    let mut engine = Engine::open(&dir)?;
+    let mut engine = Engine::open(&dir, SAMPLE_RAM_BUDGET)?;
     // A short mono ramp stands in for a real recording until step 4.
     let ramp = AudioBuffer::new(1, (0..8).collect::<Vec<_>>())?;
     let root = engine.import(&ramp)?;
@@ -26,7 +30,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     drop(engine);
 
     // Walk the lineage from the print back to the root, on a fresh open.
-    let engine = Engine::open(&dir)?;
+    let engine = Engine::open(&dir, SAMPLE_RAM_BUDGET)?;
     let project = engine.project();
     let mut cur = Some(printed);
     while let Some(id) = cur {

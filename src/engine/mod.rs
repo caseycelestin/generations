@@ -23,7 +23,7 @@ use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::config::{COMMAND_CAPACITY, SAMPLE_RAM_BUDGET};
+use crate::config::COMMAND_CAPACITY;
 use crate::project::{Project, ProjectError, SampleId};
 use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
@@ -64,7 +64,13 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// An engine on the project at `dir`, created there if none exists.
+    /// An engine on the project at `dir`, created there if none exists,
+    /// with `budget` bytes of RAM for loaded audio.
+    ///
+    /// The budget is the caller's to know: it depends on the machine's RAM
+    /// and on what else runs there, and the engine never reads either.
+    /// Playback reads only loaded audio, so everything a pad can trigger
+    /// must fit under it. Loading past it is an error, not an eviction.
     ///
     /// No audio device is involved: the engine works the same on a machine
     /// without one. To hear it, take [`Engine::output`] and drive it.
@@ -73,8 +79,8 @@ impl Engine {
     /// this returns, so the sampler comes back ready. If they no longer fit
     /// the budget (it shrank, or the project moved to a smaller machine)
     /// the open fails rather than deciding which ones to leave out.
-    pub fn open(dir: &Path) -> Result<Self, EngineError> {
-        Self::on(Project::new(storage::open(dir)?), SAMPLE_RAM_BUDGET)
+    pub fn open(dir: &Path, budget: usize) -> Result<Self, EngineError> {
+        Self::on(Project::new(storage::open(dir)?), budget)
     }
 
     /// An engine on an already open project with `budget` bytes for
@@ -221,11 +227,6 @@ mod tests {
         let mut engine = Engine::on(memory_project(), usize::MAX).unwrap();
         let output = engine.output().unwrap();
         (engine, output)
-    }
-
-    /// An engine on the project at `dir`, as `Engine::open` builds it.
-    fn on_disk(dir: &Path) -> Engine {
-        Engine::on(Project::new(storage::open(dir).unwrap()), usize::MAX).unwrap()
     }
 
     /// Renders one period of `frames` frames and returns it.
@@ -426,7 +427,7 @@ mod tests {
     #[test]
     fn open_brings_loaded_samples_back_into_ram() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = on_disk(dir.path());
+        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let kept = e.import(&ramp(4)).unwrap();
         let dropped = e.import(&ramp(8)).unwrap();
         e.load(kept).unwrap();
@@ -434,7 +435,7 @@ mod tests {
         e.unload(dropped).unwrap();
         drop(e);
 
-        let e = on_disk(dir.path());
+        let e = Engine::open(dir.path(), usize::MAX).unwrap();
         assert!(e.resident.contains(kept));
         assert!(!e.resident.contains(dropped));
         assert_eq!(e.resident.bytes(), ramp(4).bytes());
@@ -443,15 +444,12 @@ mod tests {
     #[test]
     fn open_fails_when_loaded_samples_no_longer_fit() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = on_disk(dir.path());
+        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let id = e.import(&ramp(4)).unwrap();
         e.load(id).unwrap();
         drop(e);
 
-        let result = Engine::on(
-            Project::new(storage::open(dir.path()).unwrap()),
-            ramp(4).bytes() - 1,
-        );
+        let result = Engine::open(dir.path(), ramp(4).bytes() - 1);
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
     }
 

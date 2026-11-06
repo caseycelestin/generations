@@ -20,13 +20,6 @@ pub const MAX_CHANNELS: u16 = 2;
 /// is heard on both.
 pub const OUTPUT_CHANNELS: usize = 2;
 
-/// Upper bound on sample audio resident in RAM for playback, in bytes.
-///
-/// Playback reads only resident audio, so everything a pad can trigger
-/// must fit under this. Loading past it is an error, not an eviction. Set
-/// generously for now; the real number depends on the device's RAM.
-pub const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
-
 /// Number of sounds that can play at once.
 ///
 /// A fixed count bounds the work in one audio callback. When every voice
