@@ -147,14 +147,13 @@ impl Engine {
     /// audio before it is converted. A file too large to pass through RAM
     /// beside what is loaded is refused and nothing is stored.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let (audio, _converting) = {
-            // Scoped with the decoded samples: both go when convert has
-            // consumed them.
-            let decoding = self.ledger.reserve(decode::size(file)?)?;
-            let decoded = decode::decode(file, &decoding)?;
-            let converting = self.ledger.reserve(convert::working_bytes(&decoded)?)?;
-            (convert::convert(decoded, &converting)?, converting)
-        };
+        let decoded_reservation = self.ledger.reserve(decode::size(file)?)?;
+        let decoded = decode::decode(file, &decoded_reservation)?;
+        let conversion_reservation = self.ledger.reserve(convert::working_bytes(&decoded)?)?;
+        let audio = convert::convert(decoded, &conversion_reservation)?;
+        // Convert consumed the decoded samples, so their bytes go back now.
+        // The conversion's reservation covers `audio` until it is on disk.
+        drop(decoded_reservation);
         Ok(self.import_audio(&audio)?)
     }
 
@@ -283,8 +282,8 @@ impl Engine {
         let sample = self.project.sample(source)?;
         let pcm_bytes = AudioBuffer::bytes_for(sample.channels, sample.frames);
         let f32_bytes = sample.frames * usize::from(sample.channels) * size_of::<f32>();
-        let printing = self.ledger.reserve(2 * (pcm_bytes + f32_bytes))?;
-        let input = self.project.audio(source, &printing)?;
+        let print_reservation = self.ledger.reserve(2 * (pcm_bytes + f32_bytes))?;
+        let input = self.project.audio(source, &print_reservation)?;
         let output = effect(&input);
         Ok(self.project.add_sample(Some(source), &output)?)
     }
