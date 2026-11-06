@@ -7,7 +7,8 @@
 //!
 //! The engine does not know there is a speaker. This file opens the
 //! device, takes the engine's output and hands it over; those are the only
-//! lines here that need hardware.
+//! lines here that need hardware, and `device/` beside this file is the
+//! only code that knows `cpal`.
 //!
 //! Usage: `cargo run --example first_sound -- <project-dir>`. The directory
 //! is created if it does not exist. Needs an output device.
@@ -19,7 +20,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::{AudioBuffer, Device, Engine, effects};
+use generations::{AudioBuffer, Engine, effects};
+
+mod device;
+use device::Device;
 
 /// One second of A440, decaying from half scale to near silence.
 fn pluck() -> Result<AudioBuffer, Box<dyn Error>> {

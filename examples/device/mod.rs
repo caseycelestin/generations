@@ -1,16 +1,16 @@
 //! The audio device: the hardware, and the thread it runs.
 //!
-//! This is the only code in the crate that knows `cpal` exists and the only
-//! code that knows there is an audio thread. A [`Device`] is the system's
-//! default output, checked once for the engine's one format; [`Device::start`]
-//! takes a callback and returns a [`Stream`] that calls it once per period
-//! from the audio thread, for as long as the stream is held. What the
-//! callback does is the caller's business; the one that makes sound moves
-//! an engine's output, its [`Renderer`](crate::Renderer), in and renders
-//! from it.
+//! This lives beside the examples, not in the library. The engine never
+//! touches a device: which machine the sampler is on, and whether it has an
+//! audio device at all, is the caller's knowledge, so the caller owns the
+//! only code that knows `cpal` exists and that there is an audio thread.
+//! The library builds with no audio dependency.
 //!
-//! The engine never touches this module. Which machine the sampler is on,
-//! and whether it has a device at all, is the caller's knowledge.
+//! A [`Device`] is the system's default output, checked once for the
+//! engine's one format; [`Device::start`] takes a callback and returns a
+//! [`Stream`] that calls it once per period from the audio thread, for as
+//! long as the stream is held. The callback that makes sound moves an
+//! engine's output, its `Renderer`, in and renders from it.
 //!
 //! There is one implementation. `cpal` is itself the abstraction over ALSA,
 //! PipeWire, JACK and the rest; a trait of our own waits for a second
@@ -20,7 +20,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, StreamConfig};
 use thiserror::Error;
 
-use crate::config::{OUTPUT_CHANNELS, SAMPLE_RATE};
+use generations::config::{OUTPUT_CHANNELS, SAMPLE_RATE};
 
 /// Reasons a device cannot be opened or started.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -113,23 +113,5 @@ pub struct Stream {
 impl std::fmt::Debug for Stream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Stream").finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Needs a real output device, so CI skips it. Run by hand with
-    /// `cargo test -- --ignored` on a machine with audio.
-    #[test]
-    #[ignore = "needs an audio device"]
-    fn starts_and_stops_on_the_default_device() {
-        let stream = Device::default_output()
-            .unwrap()
-            .start(|out| out.fill(0.0))
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        drop(stream);
     }
 }
