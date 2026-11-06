@@ -88,6 +88,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod convert;
 pub mod effects;
 pub mod engine;
 pub mod project;
@@ -95,6 +96,7 @@ pub(crate) mod render;
 pub(crate) mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
+pub use convert::{ConvertError, Decoded, convert};
 pub use engine::{Engine, EngineError, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use render::{Renderer, VoiceId};
