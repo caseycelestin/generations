@@ -112,7 +112,7 @@ impl Engine {
             output: Some(Renderer::new(consumer)),
         };
         for id in engine.project.loaded_samples()? {
-            engine.bring_in(id)?;
+            engine.load_audio(id)?;
         }
         Ok(engine)
     }
@@ -174,7 +174,7 @@ impl Engine {
     /// RAM. A sample that does not fit the budget is refused and nothing
     /// changes. Loading a loaded sample changes nothing.
     pub fn load(&mut self, id: SampleId) -> Result<(), EngineError> {
-        self.bring_in(id)?;
+        self.load_audio(id)?;
         self.project.set_loaded(id, true)?;
         Ok(())
     }
@@ -232,7 +232,7 @@ impl Engine {
     ///
     /// The memory is reserved before the read, from the size the project
     /// records for the sample, so a refused load never allocates.
-    fn bring_in(&mut self, id: SampleId) -> Result<(), EngineError> {
+    fn load_audio(&mut self, id: SampleId) -> Result<(), EngineError> {
         if self.loaded.contains_key(&id) {
             return Ok(());
         }
