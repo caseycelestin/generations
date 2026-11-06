@@ -10,7 +10,9 @@
 //! and get the same frames.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
-//! end; whoever drives it owns the producing end. Live, that is the engine.
+//! end; the engine owns the producing end. The engine mints one renderer
+//! and hands it out as its output; everything else here is the engine's
+//! business, so `render` is the one public method.
 
 use std::sync::Arc;
 
@@ -22,7 +24,17 @@ use crate::config::VOICE_COUNT;
 use crate::render::command::{Command, VoiceId};
 use crate::render::voice::Voice;
 
-/// Turns commands and resident audio into periods of output.
+/// The render side of an engine: turns commands and resident audio into
+/// periods of output.
+///
+/// Taken once from `Engine::output` and moved to whoever owns the audio
+/// thread: into a device callback for live sound, or a loop for the same
+/// frames offline.
+///
+/// **Drop whatever drives this before dropping the engine.** A voice still
+/// ringing holds a reference to its audio; if the engine goes first, that
+/// reference is the last one and the buffer is freed on the audio thread
+/// when the voice ends.
 #[derive(Debug)]
 pub struct Renderer {
     /// The consuming end of the command ring.
@@ -34,18 +46,18 @@ pub struct Renderer {
 
 impl Renderer {
     /// A silent renderer that takes its commands from `commands`.
-    pub fn new(commands: Consumer<Command>) -> Self {
+    pub(crate) fn new(commands: Consumer<Command>) -> Self {
         Self {
             commands,
             voices: Deque::new(),
         }
     }
 
-    /// Renders one period into `out`, an interleaved stereo slice,
+    /// Renders one period into `out`, an interleaved stereo `f32` slice,
     /// replacing whatever it held.
     ///
-    /// Commands that arrived since the last period are applied first, so a
-    /// sound starts or stops at a period boundary. Then every voice adds
+    /// Commands the engine has sent since the last call are applied first,
+    /// so a play or stop lands at a period boundary. Then every voice adds
     /// itself, a voice that reaches its end frees its slot, and the sum is
     /// clipped once to the unit range.
     pub fn render(&mut self, out: &mut [f32]) {
@@ -85,13 +97,13 @@ impl Renderer {
     /// Whether voice `id` is playing. A front panel will want this; until
     /// then only tests ask.
     #[cfg(test)]
-    pub fn is_playing(&self, id: VoiceId) -> bool {
+    pub(crate) fn is_playing(&self, id: VoiceId) -> bool {
         self.voices.iter().any(|v| v.id() == id)
     }
 
     /// How many voices are playing.
     #[cfg(test)]
-    pub fn playing(&self) -> usize {
+    pub(crate) fn playing(&self) -> usize {
         self.voices.len()
     }
 }

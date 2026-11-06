@@ -6,7 +6,8 @@
 //! takes a callback and returns a [`Stream`] that calls it once per period
 //! from the audio thread, for as long as the stream is held. What the
 //! callback does is the caller's business; the one that makes sound moves
-//! an engine's [`Output`](crate::Output) in and fills from it.
+//! an engine's output, its [`Renderer`](crate::Renderer), in and renders
+//! from it.
 //!
 //! The engine never touches this module. Which machine the sampler is on,
 //! and whether it has a device at all, is the caller's knowledge.

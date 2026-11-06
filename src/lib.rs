@@ -16,7 +16,7 @@
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
 //!   │
 //!   ├─ render    the other side of sound: turns commands into frames,
-//!   │            wherever the caller drives it. Public face: Output
+//!   │            wherever the caller drives it. One public type: Renderer
 //!   │
 //!   └─ project   the rules: what a project holds and what is allowed
 //!        │
@@ -24,7 +24,7 @@
 //!              └─ files   a directory of WAVs and a manifest (the one backend)
 //!
 //! device     the hardware. Beside the engine, not under it: the caller
-//!            opens a device and hands it the engine's Output to drive
+//!            opens a device and hands it the engine's output to drive
 //! ```
 //!
 //! - **[`engine`]** is the only code that touches more than one role, and
@@ -41,8 +41,8 @@
 //!   commands and resident audio into frames and depends on nothing about
 //!   where it runs, so a device can drive it live and a bounce can drive it
 //!   offline. Nothing in it knows what a project or a device is. Outside
-//!   the crate it is one type, [`Output`], minted once per engine, with one
-//!   method that fills a frame.
+//!   the crate it is one type, [`Renderer`], minted once per engine as its
+//!   output, with one method that fills a frame.
 //! - **[`device`]** is the only code that knows the audio library or that
 //!   there is an audio thread. It takes a callback and calls it once per
 //!   period. The engine never touches it: the caller, which knows what
@@ -67,8 +67,8 @@
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!   └─ Project::new(storage)   plain constructor; nothing left to check
 //!
-//! engine.output()              the render side, taken once
-//! Device::default_output()?.start(move |out| output.fill(out))
+//! engine.output()              the renderer, taken once
+//! Device::default_output()?.start(move |out| output.render(out))
 //!                              the caller's three lines that need hardware
 //! ```
 //!
@@ -98,5 +98,5 @@ pub use audio::{AudioBuffer, AudioError};
 pub use device::{Device, DeviceError, Stream};
 pub use engine::{Engine, EngineError, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
-pub use render::{Output, VoiceId};
+pub use render::{Renderer, VoiceId};
 pub use storage::StorageError;

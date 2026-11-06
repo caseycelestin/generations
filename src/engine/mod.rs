@@ -9,8 +9,8 @@
 //!
 //! The engine is also the control side of sound. It owns the audio in RAM
 //! (`ResidentSet`) and the sending end of the command ring; the other end
-//! is the [`Output`] it mints, which turns commands into frames wherever
-//! the caller drives it. Nothing the engine does can block that: every
+//! is the [`Renderer`] it mints as its output, which turns commands into
+//! frames wherever the caller drives it. Nothing the engine does can block that: every
 //! change to what is heard is a command pushed on the ring, never a call
 //! into the render side. The engine never touches a device; whoever has
 //! one hands it the output.
@@ -25,7 +25,7 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::config::{COMMAND_CAPACITY, SAMPLE_RAM_BUDGET};
 use crate::project::{Project, ProjectError, SampleId};
-use crate::render::{Command, Output, Renderer, VoiceId};
+use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
 pub use resident::OverBudget;
@@ -60,7 +60,7 @@ pub struct Engine {
     /// sender, so an id is never reused.
     next_voice: u64,
     /// The render side, until the caller takes it with [`Engine::output`].
-    output: Option<Output>,
+    output: Option<Renderer>,
 }
 
 impl Engine {
@@ -86,7 +86,7 @@ impl Engine {
             resident: ResidentSet::new(budget),
             commands: producer,
             next_voice: 0,
-            output: Some(Output::new(Renderer::new(consumer))),
+            output: Some(Renderer::new(consumer)),
         };
         for id in engine.project.loaded_samples()? {
             engine.make_resident(id)?;
@@ -94,13 +94,14 @@ impl Engine {
         Ok(engine)
     }
 
-    /// The engine's render side, to be driven by whoever owns the audio
-    /// thread: moved into a device callback for live sound, or called in a
-    /// loop offline. There is one; the second call returns `None`.
+    /// The engine's output: its render side, to be driven by whoever owns
+    /// the audio thread, moved into a device callback for live sound or
+    /// called in a loop offline. There is one; the second call returns
+    /// `None`.
     ///
     /// Commands sent before this is taken are not lost. They wait in the
-    /// ring and apply on the first fill.
-    pub fn output(&mut self) -> Option<Output> {
+    /// ring and apply on the first render.
+    pub fn output(&mut self) -> Option<Renderer> {
         self.output.take()
     }
 
@@ -146,7 +147,7 @@ impl Engine {
     ///
     /// The sample must be loaded; nothing is read from disk here, so a
     /// press costs the same every time. Sound starts at the output's next
-    /// fill. A play never fails for want of a free voice: the renderer
+    /// render. A play never fails for want of a free voice: the renderer
     /// steals the oldest.
     pub fn play(&mut self, id: SampleId) -> Result<VoiceId, EngineError> {
         let Some(audio) = self.resident.get(id) else {
@@ -216,11 +217,11 @@ mod tests {
 
     /// An engine on a memory project, and its output, which the test
     /// drives by hand.
-    fn engine() -> (Engine, Output) {
+    fn engine() -> (Engine, Renderer) {
         with_budget(usize::MAX)
     }
 
-    fn with_budget(budget: usize) -> (Engine, Output) {
+    fn with_budget(budget: usize) -> (Engine, Renderer) {
         let mut engine = Engine::on(memory_project(), budget).unwrap();
         let output = engine.output().unwrap();
         (engine, output)
@@ -232,10 +233,10 @@ mod tests {
         Engine::on(Project::new(storage::open(dir).unwrap()), budget).unwrap()
     }
 
-    /// Fills one period of `frames` frames and returns it.
-    fn period(o: &mut Output, frames: usize) -> Vec<f32> {
+    /// Renders one period of `frames` frames and returns it.
+    fn period(r: &mut Renderer, frames: usize) -> Vec<f32> {
         let mut out = vec![0.0; frames * 2];
-        o.fill(&mut out);
+        r.render(&mut out);
         out
     }
 
