@@ -5,6 +5,10 @@
 //! swell. The second starts while the first is still ringing, which is two
 //! voices summed by the renderer.
 //!
+//! The engine does not know there is a speaker. This file opens the
+//! device, takes the engine's output and hands it over; those are the only
+//! lines here that need hardware.
+//!
 //! Usage: `cargo run --example first_sound -- <project-dir>`. The directory
 //! is created if it does not exist. Needs an output device.
 
@@ -15,7 +19,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::{AudioBuffer, Engine, effects};
+use generations::{AudioBuffer, Device, Engine, effects};
 
 /// One second of A440, decaying from half scale to near silence.
 fn pluck() -> Result<AudioBuffer, Box<dyn Error>> {
@@ -35,6 +39,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("usage: first_sound <project-dir>")?;
 
     let mut engine = Engine::open(&dir)?;
+    let mut output = engine.output().ok_or("output already taken")?;
+    // Declared after `engine`, so it is dropped first: the audio thread
+    // stops before the engine lets go of its audio.
+    let _stream = Device::default_output()?.start(move |out| output.fill(out))?;
+
     let root = engine.import(&pluck()?)?;
     let swell = engine.print(root, effects::reverse)?;
     engine.load(root)?;

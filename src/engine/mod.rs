@@ -9,10 +9,11 @@
 //!
 //! The engine is also the control side of sound. It owns the audio in RAM
 //! (`ResidentSet`) and the sending end of the command ring; the other end
-//! is a `Renderer` in `render`, which turns commands into frames wherever
-//! it is driven. Nothing the engine does can block that: every change to
-//! what is heard is a command pushed on the ring, never a call into the
-//! render side.
+//! is the [`Output`] it mints, which turns commands into frames wherever
+//! the caller drives it. Nothing the engine does can block that: every
+//! change to what is heard is a command pushed on the ring, never a call
+//! into the render side. The engine never touches a device; whoever has
+//! one hands it the output.
 
 pub(crate) mod resident;
 
@@ -23,9 +24,8 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::{COMMAND_CAPACITY, SAMPLE_RAM_BUDGET};
-use crate::device::{Device, DeviceError, Stream};
 use crate::project::{Project, ProjectError, SampleId};
-use crate::render::{Command, Renderer, VoiceId};
+use crate::render::{Command, Output, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
 pub use resident::OverBudget;
@@ -45,10 +45,8 @@ pub enum EngineError {
     #[error("sample {} is not loaded", .0.0)]
     NotLoaded(SampleId),
     /// The command ring was full; the command was dropped.
-    #[error("the renderer has not taken the last {COMMAND_CAPACITY} commands")]
+    #[error("the output has not taken the last {COMMAND_CAPACITY} commands")]
     CommandsFull,
-    #[error(transparent)]
-    Device(#[from] DeviceError),
 }
 
 /// The engine for one open project.
@@ -61,44 +59,49 @@ pub struct Engine {
     /// The next voice id to mint. Only goes up, and this is the one
     /// sender, so an id is never reused.
     next_voice: u64,
-    /// The running audio stream, which calls the renderer once per period.
-    /// Held so it keeps running; `None` when something else drives the
-    /// renderer, as tests do.
-    stream: Option<Stream>,
+    /// The render side, until the caller takes it with [`Engine::output`].
+    output: Option<Output>,
 }
 
 impl Engine {
-    /// An engine on the project at `dir`, created there if none exists,
-    /// playing through the default audio device.
+    /// An engine on the project at `dir`, created there if none exists.
+    ///
+    /// No audio device is involved: the engine works the same on a machine
+    /// without one. To hear it, take [`Engine::output`] and drive it.
     ///
     /// Every sample the project marks loaded is brought into RAM before
-    /// this returns, so the device comes back ready. If they no longer fit
-    /// the budget (it shrank, or the project moved to a smaller device)
+    /// this returns, so the sampler comes back ready. If they no longer fit
+    /// the budget (it shrank, or the project moved to a smaller machine)
     /// the open fails rather than deciding which ones to leave out.
     pub fn open(dir: &Path) -> Result<Self, EngineError> {
-        let storage = storage::open(dir)?;
-        let (mut engine, mut renderer) = Self::on(Project::new(storage), SAMPLE_RAM_BUDGET)?;
-        let stream = Device::default_output()?.start(move |out| renderer.render(out))?;
-        engine.stream = Some(stream);
-        Ok(engine)
+        Self::on(Project::new(storage::open(dir)?), SAMPLE_RAM_BUDGET)
     }
 
     /// An engine on an already open project with `budget` bytes for
-    /// resident audio, loading what the project marks loaded, and the
-    /// renderer it commands. The caller decides what drives the renderer.
-    pub(crate) fn on(project: Project, budget: usize) -> Result<(Self, Renderer), EngineError> {
+    /// resident audio, loading what the project marks loaded.
+    pub(crate) fn on(project: Project, budget: usize) -> Result<Self, EngineError> {
         let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
         let mut engine = Self {
             project,
             resident: ResidentSet::new(budget),
             commands: producer,
             next_voice: 0,
-            stream: None,
+            output: Some(Output::new(Renderer::new(consumer))),
         };
         for id in engine.project.loaded_samples()? {
             engine.make_resident(id)?;
         }
-        Ok((engine, Renderer::new(consumer)))
+        Ok(engine)
+    }
+
+    /// The engine's render side, to be driven by whoever owns the audio
+    /// thread: moved into a device callback for live sound, or called in a
+    /// loop offline. There is one; the second call returns `None`.
+    ///
+    /// Commands sent before this is taken are not lost. They wait in the
+    /// ring and apply on the first fill.
+    pub fn output(&mut self) -> Option<Output> {
+        self.output.take()
     }
 
     /// The project this engine operates on.
@@ -142,8 +145,8 @@ impl Engine {
     /// it can be stopped.
     ///
     /// The sample must be loaded; nothing is read from disk here, so a
-    /// press costs the same every time. Sound starts at the renderer's next
-    /// period. A play never fails for want of a free voice: the renderer
+    /// press costs the same every time. Sound starts at the output's next
+    /// fill. A play never fails for want of a free voice: the renderer
     /// steals the oldest.
     pub fn play(&mut self, id: SampleId) -> Result<VoiceId, EngineError> {
         let Some(audio) = self.resident.get(id) else {
@@ -169,7 +172,7 @@ impl Engine {
         self.send(Command::StopAll)
     }
 
-    /// Pushes `command` to the renderer. A full ring drops it and says so.
+    /// Pushes `command` to the output. A full ring drops it and says so.
     fn send(&mut self, command: Command) -> Result<(), EngineError> {
         self.commands
             .push(command)
@@ -211,28 +214,49 @@ mod tests {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
     }
 
-    /// An engine on a memory project, and the renderer it commands, which
-    /// the test drives by hand.
-    fn engine() -> (Engine, Renderer) {
+    /// An engine on a memory project, and its output, which the test
+    /// drives by hand.
+    fn engine() -> (Engine, Output) {
         with_budget(usize::MAX)
     }
 
-    fn with_budget(budget: usize) -> (Engine, Renderer) {
-        Engine::on(memory_project(), budget).unwrap()
+    fn with_budget(budget: usize) -> (Engine, Output) {
+        let mut engine = Engine::on(memory_project(), budget).unwrap();
+        let output = engine.output().unwrap();
+        (engine, output)
     }
 
-    /// An engine on the project at `dir` with no audio device, as
-    /// `Engine::open` would build it on a machine without one.
+    /// An engine on the project at `dir`, as `Engine::open` builds it but
+    /// with `budget` bytes for resident audio.
     fn on_disk(dir: &Path, budget: usize) -> Engine {
-        let project = Project::new(storage::open(dir).unwrap());
-        Engine::on(project, budget).unwrap().0
+        Engine::on(Project::new(storage::open(dir).unwrap()), budget).unwrap()
     }
 
-    /// Renders one period of `frames` frames and returns it.
-    fn period(r: &mut Renderer, frames: usize) -> Vec<f32> {
+    /// Fills one period of `frames` frames and returns it.
+    fn period(o: &mut Output, frames: usize) -> Vec<f32> {
         let mut out = vec![0.0; frames * 2];
-        r.render(&mut out);
+        o.fill(&mut out);
         out
+    }
+
+    #[test]
+    fn output_is_taken_once() {
+        let mut e = Engine::on(memory_project(), usize::MAX).unwrap();
+        assert!(e.output().is_some());
+        assert!(e.output().is_none());
+    }
+
+    #[test]
+    fn commands_sent_before_the_output_is_taken_wait_for_it() {
+        let mut e = Engine::on(memory_project(), usize::MAX).unwrap();
+        let id = e.import(&ramp(2)).unwrap();
+        e.load(id).unwrap();
+        e.play(id).unwrap();
+
+        let mut o = e.output().unwrap();
+        let out = period(&mut o, 2);
+        let expected: Vec<f32> = ramp(2).frames_f32(0..2).flat_map(|s| [s, s]).collect();
+        assert_eq!(out, expected);
     }
 
     #[test]
@@ -428,8 +452,10 @@ mod tests {
         e.load(id).unwrap();
         drop(e);
 
-        let project = Project::new(storage::open(dir.path()).unwrap());
-        let result = Engine::on(project, ramp(4).bytes() - 1);
+        let result = Engine::on(
+            Project::new(storage::open(dir.path()).unwrap()),
+            ramp(4).bytes() - 1,
+        );
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
     }
 

@@ -19,10 +19,16 @@
 //! audio arrives inside a command as an `Arc<AudioBuffer>`, and a voice
 //! holds its clone until it finishes, so freeing happens only where the
 //! control side lets go of the last reference.
+//!
+//! Outside the crate, all of this is one type: [`Output`], which the engine
+//! mints and the caller drives. The renderer behind it is the engine's
+//! business.
 
 pub mod command;
+pub mod output;
 pub mod renderer;
 pub mod voice;
 
 pub use command::{Command, VoiceId};
+pub use output::Output;
 pub use renderer::Renderer;
