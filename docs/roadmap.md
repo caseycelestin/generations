@@ -146,7 +146,8 @@ out; the short version of the argument is here so it is not had twice.
   device for feel and specs is the Roland SP-404 MK2.
 - **One fixed format**: 48 kHz, 16-bit, set in `config.rs`. Import converts
   to it, output converts from it, nothing in between checks. Channel count
-  is kept per buffer so mono samples do not pay for stereo.
+  is kept per buffer so mono samples do not pay for stereo. How import
+  converts is under Import below.
 - **Storage is i16, DSP is f32.** Every effect converts in and out through
   `AudioBuffer::to_f32` / `from_f32`, which are the only code that knows the
   PCM width. The downward conversion rounds and applies TPDF dither. Effects
@@ -156,6 +157,39 @@ out; the short version of the argument is here so it is not had twice.
   takes one as a plain argument. Effects-as-data (an enum with parameters)
   is what the replayable recipe idea below needs, and it will be introduced
   with that work rather than ahead of it.
+
+### Import
+
+- **The engine takes the file.** `Engine::import(path)` reads, converts and
+  stores; the caller sees no decoder and never learns the project format.
+  The device left the engine because it is machine knowledge: which audio
+  library, which hardware, how much RAM. File formats are product
+  knowledge, the same on every machine the sampler runs on, so they stay
+  inside. If the caller converted, every front end would repeat the same
+  pipeline and the most common user action would lose its one path. The
+  buffer-taking step is `pub(crate)`: the last step of an import and what
+  a finished recording will call.
+- **Two crate-private stages.** `decode` reads one file format into a plain
+  value: rate, channels, interleaved `f32`. `convert` resamples and
+  quantises that into a buffer. Decoders know formats, `convert` knows the
+  project format, nothing knows both. A new format is a new decoder module
+  and one more arm in the sniff; the format is decided from the file's
+  first bytes, not its name. No decoder trait until a second decoder makes
+  the shape obvious.
+- **Resampling is `rubato`'s synchronous FFT resampler**, run over the
+  whole clip so its startup delay is trimmed and the output is the clip's
+  length at 48 kHz. Import is offline, so quality beat a hand-rolled
+  interpolator; the rate pairs are fixed, so the synchronous (exact-ratio)
+  resampler fits better than the asynchronous one.
+- **Channel count is kept, not mixed.** Mono stays mono, stereo stays
+  stereo, more than two is refused. A downmix is a creative decision the
+  user should make, not one the import makes silently.
+- **WAV covers integer PCM at 8 to 32 bits and 32-bit float.** Integers
+  are scaled by their own width so every depth lands on the same range.
+- Open: a 16-bit 48 kHz source goes through `f32` and is re-dithered on
+  the way in, so its stored bytes can differ from the file by one LSB.
+  Whether the WAV decoder should bypass conversion for a file already in
+  the project format is undecided; it would be invisible to the caller.
 
 ### Playback
 
