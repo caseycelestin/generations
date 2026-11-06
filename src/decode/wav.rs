@@ -10,31 +10,31 @@ use hound::{SampleFormat, WavReader};
 
 use super::{DecodeError, Decoded, Samples};
 
-/// Bytes the decoded samples will take: every width is carried in a
-/// four-byte type, `i32` or `f32`.
+/// Bytes the samples of [`decode`] will take, from the header alone: every
+/// width is carried in a four-byte type, `i32` or `f32`. A file `decode`
+/// would refuse is refused here, with the same error, so a bad file is
+/// named as bad rather than as too big.
 pub fn size(path: &Path) -> Result<usize, DecodeError> {
     let reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
-    Ok(reader.len() as usize * 4)
+    check_width(path, reader.spec())?;
+    (reader.len() as usize).checked_mul(4).ok_or_else(|| {
+        malformed(
+            path,
+            format!("{} samples do not fit in memory", reader.len()),
+        )
+    })
 }
 
 pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
-    let malformed = |reason: String| DecodeError::Malformed {
-        path: path.into(),
-        reason,
-    };
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
-    let samples = match (spec.sample_format, spec.bits_per_sample) {
-        (SampleFormat::Float, 32) => Samples::Float(collect(path, reader.samples::<f32>())?),
-        (SampleFormat::Int, bits @ 1..=32) => Samples::Int {
+    let len = reader.len() as usize;
+    let samples = match check_width(path, spec)? {
+        Width::Float => Samples::Float(collect(path, len, reader.samples::<f32>())?),
+        Width::Int(bits) => Samples::Int {
             bits,
-            samples: collect(path, reader.samples::<i32>())?,
+            samples: collect(path, len, reader.samples::<i32>())?,
         },
-        (format, bits) => {
-            return Err(malformed(format!(
-                "{bits}-bit {format:?} samples are not supported"
-            )));
-        }
     };
     Ok(Decoded {
         rate: spec.sample_rate,
@@ -43,14 +43,47 @@ pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
     })
 }
 
-/// Drains a sample iterator, attributing any failure to `path`.
+/// The sample widths this decoder reads, and how it carries each.
+enum Width {
+    Float,
+    Int(u16),
+}
+
+/// Refuses a header whose samples this decoder does not read.
+fn check_width(path: &Path, spec: hound::WavSpec) -> Result<Width, DecodeError> {
+    match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Float, 32) => Ok(Width::Float),
+        (SampleFormat::Int, bits @ 1..=32) => Ok(Width::Int(bits)),
+        (format, bits) => Err(malformed(
+            path,
+            format!("{bits}-bit {format:?} samples are not supported"),
+        )),
+    }
+}
+
+/// Drains a sample iterator into a buffer of exactly `len` capacity,
+/// attributing any failure to `path`.
+///
+/// Not `collect`: collecting through a `Result` loses the exact size hint
+/// and the buffer grows by doubling, so it would end up with as much as
+/// twice the capacity [`size`] reserved for it.
 fn collect<T>(
     path: &Path,
+    len: usize,
     samples: impl Iterator<Item = hound::Result<T>>,
 ) -> Result<Vec<T>, DecodeError> {
-    samples
-        .collect::<hound::Result<Vec<T>>>()
-        .map_err(|e| hound_error(path, e))
+    let mut out = Vec::with_capacity(len);
+    for sample in samples {
+        out.push(sample.map_err(|e| hound_error(path, e))?);
+    }
+    Ok(out)
+}
+
+fn malformed(path: &Path, reason: String) -> DecodeError {
+    DecodeError::Malformed {
+        path: path.into(),
+        reason,
+    }
 }
 
 fn hound_error(path: &Path, e: hound::Error) -> DecodeError {

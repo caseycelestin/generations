@@ -45,6 +45,14 @@ pub enum Samples {
     Float(Vec<f32>),
 }
 
+impl Decoded {
+    /// Bytes the samples occupy: every width is carried in a four-byte
+    /// type.
+    pub fn bytes(&self) -> usize {
+        self.samples.len() * 4
+    }
+}
+
 impl Samples {
     fn len(&self) -> usize {
         match self {
@@ -87,24 +95,30 @@ pub enum ConvertError {
 }
 
 /// Bytes [`convert`] will allocate for this audio, over and above the
-/// audio itself, so they can be reserved before it runs.
+/// audio itself, so they can be reserved before it runs. Audio `convert`
+/// would refuse is refused here with the same error, so a bad file is
+/// named as bad rather than as too big.
 ///
 /// Follows the same branches as `convert`: the exact path allocates only
 /// the PCM result; the same-rate path an `f32` copy and the result; the
 /// resampling path an `f32` copy, the resampled `f32` output and the
-/// result. The resampler's own state is a chunk, not a clip, and is not
-/// counted.
-pub fn working_bytes(decoded: &Decoded) -> usize {
+/// result. It is an upper bound: the `f32` copy is charged even though
+/// the standard library can turn the integer buffer into it in place and
+/// moves a float buffer as it is. The ledger would rather over-count than
+/// rest on an optimisation. The resampler's own state is a chunk, not a
+/// clip, and is not counted.
+pub fn working_bytes(decoded: &Decoded) -> Result<usize, ConvertError> {
+    let (_, frames) = check_shape(decoded)?;
     let samples = decoded.samples.len();
     let f32_in = samples * size_of::<f32>();
-    let out_samples = if decoded.rate == SAMPLE_RATE || decoded.rate == 0 {
+    let out_samples = if decoded.rate == SAMPLE_RATE {
         samples
     } else {
-        let scaled = samples as u64 * u64::from(SAMPLE_RATE);
-        scaled.div_ceil(u64::from(decoded.rate)) as usize
+        let scaled = frames as u64 * u64::from(SAMPLE_RATE);
+        scaled.div_ceil(u64::from(decoded.rate)) as usize * usize::from(decoded.channels)
     };
     let pcm_out = out_samples * size_of::<Pcm>();
-    match &decoded.samples {
+    Ok(match &decoded.samples {
         Samples::Int { bits, .. }
             if decoded.rate == SAMPLE_RATE && u32::from(*bits) == Pcm::BITS =>
         {
@@ -112,21 +126,17 @@ pub fn working_bytes(decoded: &Decoded) -> usize {
         }
         _ if decoded.rate == SAMPLE_RATE => f32_in + pcm_out,
         _ => f32_in + out_samples * size_of::<f32>() + pcm_out,
-    }
+    })
 }
 
-/// Converts decoded audio to the project format.
-///
-/// Audio at another rate is resampled to [`SAMPLE_RATE`]; audio already
-/// there is only quantised. Channel count is kept as is: mono stays mono,
-/// stereo stays stereo. More channels than a buffer holds is an error, not
-/// a mixdown.
-pub fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
+/// Refuses audio no [`AudioBuffer`] could hold or no resampler could take,
+/// and returns its channel count and frame count. Checked first so the
+/// error names the real problem rather than a buffer-size mismatch inside
+/// the resampler.
+fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
     if decoded.rate == 0 {
         return Err(ConvertError::ZeroRate);
     }
-    // Check the shape first so the error names the real problem rather
-    // than a buffer-size mismatch inside the resampler.
     check_channels(decoded.channels)?;
     let channels = usize::from(decoded.channels);
     if !decoded.samples.len().is_multiple_of(channels) {
@@ -136,7 +146,17 @@ pub fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
         }
         .into());
     }
-    let frames = decoded.samples.len() / channels;
+    Ok((channels, decoded.samples.len() / channels))
+}
+
+/// Converts decoded audio to the project format.
+///
+/// Audio at another rate is resampled to [`SAMPLE_RATE`]; audio already
+/// there is only quantised. Channel count is kept as is: mono stays mono,
+/// stereo stays stereo. More channels than a buffer holds is an error, not
+/// a mixdown.
+pub fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
+    let (channels, frames) = check_shape(&decoded)?;
 
     if decoded.rate == SAMPLE_RATE {
         if let Samples::Int { bits, samples } = &decoded.samples
@@ -212,28 +232,42 @@ mod tests {
         let pcm = size_of::<Pcm>();
         // Exact: only the result.
         assert_eq!(
-            working_bytes(&int(SAMPLE_RATE, 1, 16, vec![0; 10])),
+            working_bytes(&int(SAMPLE_RATE, 1, 16, vec![0; 10])).unwrap(),
             10 * pcm
         );
         // Same rate, other width or float: an f32 copy and the result.
         assert_eq!(
-            working_bytes(&int(SAMPLE_RATE, 1, 24, vec![0; 10])),
+            working_bytes(&int(SAMPLE_RATE, 1, 24, vec![0; 10])).unwrap(),
             10 * 4 + 10 * pcm
         );
         assert_eq!(
-            working_bytes(&at(SAMPLE_RATE, 2, vec![0.0; 10])),
+            working_bytes(&at(SAMPLE_RATE, 2, vec![0.0; 10])).unwrap(),
             10 * 4 + 10 * pcm
         );
         // Other rate: f32 in, f32 out at the new length, and the result.
-        let out = (10u64 * u64::from(SAMPLE_RATE)).div_ceil(44_100) as usize;
+        // Ten stereo samples are five frames; the output is a whole number
+        // of frames.
+        let out = (5u64 * u64::from(SAMPLE_RATE)).div_ceil(44_100) as usize * 2;
         assert_eq!(
-            working_bytes(&at(44_100, 1, vec![0.0; 10])),
+            working_bytes(&at(44_100, 2, vec![0.0; 10])).unwrap(),
             10 * 4 + out * 4 + out * pcm
         );
-        assert_eq!(
+    }
+
+    #[test]
+    fn working_bytes_refuses_what_convert_refuses() {
+        assert!(matches!(
             working_bytes(&at(0, 1, vec![0.0; 10])),
-            10 * 4 + 10 * 4 + 10 * pcm
-        );
+            Err(ConvertError::ZeroRate)
+        ));
+        assert!(matches!(
+            working_bytes(&at(44_100, 2, vec![0.0; 3])),
+            Err(ConvertError::Audio(AudioError::RaggedFrames { .. }))
+        ));
+        assert!(matches!(
+            working_bytes(&at(44_100, 6, vec![0.0; 6])),
+            Err(ConvertError::Audio(AudioError::BadChannelCount(6)))
+        ));
     }
 
     #[test]

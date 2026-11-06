@@ -150,10 +150,25 @@ impl Engine {
     /// audio before it is converted. A file too large to pass through RAM
     /// beside what is loaded is refused and nothing is stored.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let _decoding = self.ledger.reserve(decode::size(file)?)?;
-        let decoded = decode::decode(file)?;
-        let _converting = self.ledger.reserve(convert::working_bytes(&decoded))?;
-        let audio = convert::convert(decoded)?;
+        let (audio, _converting) = {
+            // Scoped with the decoded samples: both go when convert has
+            // consumed them.
+            let decoding = self.ledger.reserve(decode::size(file)?)?;
+            let decoded = decode::decode(file)?;
+            if decoded.bytes() != decoding.bytes() {
+                return Err(DecodeError::Malformed {
+                    path: file.into(),
+                    reason: format!(
+                        "decoded to {} bytes but its header promised {}",
+                        decoded.bytes(),
+                        decoding.bytes()
+                    ),
+                }
+                .into());
+            }
+            let converting = self.ledger.reserve(convert::working_bytes(&decoded)?)?;
+            (convert::convert(decoded)?, converting)
+        };
         Ok(self.import_audio(&audio)?)
     }
 
@@ -231,31 +246,36 @@ impl Engine {
     /// Reads `id` from the project into RAM, unless it is already there.
     ///
     /// The memory is reserved before the read, from the size the project
-    /// records for the sample, so a refused load never allocates. Audio
-    /// that comes back any other size than recorded is corrupt storage,
-    /// smaller included: it would fit, but the record and the file
-    /// disagree, and a project that disagrees with itself is refused
-    /// rather than guessed at.
+    /// records for the sample, so a refused load never allocates.
     fn bring_in(&mut self, id: SampleId) -> Result<(), EngineError> {
         if self.loaded.contains_key(&id) {
             return Ok(());
         }
         let sample = self.project.sample(id)?;
-        let reservation = self
-            .ledger
-            .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?;
+        let bytes = AudioBuffer::bytes_for(sample.channels, sample.frames);
+        let reservation = self.ledger.reserve(bytes)?;
+        let audio = self.read_checked(id, bytes)?;
+        self.loaded.insert(id, (Arc::new(audio), reservation));
+        Ok(())
+    }
+
+    /// Reads `id`'s audio, which its record said would be `bytes` long,
+    /// and refuses any other length as corrupt storage: whoever called
+    /// reserved from the record, and a buffer of another size would make
+    /// the ledger wrong. Smaller included: it would fit, but the record and
+    /// the file disagree, and a project that disagrees with itself is
+    /// refused rather than guessed at.
+    fn read_checked(&self, id: SampleId, bytes: usize) -> Result<AudioBuffer, EngineError> {
         let audio = self.project.audio(id)?;
-        if audio.bytes() != reservation.bytes() {
+        if audio.bytes() != bytes {
             return Err(StorageError::Corrupt(format!(
-                "sample {} is {} bytes of audio but its record says {}",
+                "sample {} is {} bytes of audio but its record says {bytes}",
                 id.0,
                 audio.bytes(),
-                reservation.bytes()
             ))
             .into());
         }
-        self.loaded.insert(id, (Arc::new(audio), reservation));
-        Ok(())
+        Ok(audio)
     }
 
     /// Prints `effect` applied to `source` as the next generation of its
@@ -276,10 +296,10 @@ impl Engine {
         effect: impl FnOnce(&AudioBuffer) -> AudioBuffer,
     ) -> Result<SampleId, EngineError> {
         let sample = self.project.sample(source)?;
-        let pcm = AudioBuffer::bytes_for(sample.channels, sample.frames);
-        let f32 = sample.frames * usize::from(sample.channels) * size_of::<f32>();
-        let _printing = self.ledger.reserve(2 * (pcm + f32))?;
-        let input = self.project.audio(source)?;
+        let pcm_bytes = AudioBuffer::bytes_for(sample.channels, sample.frames);
+        let f32_bytes = sample.frames * usize::from(sample.channels) * size_of::<f32>();
+        let _printing = self.ledger.reserve(2 * (pcm_bytes + f32_bytes))?;
+        let input = self.read_checked(source, pcm_bytes)?;
         let output = effect(&input);
         Ok(self.project.add_sample(Some(source), &output)?)
     }
