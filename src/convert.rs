@@ -112,11 +112,6 @@ pub enum ConvertError {
 /// clip, and is not counted.
 pub fn byte_cost(decoded: &Decoded) -> Result<usize, ConvertError> {
     let (channels, frames) = check_shape(decoded)?;
-    cost(decoded, channels, frames)
-}
-
-/// [`byte_cost`] for audio whose shape has been checked.
-fn cost(decoded: &Decoded, channels: usize, frames: usize) -> Result<usize, ConvertError> {
     let samples = decoded.samples.len();
     let too_large = || ConvertError::TooLarge {
         samples,
@@ -174,8 +169,8 @@ fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
 /// refused before anything is allocated. The caller keeps it for as long
 /// as the result lives.
 pub fn convert(decoded: Decoded, reservation: &Reservation) -> Result<AudioBuffer, ConvertError> {
+    reservation.can_hold(byte_cost(&decoded)?)?;
     let (channels, frames) = check_shape(&decoded)?;
-    reservation.can_hold(cost(&decoded, channels, frames)?)?;
 
     if decoded.rate == SAMPLE_RATE {
         if let Samples::Int { bits, samples } = &decoded.samples
