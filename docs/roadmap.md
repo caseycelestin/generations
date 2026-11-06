@@ -447,6 +447,17 @@ thing the engine holds in RAM that the resident set cannot serve.
   drop it. None of them knows the figure or what else is in RAM. A single
   budget checked by arithmetic at several sites was rejected as the thing
   that would get messy.
+- **The reservation comes before the allocation, so the size is known
+  first.** A load that read the audio and then asked would hold memory
+  the ledger never approved, for exactly the moment the budget is meant
+  to cover. So the sample record carries the audio's channels and frame
+  count, the engine reserves from those, and only then reads. The file
+  backend takes them from the WAV header rather than repeating them in
+  the manifest, so there is one record of the shape and nothing to fall
+  out of step; the read is refused as corrupt if the audio comes back a
+  different size than the header said. Import and print have their sizes
+  in hand before they allocate (the file header, the source sample) and
+  reserve the same way.
 - **The resident set becomes a client.** It stores each buffer with its
   reservation and loses the job of being the ledger. Its contract stays:
   every entry is keyed by a sample id, immutable behind an `Arc` so a

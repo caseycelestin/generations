@@ -40,6 +40,11 @@ pub struct Sample {
     /// [`Engine::load`]: crate::engine::Engine::load
     /// [`Engine::unload`]: crate::engine::Engine::unload
     pub loaded: bool,
+    /// Channels in the audio, 1 or 2.
+    pub channels: u16,
+    /// Frames in the audio. With `channels`, this says how much RAM the
+    /// audio takes before it is read, so the engine can reserve first.
+    pub frames: usize,
 }
 
 /// Reasons a project operation can fail.
@@ -140,9 +145,12 @@ pub(crate) mod tests {
 
     /// What the stub storage remembers.
     #[derive(Default)]
-    struct State {
+    pub(crate) struct State {
         next_id: u32,
         samples: Vec<(Sample, AudioBuffer)>,
+        /// How many times audio has been read, so a test can check that a
+        /// read did not happen.
+        pub(crate) audio_reads: usize,
     }
 
     /// In-memory storage for tests, shared with the test through `Rc` so
@@ -155,6 +163,7 @@ pub(crate) mod tests {
         }
 
         fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
+            self.0.borrow_mut().audio_reads += 1;
             Ok(self.find(id).map(|(_, a)| a))
         }
 
@@ -209,6 +218,8 @@ pub(crate) mod tests {
                     id,
                     parent,
                     loaded: false,
+                    channels: audio.channels(),
+                    frames: audio.frames(),
                 },
                 audio.clone(),
             ));
@@ -232,7 +243,9 @@ pub(crate) mod tests {
         project().0
     }
 
-    fn project() -> (Project, Rc<RefCell<State>>) {
+    /// A project on in-memory storage, and the storage's state so the test
+    /// can look at what the project did to it.
+    pub(crate) fn project() -> (Project, Rc<RefCell<State>>) {
         let state = Rc::new(RefCell::new(State::default()));
         let p = Project::new(Box::new(Memory(state.clone())));
         (p, state)
@@ -278,6 +291,8 @@ pub(crate) mod tests {
                 id: child,
                 parent: Some(root),
                 loaded: false,
+                channels: 1,
+                frames: 4,
             }
         );
         assert_eq!(p.audio(child).unwrap(), tone());

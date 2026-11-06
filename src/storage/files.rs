@@ -77,16 +77,6 @@ struct Entry {
     loaded: bool,
 }
 
-impl Entry {
-    fn sample(&self, id: SampleId) -> Sample {
-        Sample {
-            id,
-            parent: self.parent.map(SampleId),
-            loaded: self.loaded,
-        }
-    }
-}
-
 /// A project stored as a directory.
 #[derive(Debug)]
 pub struct FileStorage {
@@ -167,9 +157,7 @@ impl FileStorage {
                     )));
                 }
             }
-            let path = self.wav_path(SampleId(id));
-            let spec = WavReader::open(&path).map_err(|e| at(&path, e))?.spec();
-            check_spec(SampleId(id), spec)?;
+            self.open_wav(SampleId(id))?;
         }
         if let Some(&max) = manifest.samples.keys().next_back()
             && manifest.next_id <= max
@@ -228,11 +216,18 @@ impl FileStorage {
         sync_dir(&self.samples_dir())
     }
 
+    /// Opens a sample's WAV and checks its header, reading no audio.
+    fn open_wav(&self, id: SampleId) -> Result<WavReader<std::io::BufReader<File>>, StorageError> {
+        let path = self.wav_path(id);
+        let reader = WavReader::open(&path).map_err(|e| at(&path, e))?;
+        check_spec(id, reader.spec())?;
+        Ok(reader)
+    }
+
     fn read_wav(&self, id: SampleId) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
-        let mut reader = WavReader::open(&path).map_err(|e| at(&path, e))?;
+        let mut reader = self.open_wav(id)?;
         let spec = reader.spec();
-        check_spec(id, spec)?;
         let data = reader
             .samples::<Pcm>()
             .collect::<Result<Vec<_>, _>>()
@@ -275,15 +270,24 @@ fn sync_dir(dir: &Path) -> Result<(), StorageError> {
 
 impl Storage for FileStorage {
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
-        Ok(self
-            .read_manifest()?
-            .samples
-            .get(&id.0)
-            .map(|e| e.sample(id)))
+        let manifest = self.read_manifest()?;
+        let Some(entry) = manifest.samples.get(&id.0) else {
+            return Ok(None);
+        };
+        // The WAV header is the one record of the audio's shape; the
+        // manifest does not repeat it, so the two cannot disagree.
+        let reader = self.open_wav(id)?;
+        Ok(Some(Sample {
+            id,
+            parent: entry.parent.map(SampleId),
+            loaded: entry.loaded,
+            channels: reader.spec().channels,
+            frames: reader.duration() as usize,
+        }))
     }
 
     fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
-        if self.sample(id)?.is_none() {
+        if !self.read_manifest()?.samples.contains_key(&id.0) {
             return Ok(None);
         }
         self.read_wav(id).map(Some)
@@ -463,13 +467,25 @@ mod tests {
     }
 
     #[test]
-    fn renamed_wav_is_an_error_for_audio() {
+    fn renamed_wav_is_an_error_for_the_record_and_the_audio() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let id = s.add_sample(None, &ramp(1, 4)).unwrap();
         fs::rename(s.wav_path(id), dir.path().join("samples/kick.wav")).unwrap();
-        assert!(s.sample(id).unwrap().is_some());
+        // The record takes the audio's shape from the WAV header, so it
+        // cannot be read either.
+        assert!(matches!(s.sample(id), Err(StorageError::Backend(_))));
         assert!(matches!(s.audio(id), Err(StorageError::Backend(_))));
+    }
+
+    #[test]
+    fn the_record_carries_the_audios_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let id = s.add_sample(None, &ramp(2, 3)).unwrap();
+        let sample = s.sample(id).unwrap().unwrap();
+        assert_eq!(sample.channels, 2);
+        assert_eq!(sample.frames, 3);
     }
 
     #[test]

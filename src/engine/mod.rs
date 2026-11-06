@@ -211,12 +211,28 @@ impl Engine {
     }
 
     /// Reads `id` from the project into RAM, unless it is already there.
+    ///
+    /// The memory is reserved before the read, from the size the project
+    /// records for the sample, so a refused load never allocates. Audio
+    /// that comes back a different size than recorded is corrupt storage.
     fn make_resident(&mut self, id: SampleId) -> Result<(), EngineError> {
         if self.resident.contains(id) {
             return Ok(());
         }
+        let sample = self.project.sample(id)?;
+        let reservation = self
+            .ledger
+            .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?;
         let audio = self.project.audio(id)?;
-        let reservation = self.ledger.reserve(audio.bytes())?;
+        if audio.bytes() != reservation.bytes() {
+            return Err(StorageError::Corrupt(format!(
+                "sample {} is {} bytes of audio but its record says {}",
+                id.0,
+                audio.bytes(),
+                reservation.bytes()
+            ))
+            .into());
+        }
         self.resident.insert(id, audio, reservation);
         Ok(())
     }
@@ -240,7 +256,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::effects::reverse;
-    use crate::project::tests::memory_project;
+    use crate::project::tests::{memory_project, project};
 
     fn ramp(n: i16) -> AudioBuffer {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
@@ -392,6 +408,19 @@ mod tests {
         assert!(!e.project().sample(b).unwrap().loaded);
         assert!(!e.resident.contains(b));
         assert!(e.project().sample(a).unwrap().loaded);
+    }
+
+    #[test]
+    fn load_over_budget_reserves_before_it_reads() {
+        let (project, state) = project();
+        let mut e = Engine::on(project, ramp(4).bytes() - 1).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
+        state.borrow_mut().audio_reads = 0;
+
+        assert!(matches!(e.load(id), Err(EngineError::OverBudget(_))));
+        // Refused on the record alone: the audio was never brought in.
+        assert_eq!(state.borrow().audio_reads, 0);
+        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]

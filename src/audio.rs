@@ -104,6 +104,12 @@ impl AudioBuffer {
     pub fn bytes(&self) -> usize {
         std::mem::size_of_val(&*self.data)
     }
+
+    /// Bytes a buffer of `frames` frames of `channels` channels occupies,
+    /// for reserving the memory before the buffer exists.
+    pub(crate) fn bytes_for(channels: u16, frames: usize) -> usize {
+        frames * usize::from(channels) * std::mem::size_of::<Pcm>()
+    }
 }
 
 impl fmt::Debug for AudioBuffer {

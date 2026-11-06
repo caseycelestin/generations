@@ -107,7 +107,6 @@ pub struct Reservation {
 
 impl Reservation {
     /// The bytes this reservation holds.
-    #[cfg(test)]
     pub fn bytes(&self) -> usize {
         self.bytes
     }
