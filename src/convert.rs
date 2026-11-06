@@ -1,16 +1,18 @@
 //! Conversion of decoded audio into the project format.
 //!
 //! A decoder, whatever file format it reads, produces one plain value: a
-//! [`Decoded`], interleaved `f32` at whatever rate and channel count the
-//! file had. [`convert`] takes that value to an [`AudioBuffer`] at the
-//! project's rate. Decoders know formats; this module knows the project
-//! format; nothing knows both.
+//! [`Decoded`], interleaved samples at whatever rate, channel count and
+//! width the file had. [`convert`] takes that value to an [`AudioBuffer`]
+//! at the project's rate, and is the only place that decides whether
+//! anything needs doing: a file already at the project's rate and width
+//! is stored byte for byte. Decoders know formats; this module knows the
+//! project format; nothing knows both.
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError};
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, AudioError, SCALE, check_channels};
+use crate::audio::{AudioBuffer, AudioError, check_channels};
 use crate::config::{Pcm, SAMPLE_RATE};
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
@@ -28,26 +30,38 @@ pub struct Decoded {
     pub samples: Samples,
 }
 
-/// The samples of a [`Decoded`], as wide as the file stored them.
+/// The samples of a [`Decoded`], as the file stored them.
 ///
-/// A decoder reports [`Pcm`](Samples::Pcm) when the file's samples were
-/// already the project's PCM width, so a file already in the project
-/// format is stored byte for byte. Everything else is [`Float`](Samples::Float),
-/// normalised to `-1.0..=1.0` with no promise of staying in range;
-/// conversion clamps.
+/// A decoder reports what it read and nothing more: integers at their own
+/// width, floats as floats. Whether that happens to be the project's
+/// width is for [`convert`] to notice.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Samples {
-    /// Exactly the project's PCM width: nothing to quantise.
-    Pcm(Vec<Pcm>),
-    /// Any other width, or float: quantised with dither on the way in.
+    /// Signed integers of `bits` bits, each in `-2^(bits-1)..2^(bits-1)`,
+    /// carried in the smallest common type.
+    Int { bits: u16, samples: Vec<i32> },
+    /// Floats normalised to `-1.0..=1.0`, with no promise of staying in
+    /// range; conversion clamps.
     Float(Vec<f32>),
 }
 
 impl Samples {
     fn len(&self) -> usize {
         match self {
-            Samples::Pcm(v) => v.len(),
+            Samples::Int { samples, .. } => samples.len(),
             Samples::Float(v) => v.len(),
+        }
+    }
+
+    /// Normalises to `f32`, scaling integers by their own width so every
+    /// width lands on the same range.
+    fn into_f32(self) -> Vec<f32> {
+        match self {
+            Samples::Int { bits, samples } => {
+                let scale = (1u64 << (bits - 1)) as f32;
+                samples.into_iter().map(|v| v as f32 / scale).collect()
+            }
+            Samples::Float(v) => v,
         }
     }
 }
@@ -78,19 +92,12 @@ pub enum ConvertError {
 /// there is only quantised. Channel count is kept as is: mono stays mono,
 /// stereo stays stereo. More channels than a buffer holds is an error, not
 /// a mixdown.
-pub fn convert(decoded: &Decoded) -> Result<AudioBuffer, ConvertError> {
+pub fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
     if decoded.rate == 0 {
         return Err(ConvertError::ZeroRate);
     }
-    if decoded.rate == SAMPLE_RATE {
-        // Already the project rate: PCM is wrapped as is, float is quantised.
-        return Ok(match &decoded.samples {
-            Samples::Pcm(pcm) => AudioBuffer::new(decoded.channels, pcm.clone())?,
-            Samples::Float(f) => AudioBuffer::from_f32(decoded.channels, f)?,
-        });
-    }
-    // Check the shape before resampling so the error names the real
-    // problem rather than a buffer-size mismatch inside the resampler.
+    // Check the shape first so the error names the real problem rather
+    // than a buffer-size mismatch inside the resampler.
     check_channels(decoded.channels)?;
     let channels = usize::from(decoded.channels);
     if !decoded.samples.len().is_multiple_of(channels) {
@@ -101,11 +108,22 @@ pub fn convert(decoded: &Decoded) -> Result<AudioBuffer, ConvertError> {
         .into());
     }
     let frames = decoded.samples.len() / channels;
+
+    if decoded.rate == SAMPLE_RATE {
+        if let Samples::Int { bits, samples } = &decoded.samples
+            && u32::from(*bits) == Pcm::BITS
+        {
+            // Already the project format: nothing to do but store it.
+            let pcm: Vec<Pcm> = samples.iter().map(|&v| v as Pcm).collect();
+            return Ok(AudioBuffer::new(decoded.channels, pcm)?);
+        }
+        return Ok(AudioBuffer::from_f32(
+            decoded.channels,
+            &decoded.samples.into_f32(),
+        )?);
+    }
     // Resampling is float work whatever the file held.
-    let float: Vec<f32> = match &decoded.samples {
-        Samples::Pcm(pcm) => pcm.iter().map(|&s| f32::from(s) / SCALE).collect(),
-        Samples::Float(f) => f.clone(),
-    };
+    let float = decoded.samples.into_f32();
     let resampled = resample(&float, decoded.rate, channels, frames)?;
     Ok(AudioBuffer::from_f32(decoded.channels, &resampled)?)
 }
@@ -148,48 +166,64 @@ mod tests {
         }
     }
 
-    fn pcm(rate: u32, channels: u16, samples: Vec<Pcm>) -> Decoded {
+    fn int(rate: u32, channels: u16, bits: u16, samples: Vec<i32>) -> Decoded {
         Decoded {
             rate,
             channels,
-            samples: Samples::Pcm(samples),
+            samples: Samples::Int { bits, samples },
         }
     }
 
+    fn peak(s: &[f32]) -> f32 {
+        s.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+    }
+
     #[test]
-    fn pcm_at_the_project_rate_is_stored_byte_for_byte() {
-        let b = convert(&pcm(
-            SAMPLE_RATE,
-            2,
-            vec![0, 1, -1, 2001, Pcm::MAX, Pcm::MIN],
-        ))
-        .unwrap();
-        assert_eq!(b.samples(), &[0, 1, -1, 2001, Pcm::MAX, Pcm::MIN]);
+    fn project_width_at_the_project_rate_is_stored_byte_for_byte() {
+        let want = [0, 1, -1, 2001, i32::from(Pcm::MAX), i32::from(Pcm::MIN)];
+        let b = convert(int(SAMPLE_RATE, 2, 16, want.to_vec())).unwrap();
+        let got: Vec<i32> = b.samples().iter().map(|&s| i32::from(s)).collect();
+        assert_eq!(got, want);
         assert_eq!(b.channels(), 2);
     }
 
     #[test]
-    fn pcm_at_another_rate_is_resampled_like_float() {
-        let tone: Vec<Pcm> = sine(44_100, 440.0, 1.0)
-            .iter()
-            .map(|s| (s * 32_768.0) as Pcm)
-            .collect();
-        let b = convert(&pcm(44_100, 1, tone)).unwrap();
-        assert!((b.frames() as i64 - SAMPLE_RATE as i64).abs() <= 2);
-        assert!((rising_crossings(&b.to_f32()) as i64 - 440).abs() <= 2);
+    fn other_widths_at_the_project_rate_are_quantised() {
+        // 24-bit half scale and 8-bit half scale both land on 16-bit half scale.
+        let b24 = convert(int(SAMPLE_RATE, 1, 24, vec![1 << 22, -(1 << 23)])).unwrap();
+        let b8 = convert(int(SAMPLE_RATE, 1, 8, vec![64, -128])).unwrap();
+        for b in [b24, b8] {
+            let s = b.samples();
+            assert!((i32::from(s[0]) - 16_384).abs() <= 1, "{}", s[0]);
+            assert!(s[1] <= Pcm::MIN + 1, "{}", s[1]);
+        }
     }
 
     #[test]
-    fn pcm_shape_errors_are_the_same_as_float() {
+    fn integers_at_another_rate_are_resampled_like_float() {
+        let tone: Vec<i32> = sine(44_100, 440.0, 1.0)
+            .iter()
+            .map(|s| (s * 8_388_608.0) as i32)
+            .collect();
+        let b = convert(int(44_100, 1, 24, tone)).unwrap();
+        assert!((b.frames() as i64 - SAMPLE_RATE as i64).abs() <= 2);
+        let out = b.to_f32();
+        assert!((rising_crossings(&out) as i64 - 440).abs() <= 2);
+        // Level survives: the width scaling in the resample path is right.
+        assert!((peak(&out) - 0.5).abs() < 0.02, "{}", peak(&out));
+    }
+
+    #[test]
+    fn integer_shape_errors_are_the_same_as_float() {
         assert!(matches!(
-            convert(&pcm(SAMPLE_RATE, 2, vec![0; 3])).unwrap_err(),
+            convert(int(SAMPLE_RATE, 2, 16, vec![0; 3])).unwrap_err(),
             ConvertError::Audio(AudioError::RaggedFrames {
                 samples: 3,
                 channels: 2
             })
         ));
         assert!(matches!(
-            convert(&pcm(44_100, 6, vec![0; 6])).unwrap_err(),
+            convert(int(44_100, 6, 16, vec![0; 6])).unwrap_err(),
             ConvertError::Audio(AudioError::BadChannelCount(6))
         ));
     }
@@ -197,7 +231,7 @@ mod tests {
     #[test]
     fn same_rate_is_quantised_and_keeps_its_channels() {
         let samples = vec![0.0, 0.5, -0.5, 1.0];
-        let b = convert(&at(SAMPLE_RATE, 2, samples.clone())).unwrap();
+        let b = convert(at(SAMPLE_RATE, 2, samples.clone())).unwrap();
         assert_eq!(b.channels(), 2);
         assert_eq!(b.frames(), 2);
         let back = b.to_f32();
@@ -225,7 +259,7 @@ mod tests {
     #[test]
     fn other_rate_is_resampled_to_the_project_rate() {
         let d = at(44_100, 1, sine(44_100, 440.0, 1.0));
-        let b = convert(&d).unwrap();
+        let b = convert(d).unwrap();
         assert_eq!(b.channels(), 1);
         // One second in, one second out, within a frame or two of rounding.
         assert!(
@@ -237,8 +271,7 @@ mod tests {
         let out = b.to_f32();
         assert!((rising_crossings(&out) as i64 - 440).abs() <= 2);
         // Same level: a pure tone's peak survives resampling.
-        let peak = out.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
-        assert!((peak - 0.5).abs() < 0.02, "{peak}");
+        assert!((peak(&out) - 0.5).abs() < 0.02, "{}", peak(&out));
     }
 
     #[test]
@@ -250,7 +283,7 @@ mod tests {
             .zip(&right)
             .flat_map(|(&l, &r)| [l, r])
             .collect();
-        let b = convert(&at(96_000, 2, interleaved)).unwrap();
+        let b = convert(at(96_000, 2, interleaved)).unwrap();
         assert_eq!(b.channels(), 2);
         assert!((b.frames() as i64 - 24_000).abs() <= 2, "{}", b.frames());
         let out = b.to_f32();
@@ -266,7 +299,7 @@ mod tests {
 
     #[test]
     fn resampling_an_empty_clip_is_empty() {
-        let b = convert(&at(44_100, 2, vec![])).unwrap();
+        let b = convert(at(44_100, 2, vec![])).unwrap();
         assert_eq!(b.frames(), 0);
         assert_eq!(b.channels(), 2);
     }
@@ -274,14 +307,14 @@ mod tests {
     #[test]
     fn ragged_frames_are_refused_before_resampling() {
         assert!(matches!(
-            convert(&at(44_100, 2, vec![0.0; 3])).unwrap_err(),
+            convert(at(44_100, 2, vec![0.0; 3])).unwrap_err(),
             ConvertError::Audio(AudioError::RaggedFrames {
                 samples: 3,
                 channels: 2
             })
         ));
         assert!(matches!(
-            convert(&at(44_100, 6, vec![0.0; 6])).unwrap_err(),
+            convert(at(44_100, 6, vec![0.0; 6])).unwrap_err(),
             ConvertError::Audio(AudioError::BadChannelCount(6))
         ));
     }
@@ -289,7 +322,7 @@ mod tests {
     #[test]
     fn zero_rate_is_refused() {
         assert!(matches!(
-            convert(&at(0, 1, vec![])).unwrap_err(),
+            convert(at(0, 1, vec![])).unwrap_err(),
             ConvertError::ZeroRate
         ));
     }
@@ -297,7 +330,7 @@ mod tests {
     #[test]
     fn too_many_channels_is_refused_not_mixed() {
         assert!(matches!(
-            convert(&at(SAMPLE_RATE, 6, vec![0.0; 6])).unwrap_err(),
+            convert(at(SAMPLE_RATE, 6, vec![0.0; 6])).unwrap_err(),
             ConvertError::Audio(AudioError::BadChannelCount(6))
         ));
     }
@@ -305,7 +338,7 @@ mod tests {
     #[test]
     fn ragged_frames_are_refused() {
         assert!(matches!(
-            convert(&at(SAMPLE_RATE, 2, vec![0.0; 3])).unwrap_err(),
+            convert(at(SAMPLE_RATE, 2, vec![0.0; 3])).unwrap_err(),
             ConvertError::Audio(AudioError::RaggedFrames {
                 samples: 3,
                 channels: 2

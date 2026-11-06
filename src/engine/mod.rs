@@ -130,7 +130,7 @@ impl Engine {
     /// holds its own copy. The new sample is not loaded; that is a separate
     /// decision, so an import lands on disk whether or not it fits in RAM.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let audio = convert::convert(&decode::decode(file)?)?;
+        let audio = convert::convert(decode::decode(file)?)?;
         Ok(self.import_audio(&audio)?)
     }
 

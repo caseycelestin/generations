@@ -15,7 +15,7 @@ use thiserror::Error;
 use crate::config::{MAX_CHANNELS, Pcm};
 
 /// Full-scale magnitude of the PCM type, as a float.
-pub(crate) const SCALE: f32 = 32_768.0;
+const SCALE: f32 = 32_768.0;
 
 /// Reasons a buffer cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
