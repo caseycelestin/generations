@@ -15,14 +15,16 @@
 //!   │
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
 //!   │
-//!   ├─ render    turns commands into frames, wherever it is driven
-//!   │
-//!   ├─ device    the hardware: takes a callback, runs it on the audio thread
+//!   ├─ render    the other side of sound: turns commands into frames,
+//!   │            wherever the caller drives it. One public type: Renderer
 //!   │
 //!   └─ project   the rules: what a project holds and what is allowed
 //!        │
 //!        └─ storage   the medium: keeps and returns bytes, never interprets
 //!              └─ files   a directory of WAVs and a manifest (the one backend)
+//!
+//! device     the hardware. Beside the engine, not under it: the caller
+//!            opens a device and hands it the engine's output to drive
 //! ```
 //!
 //! - **[`engine`]** is the only code that touches more than one role, and
@@ -38,11 +40,14 @@
 //! - **`render`** is the other end of that ring. The renderer turns
 //!   commands and resident audio into frames and depends on nothing about
 //!   where it runs, so a device can drive it live and a bounce can drive it
-//!   offline. Nothing in it knows what a project or a device is.
-//! - **`device`** is the only code that knows the audio library or that
+//!   offline. Nothing in it knows what a project or a device is. Outside
+//!   the crate it is one type, [`Renderer`], minted once per engine as its
+//!   output, with one method that fills a frame.
+//! - **[`device`]** is the only code that knows the audio library or that
 //!   there is an audio thread. It takes a callback and calls it once per
-//!   period. The engine connects the two: it hands the renderer to
-//!   the device and holds the running stream.
+//!   period. The engine never touches it: the caller, which knows what
+//!   machine it is on, opens the device and moves the engine's output into
+//!   the callback. A machine with no device runs the engine all the same.
 //! - **[`project`]** owns a `Storage` and holds nothing else. There is no
 //!   in-memory copy of a project: every read and write goes to storage, so
 //!   changing the project is changing the disk and there is no save step.
@@ -55,18 +60,23 @@
 //! - **[`audio`]** and **[`config`]** hold the one fixed format every buffer
 //!   uses: 48 kHz, 16-bit PCM, 1 or 2 channels, with `f32` for processing.
 //!
-//! # Opening a project
+//! # Opening a project, and hearing it
 //!
 //! ```text
 //! Engine::open(dir)
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!   └─ Project::new(storage)   plain constructor; nothing left to check
+//!
+//! engine.output()              the renderer, taken once
+//! Device::default_output()?.start(move |out| output.render(out))
+//!                              the caller's three lines that need hardware
 //! ```
 //!
 //! `storage::open` creates an empty project if the directory is empty or
 //! missing, validates the whole project it finds otherwise, and refuses a
 //! directory holding anything else. From then on every change is durable
-//! by the time the call that made it returns.
+//! by the time the call that made it returns. The stream plays while held;
+//! drop it before the engine.
 //!
 //! # Where to start
 //!
@@ -77,7 +87,7 @@
 
 pub mod audio;
 pub mod config;
-pub(crate) mod device;
+pub mod device;
 pub mod effects;
 pub mod engine;
 pub mod project;
@@ -85,8 +95,8 @@ pub(crate) mod render;
 pub(crate) mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use device::DeviceError;
+pub use device::{Device, DeviceError, Stream};
 pub use engine::{Engine, EngineError, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
-pub use render::VoiceId;
+pub use render::{Renderer, VoiceId};
 pub use storage::StorageError;

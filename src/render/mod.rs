@@ -19,6 +19,10 @@
 //! audio arrives inside a command as an `Arc<AudioBuffer>`, and a voice
 //! holds its clone until it finishes, so freeing happens only where the
 //! control side lets go of the last reference.
+//!
+//! Outside the crate, all of this is one type with one method: the
+//! [`Renderer`], which the engine mints as its output and the caller
+//! drives with `render`. What it holds is the engine's business.
 
 pub mod command;
 pub mod renderer;

@@ -40,7 +40,8 @@ the hardware unit all sit on top of. It is responsible for:
 
 Early. The engine opens a project on disk, imports audio, prints one effect
 (reverse) as a new generation, keeps the lineage durable across a
-power-down, and plays loaded samples through the default audio device.
+power-down, and plays loaded samples through whatever output the caller
+gives it; the engine itself needs no audio device.
 See [docs/roadmap.md](docs/roadmap.md) for
 the plan and the decisions behind it, and `cargo doc --open` for the
 architecture.

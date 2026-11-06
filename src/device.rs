@@ -5,8 +5,12 @@
 //! default output, checked once for the engine's one format; [`Device::start`]
 //! takes a callback and returns a [`Stream`] that calls it once per period
 //! from the audio thread, for as long as the stream is held. What the
-//! callback does is the caller's business: the engine hands it the
-//! renderer.
+//! callback does is the caller's business; the one that makes sound moves
+//! an engine's output, its [`Renderer`](crate::Renderer), in and renders
+//! from it.
+//!
+//! The engine never touches this module. Which machine the sampler is on,
+//! and whether it has a device at all, is the caller's knowledge.
 //!
 //! There is one implementation. `cpal` is itself the abstraction over ALSA,
 //! PipeWire, JACK and the rest; a trait of our own waits for a second
