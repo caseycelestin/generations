@@ -542,10 +542,18 @@ thing the engine holds in RAM that the resident set cannot serve.
 ### Process
 
 - **The public surface is kept minimal.** Convenience methods are added
-  when a caller exists, not before. `Engine::audio` exists because
-  `Project::audio` had to take a reservation and so go crate-private, and
-  the print example reads audio to show its lineage; the engine pays for
-  the read and hands over a copy that is then the caller's.
+  when a caller exists, not before.
+- **Audio never leaves the engine.** There is no method that returns a
+  sample's buffer. A copy in a caller's hands would be memory the ledger
+  does not count, and nothing outside needs it: playback hears loaded
+  audio through the renderer, a print changes audio inside the engine,
+  export will stream from storage to a file, and a display asks
+  questions with small answers. A waveform is the one that looks like it
+  needs the samples and does not: given a frame range and a column count
+  the engine returns one min and max per column, or the sample values
+  when the range holds fewer frames than columns, so the answer is sized
+  by the screen and never by the audio. That method arrives with the
+  panel that calls it.
 - **Nothing is settled by having been written.** The step 1 model was
   removed in step 3 when it stopped fitting. New steps are designed from
   the decision, then existing code is changed to fit, not the other way

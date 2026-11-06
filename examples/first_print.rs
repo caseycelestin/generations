@@ -1,6 +1,7 @@
 //! The first print, on disk: open a project directory, import a WAV of a
 //! ramp, reverse it, then reopen the directory and walk the lineage from
-//! there.
+//! there. Audio never leaves the engine, so the walk shows each
+//! generation's record; that the reverse is right is the test suite's job.
 //!
 //! Nothing is saved anywhere in this file. Every change is on disk by the
 //! time the call that made it returns.
@@ -54,10 +55,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     while let Some(id) = cur {
         let sample = engine.project().sample(id)?;
         println!(
-            "id {} parent {:?} samples {:?}",
+            "id {} parent {:?} channels {} frames {}",
             id.0,
             sample.parent.map(|p| p.0),
-            engine.audio(id)?.samples()
+            sample.channels,
+            sample.frames
         );
         cur = sample.parent;
     }

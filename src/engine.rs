@@ -174,7 +174,10 @@ impl Engine {
     /// without writing anything.
     pub fn load(&mut self, id: SampleId) -> Result<(), EngineError> {
         if !self.loaded.contains_key(&id) {
-            let reservation = self.reserve_for(id)?;
+            let sample = self.project.sample(id)?;
+            let reservation = self
+                .ledger
+                .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?;
             let audio = self.project.audio(id, &reservation)?;
             self.loaded.insert(id, (Arc::new(audio), reservation));
         }
@@ -232,26 +235,6 @@ impl Engine {
             .map_err(|_| EngineError::CommandsFull)
     }
 
-    /// Reserves what `id`'s audio takes, from its record, without reading
-    /// it.
-    fn reserve_for(&self, id: SampleId) -> Result<Reservation, EngineError> {
-        let sample = self.project.sample(id)?;
-        Ok(self
-            .ledger
-            .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?)
-    }
-
-    /// A copy of `id`'s audio, read from the project.
-    ///
-    /// For looking at a sample: tooling, a display, a test. It is paid for
-    /// while it is read and then handed over, so the copy is the caller's
-    /// and no longer counted; playback never goes this way, it reads
-    /// loaded audio. Nothing is read if the audio does not fit the budget.
-    pub fn audio(&self, id: SampleId) -> Result<AudioBuffer, EngineError> {
-        let reservation = self.reserve_for(id)?;
-        Ok(self.project.audio(id, &reservation)?)
-    }
-
     /// Prints `effect` applied to `source` as the next generation of its
     /// lineage, and returns the new sample's id.
     ///
@@ -287,6 +270,13 @@ mod tests {
 
     fn ramp(n: i16) -> AudioBuffer {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
+    }
+
+    /// The stored audio of `id`, read outside the budget. Audio never
+    /// leaves the engine; tests look at it through the project directly.
+    fn audio(e: &Engine, id: SampleId) -> AudioBuffer {
+        let paid = Ledger::new(usize::MAX).reserve(usize::MAX).unwrap();
+        e.project.audio(id, &paid).unwrap()
     }
 
     /// An engine on a memory project, and its output, which the test
@@ -346,7 +336,7 @@ mod tests {
         let path = wav(dir.path(), "a.wav", 48_000, &[0, 1000, -1000, 32_767]);
         let (mut e, _r) = engine();
         let id = e.import(&path).unwrap();
-        let audio = e.audio(id).unwrap();
+        let audio = audio(&e, id);
         assert_eq!(audio.channels(), 1);
         assert_eq!(audio.frames(), 4);
         // Already the project format: stored byte for byte.
@@ -360,7 +350,7 @@ mod tests {
         let path = wav(dir.path(), "b.wav", 44_100, &[0; 44_100]);
         let (mut e, _r) = engine();
         let id = e.import(&path).unwrap();
-        let frames = e.audio(id).unwrap().frames() as i64;
+        let frames = audio(&e, id).frames() as i64;
         assert!((frames - 48_000).abs() <= 2, "{frames}");
     }
 
@@ -405,7 +395,7 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
         assert_eq!(e.project().sample(id).unwrap().parent, None);
-        assert_eq!(e.audio(id).unwrap(), ramp(4));
+        assert_eq!(audio(&e, id), ramp(4));
     }
 
     #[test]
@@ -634,9 +624,9 @@ mod tests {
         let child = e.print(root, reverse).unwrap();
 
         assert_eq!(e.project().sample(child).unwrap().parent, Some(root));
-        assert_eq!(e.audio(child).unwrap().samples(), &[3, 2, 1, 0]);
+        assert_eq!(audio(&e, child).samples(), &[3, 2, 1, 0]);
         // The source is untouched.
-        assert_eq!(e.audio(root).unwrap().samples(), &[0, 1, 2, 3]);
+        assert_eq!(audio(&e, root).samples(), &[0, 1, 2, 3]);
     }
 
     #[test]
