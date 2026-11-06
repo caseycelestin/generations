@@ -85,7 +85,7 @@ out; the short version of the argument is here so it is not had twice.
   project read-only; every change is an engine method. Some changes are
   only half a project write (`load` sets a flag and moves audio into RAM),
   and a caller reaching a role directly would leave the two disagreeing.
-  So the roles the engine owns (`project`'s mutation, `playback`, `device`,
+  So the roles the engine owns (`project`'s mutation, `render`, `device`,
   `storage`) are crate-private, and what is public is the engine, the
   project's read side, the value types in the engine's signatures, the
   errors, the effects and config. One path to each action, and the rules
@@ -190,7 +190,7 @@ are here even though most of the code is not.
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
 - **The budget is enforced where RAM is managed.** `SAMPLE_RAM_BUDGET` in
-  `config.rs` bounds resident audio. The resident set inside `playback`
+  `config.rs` bounds resident audio. The resident set inside `engine`
   checks it, because it is the one thing that knows how many bytes it
   holds; the project never learns about RAM. `Engine::load` puts the audio
   in RAM first and sets the flag only if that succeeded, so the flag is
