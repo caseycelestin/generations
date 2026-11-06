@@ -10,8 +10,9 @@ use rtrb::{Producer, RingBuffer};
 
 use crate::audio::AudioBuffer;
 use crate::config::COMMAND_CAPACITY;
-use crate::playback::{Command, PlaybackError, Renderer, ResidentSet, VoiceId};
+use crate::playback::{PlaybackError, ResidentSet};
 use crate::project::SampleId;
+use crate::render::{Command, Renderer, VoiceId};
 
 /// The control half of playback.
 pub struct Playback {

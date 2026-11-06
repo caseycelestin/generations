@@ -11,7 +11,7 @@
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
 //! end; whoever drives it owns the producing end. Live, that is the engine.
-//!
+
 use std::sync::Arc;
 
 use heapless::Deque;
@@ -19,28 +19,8 @@ use rtrb::Consumer;
 
 use crate::audio::AudioBuffer;
 use crate::config::VOICE_COUNT;
-use crate::playback::voice::Voice;
-
-/// Identity of one started sound, minted by the engine.
-///
-/// Never reused, so a stop that arrives after its voice was stolen or
-/// finished names nothing and does nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VoiceId(pub u64);
-
-/// What the engine can ask of the renderer.
-#[derive(Debug)]
-pub enum Command {
-    /// Start `audio` from its first frame as voice `id`.
-    Play {
-        id: VoiceId,
-        audio: Arc<AudioBuffer>,
-    },
-    /// Stop voice `id` if it is still playing.
-    Stop(VoiceId),
-    /// Stop every voice.
-    StopAll,
-}
+use crate::render::command::{Command, VoiceId};
+use crate::render::voice::Voice;
 
 /// Turns commands and resident audio into periods of output.
 #[derive(Debug)]

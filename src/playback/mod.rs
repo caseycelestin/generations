@@ -1,17 +1,15 @@
-//! Playback: the audio a player can hear, and how it is heard.
+//! Playback: the control side of hearing a sample.
 //!
-//! Two halves, one rule. The control half, where the engine runs, loads
-//! audio into RAM and asks for sounds to start and stop. The rendering
-//! half turns what is resident into output, one period at a time, and is
-//! real-time safe: no allocation, no lock, no disk, no error path, no
-//! clock. Live, an audio device drives it from its callback and the two
-//! halves are two threads. Offline, a bounce drives it in a loop on the
-//! control thread and gets the same frames.
+//! This is what the engine holds. It loads audio into RAM under a budget
+//! and asks for sounds to start and stop, by sending commands over a
+//! lock-free ring to a [`Renderer`](crate::render::Renderer), which lives
+//! in [`render`](crate::render) and turns them into frames wherever it is
+//! driven.
 //!
 //! ```text
-//! control half                       rendering half
-//! Playback      what the engine      Voice       one sample playing
-//!   ResidentSet   holds: audio in    Renderer    commands in, a period out
+//! control side                       render side
+//! Playback      what the engine      Renderer    (see crate::render)
+//!   ResidentSet   holds: audio in
 //!   Producer      RAM and the ring's
 //!                 sending end
 //!                         ── Command ring ──▶
@@ -22,15 +20,12 @@
 //! a [`Device`](crate::device::Device), a bounce would loop over it, a test
 //! calls it by hand.
 //!
-//! Commands cross over a lock-free ring, one way. Audio crosses as
-//! `Arc<AudioBuffer>`: the resident set holds one reference, a playing
-//! voice holds a clone, and freeing happens only where the control half
-//! lets go of the last one.
+//! Audio crosses as `Arc<AudioBuffer>`: the resident set holds one
+//! reference, a playing voice holds a clone, and freeing happens only where
+//! the control side lets go of the last one.
 
 pub mod control;
-pub mod renderer;
 pub mod resident;
-pub mod voice;
 
 use thiserror::Error;
 
@@ -38,7 +33,6 @@ use crate::config::COMMAND_CAPACITY;
 use crate::project::SampleId;
 
 pub use control::Playback;
-pub use renderer::{Command, Renderer, VoiceId};
 pub use resident::ResidentSet;
 
 /// Reasons playback cannot do what was asked.

@@ -14,8 +14,9 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::config::SAMPLE_RAM_BUDGET;
 use crate::device::{Device, DeviceError, Stream};
-use crate::playback::{Playback, PlaybackError, VoiceId};
+use crate::playback::{Playback, PlaybackError};
 use crate::project::{Project, ProjectError, SampleId};
+use crate::render::VoiceId;
 use crate::storage::{self, StorageError};
 
 /// Reasons an engine operation can fail.
@@ -168,8 +169,8 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::effects::reverse;
-    use crate::playback::Renderer;
     use crate::project::tests::memory_project;
+    use crate::render::Renderer;
 
     fn ramp(n: i16) -> AudioBuffer {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
