@@ -5,7 +5,7 @@
 //! default output, checked once for the engine's one format; [`Device::start`]
 //! takes a callback and returns a [`Stream`] that calls it once per period
 //! from the audio thread, for as long as the stream is held. What the
-//! callback does is the caller's business: the engine hands it playback's
+//! callback does is the caller's business: the engine hands it the
 //! renderer.
 //!
 //! There is one implementation. `cpal` is itself the abstraction over ALSA,

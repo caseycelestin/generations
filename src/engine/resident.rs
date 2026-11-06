@@ -1,7 +1,9 @@
 //! Audio held in RAM for playback, under a budget.
 //!
-//! The [`ResidentSet`] knows nothing about the project, the device or
-//! voices: it holds buffers by id and keeps count. The budget is enforced
+//! The [`ResidentSet`] is the engine's cache in front of storage, and the
+//! control side's answer to "which samples are in RAM". It knows nothing
+//! about the project, the device or voices: it holds buffers by id and
+//! keeps count. The budget is enforced
 //! here and nowhere else, because this is the one place that knows how
 //! many bytes are resident. The memory itself is ordinary heap allocation:
 //! each buffer owns its own block, and the guarantee that the budget's
@@ -11,15 +13,31 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use thiserror::Error;
+
 use crate::audio::AudioBuffer;
-use crate::playback::PlaybackError;
 use crate::project::SampleId;
+
+/// Loading this audio would put resident audio over the budget.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(
+    "loading {requested} bytes would put resident audio at {} of a {budget} byte budget",
+    resident + requested
+)]
+pub struct OverBudget {
+    /// Bytes the refused audio would have cost.
+    pub requested: usize,
+    /// Bytes resident at the time.
+    pub resident: usize,
+    /// The budget this set was built with.
+    pub budget: usize,
+}
 
 /// Audio held in RAM for playback, under a byte budget.
 ///
 /// Buffers are shared through [`Arc`] so a voice can hold one while it
-/// plays. Only the control thread inserts and removes; the set is not for
-/// the renderer, which only ever reads the clones it was handed.
+/// plays. Only the engine inserts and removes; the set never crosses to
+/// the render side, which only ever reads the clones it was handed.
 #[derive(Debug)]
 pub struct ResidentSet {
     budget: usize,
@@ -42,13 +60,13 @@ impl ResidentSet {
     /// Refused, with nothing changed, if it would exceed the budget. A
     /// sample's audio never changes, so inserting an id that is already
     /// resident changes nothing and costs nothing.
-    pub fn insert(&mut self, id: SampleId, audio: AudioBuffer) -> Result<(), PlaybackError> {
+    pub fn insert(&mut self, id: SampleId, audio: AudioBuffer) -> Result<(), OverBudget> {
         if self.audio.contains_key(&id) {
             return Ok(());
         }
         let requested = audio.bytes();
         if self.bytes + requested > self.budget {
-            return Err(PlaybackError::OverBudget {
+            return Err(OverBudget {
                 requested,
                 resident: self.bytes,
                 budget: self.budget,
@@ -116,7 +134,7 @@ mod tests {
         let err = r.insert(SampleId(2), mono(10)).unwrap_err();
         assert_eq!(
             err,
-            PlaybackError::OverBudget {
+            OverBudget {
                 requested: 20,
                 resident: 40,
                 budget: 50,
