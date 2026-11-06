@@ -9,7 +9,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 1 | Core data model | done, then rebuilt in step 3 |
 | 2 | First print: one real effect (reverse) and an engine that applies it | done |
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
-| 4 | Hear something: load a WAV and play it through the audio device | in progress |
+| 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | Recording: audio input as a new root | |
 | 6 | Sequencing and mixing: the real-time side | |
 | 7 | Arrangement and more effects | |
