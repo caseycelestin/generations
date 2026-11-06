@@ -61,7 +61,7 @@
 //!   holds a whole, valid project; opening one creates or validates it.
 //! - **[`effects`]** are offline functions over an [`AudioBuffer`]. Only
 //!   playback, mixing and sequencing will ever be real-time.
-//! - **[`convert`](crate::convert)** is the boundary between the world's audio and the
+//! - **[`mod@convert`]** is the boundary between the world's audio and the
 //!   project's. Whatever a file format turns out to hold, a decoder hands
 //!   over one plain [`Decoded`] value (rate, channels, interleaved `f32`)
 //!   and [`convert()`] resamples and quantises it. Formats are added by
