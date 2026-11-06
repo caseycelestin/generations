@@ -35,3 +35,9 @@ pub const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 /// processing.
 pub const VOICE_COUNT: usize = 64;
 const _: () = assert!(VOICE_COUNT > 0, "the voice table cannot be empty");
+
+/// Commands the engine can send the renderer before the renderer has had
+/// a period to take them. A press that finds the ring full is dropped,
+/// which is the right failure for a real-time system; with periods in the
+/// hundreds per second and presses in the tens, it does not happen by hand.
+pub const COMMAND_CAPACITY: usize = 64;

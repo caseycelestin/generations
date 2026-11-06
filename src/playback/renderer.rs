@@ -102,12 +102,15 @@ impl Renderer {
         self.voices.retain(|v| v.id() != id);
     }
 
-    /// Whether voice `id` is playing.
+    /// Whether voice `id` is playing. A front panel will want this; until
+    /// then only tests ask.
+    #[cfg(test)]
     pub fn is_playing(&self, id: VoiceId) -> bool {
         self.voices.iter().any(|v| v.id() == id)
     }
 
     /// How many voices are playing.
+    #[cfg(test)]
     pub fn playing(&self) -> usize {
         self.voices.len()
     }

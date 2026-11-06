@@ -71,11 +71,6 @@ impl Voice {
     pub fn finished(&self) -> bool {
         self.position >= self.audio.frames()
     }
-
-    /// The audio this voice plays.
-    pub fn audio(&self) -> &Arc<AudioBuffer> {
-        &self.audio
-    }
 }
 
 #[cfg(test)]

@@ -81,14 +81,22 @@ out; the short version of the argument is here so it is not had twice.
   each one that can change gets its own setter with its own rule, rather
   than one general update: the id and parent can never change, and a rule
   belongs next to the one field it governs.
-- **Project mutation goes through the engine.** `Engine::project()` lends
-  the project read-only; every change is an engine method. Some changes
-  are only half a project write (`load` sets a flag and moves audio into
-  RAM), and a caller reaching the project directly would leave the two
-  disagreeing. So new mutating methods on `Project` are crate-private by
-  default, starting with `set_loaded`. The older `add_sample` and
-  `remove_sample` are still public and will be tightened when there is a
-  reason to touch them.
+- **The engine is the only way in.** `Engine::project()` lends the
+  project read-only; every change is an engine method. Some changes are
+  only half a project write (`load` sets a flag and moves audio into RAM),
+  and a caller reaching a role directly would leave the two disagreeing.
+  So the roles the engine owns (`project`'s mutation, `playback`, `device`,
+  `storage`) are crate-private, and what is public is the engine, the
+  project's read side, the value types in the engine's signatures, the
+  errors, the effects and config. One path to each action, and the rules
+  hold on it. A reader who wants a role's internals opens the module.
+- **The engine's methods stay flat for now.** Most touch more than one
+  role (`play` asks playback and, on failure, the project), so grouping
+  them by role would mislead. If the list grows past easy reading, the
+  grouping to use is by what the caller is doing (samples, sound, later
+  pads and patterns), as `impl` blocks or as views the engine lends that
+  borrow the whole engine so they can still cross roles. Not needed at
+  nine methods.
 
 ### Storage
 
@@ -182,12 +190,14 @@ are here even though most of the code is not.
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
 - **The budget is enforced where RAM is managed.** `SAMPLE_RAM_BUDGET` in
-  `config.rs` bounds resident audio. The `ResidentSet` in `playback.rs`
+  `config.rs` bounds resident audio. The resident set inside `playback`
   checks it, because it is the one thing that knows how many bytes it
   holds; the project never learns about RAM. `Engine::load` puts the audio
   in RAM first and sets the flag only if that succeeded, so the flag is
-  never true for a sample that is not resident. The engine lends the set
-  read-only through `Engine::resident()`, as it lends the project.
+  never true for a sample that is not resident. The set is private to the
+  crate: "is this loaded" is answered by the sample's flag, and "how much
+  RAM is in use" gets a number on the engine when a panel asks for it,
+  not a lent struct.
 - **Resident audio is ordinary heap allocation; the OS guarantees the
   budget.** Each buffer owns its own block, wrapped in an `Arc` so a voice
   can hold it while it plays. There is no preallocated arena. Linux
@@ -261,6 +271,38 @@ are here even though most of the code is not.
   owns the consuming end (as Kira does) rather than taking commands as a
   parameter (as JUCE does): there is one host and one feeder, and the
   device closure is then one line.
+- **The device is its own role, and it takes a callback.** `device.rs` is
+  the only code that knows `cpal` exists and the only code that knows
+  there is an audio thread. `Device::default_output()` picks the system's
+  default output and checks it runs 48 kHz stereo `f32`; `start(render)`
+  runs the callback on the audio thread and returns a `Stream` that plays
+  while held. The device knows nothing about playback: the engine hands it
+  playback's renderer in a closure and holds the stream. Playback never
+  touches a device, so a bounce or a test drives the same renderer with
+  no device at all.
+- **`cpal`, and no trait of our own.** `cpal` is already the abstraction
+  over ALSA, PipeWire, JACK, CoreAudio and WASAPI, and it runs on the
+  development machine and the Pi with no code change. A trait over it
+  would have one implementation; tests do not need a fake device because
+  they hold the renderer. Going direct to ALSA, or to RtAudio for a duplex
+  stream, is the day a second implementation exists. `cpal` needs the ALSA
+  headers to build, so CI installs them.
+- **The stream runs from open to drop.** Opening a stream takes tens of
+  milliseconds and often clicks, so it is opened once and renders silence
+  when nothing plays, as every synth does. Stopping it when idle would put
+  the open cost on the first press.
+- **The period is the backend's default for now.** It is the latency
+  knob: a press lands within one period, and the renderer's work per
+  callback is bounded by it. On the Pi it should be chosen deliberately
+  (`BufferSize::Fixed`) once the device is in hand; on desktop Linux the
+  default is around ten milliseconds and good enough to hear.
+- **Recording will be a second stream.** `cpal` opens input and output as
+  separate streams with separate callbacks, so recording gets its own
+  input type in `device.rs` and its own ring back to the control side,
+  and playback never learns about it. Two streams have no guaranteed
+  frame alignment between them; if a resample must land on the frame,
+  that is the case for a duplex stream, and it is a change inside the two
+  roles.
 - **Nothing on the render path reads a clock or the device.** Frame counts
   only, with the rate from config. This is what makes an offline bounce
   possible: build a renderer, drive `render` in a loop faster than real
@@ -298,6 +340,12 @@ changes to it.
 
 ## Deferred ideas
 
+- Effects move into playback. An effect runs live on a voice or the bus,
+  heard through the renderer, and a print becomes the committed render of
+  what was heard: the same effect code with the same parameters, driven
+  offline, stored as a new generation. Today's `print`, an offline function
+  over a buffer, is the stand-in until then; the operation it performs,
+  commit a new generation, stays the centre of the engine.
 - A replayable recipe on prints, so a chain applied to one sample can be
   applied to others as a preset. Needs effects-as-data first. Not every
   print is replayable, so a label-only form must remain.
@@ -313,6 +361,15 @@ changes to it.
   rather than read a clock.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
+- Unloading a sample while a voice plays it leaves the voice as the last
+  holder of the audio, so the free happens on the audio thread. Fix:
+  `ResidentSet::remove` returns the `Arc`, and playback keeps a retiring
+  list it sweeps on the control side for entries whose count has dropped
+  to one. Not an audible problem today; a rule to keep before the device
+  is the target.
+- Stream errors (the device went away, an xrun the backend could not hide)
+  are printed from the audio thread. They need a way back to the control
+  side, which arrives with whatever reports events to a front panel.
 - A bound on sample length. Audio in flight (an import's buffer, a print's
   input and output, a recording in progress) is not counted against the
   budget, so the OS reservation must cover the budget plus the largest
