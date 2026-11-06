@@ -1,184 +1,129 @@
-//! Audio held in RAM for playback, under a budget.
+//! Audio held in RAM for playback.
 //!
 //! The [`ResidentSet`] is the engine's cache in front of storage, and the
 //! control side's answer to "which samples are in RAM". It knows nothing
-//! about the project, the device or voices: it holds buffers by id and
-//! keeps count. The budget is enforced
-//! here and nowhere else, because this is the one place that knows how
-//! many bytes are resident. The memory itself is ordinary heap allocation:
-//! each buffer owns its own block, and the guarantee that the budget's
-//! worth of RAM exists is the operating system's job (a reservation for
-//! the engine's process on the device), not the engine's.
+//! about the project, the device, voices or the budget: it holds buffers
+//! by id, each with the [`Reservation`] that paid for it, and the bytes go
+//! back to the ledger when the buffer leaves. The memory itself is
+//! ordinary heap allocation: each buffer owns its own block, and the
+//! guarantee that the budget's worth of RAM exists is the operating
+//! system's job (a reservation for the engine's process on the device),
+//! not the engine's.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use thiserror::Error;
-
+use super::ledger::Reservation;
 use crate::audio::AudioBuffer;
 use crate::project::SampleId;
 
-/// Loading this audio would put resident audio over the budget.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[error(
-    "loading {requested} bytes would put resident audio at {} of a {budget} byte budget",
-    resident + requested
-)]
-pub struct OverBudget {
-    /// Bytes the refused audio would have cost.
-    pub requested: usize,
-    /// Bytes resident at the time.
-    pub resident: usize,
-    /// The budget this set was built with.
-    pub budget: usize,
-}
-
-/// Audio held in RAM for playback, under a byte budget.
+/// Audio held in RAM for playback, each buffer with its reservation.
 ///
 /// Buffers are shared through [`Arc`] so a voice can hold one while it
 /// plays. Only the engine inserts and removes; the set never crosses to
 /// the render side, which only ever reads the clones it was handed.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ResidentSet {
-    budget: usize,
-    bytes: usize,
-    audio: HashMap<SampleId, Arc<AudioBuffer>>,
+    audio: HashMap<SampleId, (Arc<AudioBuffer>, Reservation)>,
 }
 
 impl ResidentSet {
-    /// An empty set that will hold at most `budget` bytes of audio.
-    pub fn new(budget: usize) -> Self {
-        Self {
-            budget,
-            bytes: 0,
-            audio: HashMap::new(),
-        }
+    /// An empty set.
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Makes `audio` resident as sample `id`.
+    /// Makes `audio` resident as sample `id`, keeping `reservation` with
+    /// it for as long as it stays.
     ///
-    /// Refused, with nothing changed, if it would exceed the budget. A
-    /// sample's audio never changes, so inserting an id that is already
-    /// resident changes nothing and costs nothing.
-    pub fn insert(&mut self, id: SampleId, audio: AudioBuffer) -> Result<(), OverBudget> {
-        if self.audio.contains_key(&id) {
-            return Ok(());
-        }
-        let requested = audio.bytes();
-        if self.bytes + requested > self.budget {
-            return Err(OverBudget {
-                requested,
-                resident: self.bytes,
-                budget: self.budget,
-            });
-        }
-        self.bytes += requested;
-        self.audio.insert(id, Arc::new(audio));
-        Ok(())
+    /// A sample's audio never changes, so inserting an id that is already
+    /// resident changes nothing; the reservation offered for it is
+    /// released at once.
+    pub fn insert(&mut self, id: SampleId, audio: AudioBuffer, reservation: Reservation) {
+        self.audio
+            .entry(id)
+            .or_insert_with(|| (Arc::new(audio), reservation));
     }
 
     /// Drops sample `id` from the set. Removing an id that is not resident
     /// changes nothing.
     ///
-    /// The bytes come off the count at once, even if a voice still holds a
+    /// The reservation is released at once, even if a voice still holds a
     /// clone; the memory itself is freed when the last holder lets go.
     pub fn remove(&mut self, id: SampleId) {
-        if let Some(audio) = self.audio.remove(&id) {
-            self.bytes -= audio.bytes();
-        }
+        self.audio.remove(&id);
     }
 
     /// The resident audio of sample `id`, shared, or `None` if it is not
     /// resident.
     pub fn get(&self, id: SampleId) -> Option<Arc<AudioBuffer>> {
-        self.audio.get(&id).cloned()
+        self.audio.get(&id).map(|(audio, _)| Arc::clone(audio))
     }
 
     /// Whether sample `id` is resident.
     pub fn contains(&self, id: SampleId) -> bool {
         self.audio.contains_key(&id)
     }
-
-    /// Bytes of audio resident right now. A front panel will want this;
-    /// until then only tests ask.
-    #[cfg(test)]
-    pub fn bytes(&self) -> usize {
-        self.bytes
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::ledger::Ledger;
 
     /// A mono buffer of `frames` frames, costing `frames * 2` bytes.
     fn mono(frames: usize) -> AudioBuffer {
         AudioBuffer::new(1, vec![0; frames]).unwrap()
     }
 
+    /// Inserts `audio` as `id`, paying for it from `ledger`.
+    fn insert(r: &mut ResidentSet, ledger: &Ledger, id: SampleId, audio: AudioBuffer) {
+        let reservation = ledger.reserve(audio.bytes()).unwrap();
+        r.insert(id, audio, reservation);
+    }
+
     #[test]
-    fn insert_makes_audio_resident_and_counts_it() {
-        let mut r = ResidentSet::new(100);
-        assert_eq!(r.bytes(), 0);
-        r.insert(SampleId(1), mono(10)).unwrap();
+    fn insert_makes_audio_resident_and_holds_its_reservation() {
+        let ledger = Ledger::new(100);
+        let mut r = ResidentSet::new();
+        insert(&mut r, &ledger, SampleId(1), mono(10));
         assert!(r.contains(SampleId(1)));
-        assert_eq!(r.bytes(), 20);
+        assert_eq!(ledger.in_use(), 20);
         assert_eq!(r.get(SampleId(1)).unwrap().frames(), 10);
         assert!(r.get(SampleId(2)).is_none());
     }
 
     #[test]
-    fn insert_over_budget_is_refused_and_changes_nothing() {
-        let mut r = ResidentSet::new(50);
-        r.insert(SampleId(1), mono(20)).unwrap();
-        let err = r.insert(SampleId(2), mono(10)).unwrap_err();
-        assert_eq!(
-            err,
-            OverBudget {
-                requested: 20,
-                resident: 40,
-                budget: 50,
-            }
-        );
-        assert!(!r.contains(SampleId(2)));
-        assert_eq!(r.bytes(), 40);
+    fn inserting_a_resident_id_again_releases_the_offered_reservation() {
+        let ledger = Ledger::new(100);
+        let mut r = ResidentSet::new();
+        insert(&mut r, &ledger, SampleId(1), mono(10));
+        insert(&mut r, &ledger, SampleId(1), mono(10));
+        assert_eq!(ledger.in_use(), 20);
     }
 
     #[test]
-    fn insert_exactly_to_the_budget_is_allowed() {
-        let mut r = ResidentSet::new(40);
-        r.insert(SampleId(1), mono(20)).unwrap();
-        assert_eq!(r.bytes(), 40);
-    }
-
-    #[test]
-    fn inserting_a_resident_id_again_changes_nothing() {
-        let mut r = ResidentSet::new(100);
-        r.insert(SampleId(1), mono(10)).unwrap();
-        r.insert(SampleId(1), mono(10)).unwrap();
-        assert_eq!(r.bytes(), 20);
-    }
-
-    #[test]
-    fn remove_frees_the_budget() {
-        let mut r = ResidentSet::new(40);
-        r.insert(SampleId(1), mono(20)).unwrap();
+    fn remove_releases_the_reservation() {
+        let ledger = Ledger::new(40);
+        let mut r = ResidentSet::new();
+        insert(&mut r, &ledger, SampleId(1), mono(20));
         r.remove(SampleId(1));
         assert!(!r.contains(SampleId(1)));
-        assert_eq!(r.bytes(), 0);
-        r.insert(SampleId(2), mono(20)).unwrap();
+        assert_eq!(ledger.in_use(), 0);
+        insert(&mut r, &ledger, SampleId(2), mono(20));
         // Removing what is not there is not an error.
         r.remove(SampleId(1));
-        assert_eq!(r.bytes(), 40);
+        assert_eq!(ledger.in_use(), 40);
     }
 
     #[test]
     fn a_held_clone_outlives_removal() {
-        let mut r = ResidentSet::new(100);
-        r.insert(SampleId(1), mono(10)).unwrap();
+        let ledger = Ledger::new(100);
+        let mut r = ResidentSet::new();
+        insert(&mut r, &ledger, SampleId(1), mono(10));
         let held = r.get(SampleId(1)).unwrap();
         r.remove(SampleId(1));
-        assert_eq!(r.bytes(), 0);
+        assert_eq!(ledger.in_use(), 0);
         assert_eq!(held.frames(), 10);
         assert_eq!(Arc::strong_count(&held), 1);
     }

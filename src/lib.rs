@@ -38,9 +38,11 @@
 //!   add the result to the project as the source's child. A load is: read
 //!   the audio from the project, put it in the resident set, mark the
 //!   sample loaded. A play is: find the audio in the resident set, send a
-//!   command. The engine is the control side of sound: it owns the resident
-//!   set (audio in RAM under a budget) and the sending end of a lock-free
-//!   command ring, and nothing it does can block the other end.
+//!   command. The engine is the control side of sound: it owns the ledger
+//!   (one memory budget for everything it holds in RAM), the resident set
+//!   (loaded audio, each buffer with its reservation) and the sending end
+//!   of a lock-free command ring, and nothing it does can block the other
+//!   end.
 //! - **`render`** is the other end of that ring. The renderer turns
 //!   commands and resident audio into frames and depends on nothing about
 //!   where it runs, so a device can drive it live and a bounce can drive it

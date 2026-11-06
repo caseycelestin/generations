@@ -7,14 +7,16 @@
 //! below the engine is reachable from outside the crate except read-only,
 //! so there is one path to every action and the rules hold on it.
 //!
-//! The engine is also the control side of sound. It owns the audio in RAM
-//! (`ResidentSet`) and the sending end of the command ring; the other end
+//! The engine is also the control side of sound. It owns the memory budget
+//! (`Ledger`), the audio in RAM (`ResidentSet`) and the sending end of the
+//! command ring; the other end
 //! is the [`Renderer`] it mints as its output, which turns commands into
 //! frames wherever the caller drives it. Nothing the engine does can block that: every
 //! change to what is heard is a command pushed on the ring, never a call
 //! into the render side. The engine never touches a device; whoever has
 //! one hands it the output.
 
+pub(crate) mod ledger;
 pub(crate) mod resident;
 
 use std::path::Path;
@@ -30,7 +32,8 @@ use crate::project::{Project, ProjectError, SampleId};
 use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
-pub use resident::OverBudget;
+use ledger::Ledger;
+pub use ledger::OverBudget;
 use resident::ResidentSet;
 
 /// Reasons an engine operation can fail.
@@ -58,7 +61,10 @@ pub enum EngineError {
 /// The engine for one open project.
 pub struct Engine {
     project: Project,
-    /// Audio in RAM, under the budget.
+    /// The memory budget; everything the engine holds in RAM is reserved
+    /// here first.
+    ledger: Ledger,
+    /// Audio in RAM, each buffer with its reservation.
     resident: ResidentSet,
     /// The sending end of the command ring; the renderer has the other.
     commands: Producer<Command>,
@@ -71,7 +77,7 @@ pub struct Engine {
 
 impl Engine {
     /// An engine on the project at `dir`, created there if none exists,
-    /// with `budget` bytes of RAM for loaded audio.
+    /// with `budget` bytes of RAM for everything it holds in memory.
     ///
     /// The budget is the caller's to know: it depends on the machine's RAM
     /// and on what else runs there, and the engine never reads either.
@@ -89,13 +95,14 @@ impl Engine {
         Self::on(Project::new(storage::open(dir)?), budget)
     }
 
-    /// An engine on an already open project with `budget` bytes for
-    /// resident audio, loading what the project marks loaded.
+    /// An engine on an already open project with `budget` bytes of RAM,
+    /// loading what the project marks loaded.
     pub(crate) fn on(project: Project, budget: usize) -> Result<Self, EngineError> {
         let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
         let mut engine = Self {
             project,
-            resident: ResidentSet::new(budget),
+            ledger: Ledger::new(budget),
+            resident: ResidentSet::new(),
             commands: producer,
             next_voice: 0,
             output: Some(Renderer::new(consumer)),
@@ -209,7 +216,8 @@ impl Engine {
             return Ok(());
         }
         let audio = self.project.audio(id)?;
-        self.resident.insert(id, audio)?;
+        let reservation = self.ledger.reserve(audio.bytes())?;
+        self.resident.insert(id, audio, reservation);
         Ok(())
     }
 
@@ -350,11 +358,11 @@ mod tests {
         e.load(id).unwrap();
         assert!(e.project().sample(id).unwrap().loaded);
         assert_eq!(e.resident.get(id).unwrap().samples(), &[0, 1, 2, 3]);
-        assert_eq!(e.resident.bytes(), ramp(4).bytes());
+        assert_eq!(e.ledger.in_use(), ramp(4).bytes());
 
         // Loading again changes nothing.
         e.load(id).unwrap();
-        assert_eq!(e.resident.bytes(), ramp(4).bytes());
+        assert_eq!(e.ledger.in_use(), ramp(4).bytes());
     }
 
     #[test]
@@ -366,7 +374,7 @@ mod tests {
         e.unload(id).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
         assert!(!e.resident.contains(id));
-        assert_eq!(e.resident.bytes(), 0);
+        assert_eq!(e.ledger.in_use(), 0);
 
         // Unloading again changes nothing.
         e.unload(id).unwrap();
@@ -508,7 +516,7 @@ mod tests {
         let e = Engine::open(dir.path(), usize::MAX).unwrap();
         assert!(e.resident.contains(kept));
         assert!(!e.resident.contains(dropped));
-        assert_eq!(e.resident.bytes(), ramp(4).bytes());
+        assert_eq!(e.ledger.in_use(), ramp(4).bytes());
     }
 
     #[test]
