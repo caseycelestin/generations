@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Six roles, each its own module, with one rule about who talks to whom:
+//! Five roles, each its own module, with one rule about who talks to whom:
 //!
 //! ```text
 //! engine     coordinates: what a UI or front panel calls. Also the control
@@ -23,8 +23,9 @@
 //!        └─ storage   the medium: keeps and returns bytes, never interprets
 //!              └─ files   a directory of WAVs and a manifest (the one backend)
 //!
-//! device     the hardware. Beside the engine, not under it: the caller
-//!            opens a device and hands it the engine's output to drive
+//! (the caller)  owns the audio device, if there is one, and hands it the
+//!               engine's output to drive. No code in this crate knows an
+//!               audio library or that there is an audio thread
 //! ```
 //!
 //! - **[`engine`]** is the only code that touches more than one role, and
@@ -43,11 +44,11 @@
 //!   offline. Nothing in it knows what a project or a device is. Outside
 //!   the crate it is one type, [`Renderer`], minted once per engine as its
 //!   output, with one method that fills a frame.
-//! - **[`device`]** is the only code that knows the audio library or that
-//!   there is an audio thread. It takes a callback and calls it once per
-//!   period. The engine never touches it: the caller, which knows what
-//!   machine it is on, opens the device and moves the engine's output into
-//!   the callback. A machine with no device runs the engine all the same.
+//! - **The device is not a role of this crate.** The caller, which knows
+//!   what machine it is on, opens an audio device and moves the engine's
+//!   output into its callback; `examples/device/` is one such caller's
+//!   code, over `cpal`. The library has no audio dependency, and a machine
+//!   with no device runs the engine all the same.
 //! - **[`project`]** owns a `Storage` and holds nothing else. There is no
 //!   in-memory copy of a project: every read and write goes to storage, so
 //!   changing the project is changing the disk and there is no save step.
@@ -68,8 +69,8 @@
 //!   └─ Project::new(storage)   plain constructor; nothing left to check
 //!
 //! engine.output()              the renderer, taken once
-//! Device::default_output()?.start(move |out| output.render(out))
-//!                              the caller's three lines that need hardware
+//! device.start(move |out| output.render(out))
+//!                              the caller's own device, whatever it is
 //! ```
 //!
 //! `storage::open` creates an empty project if the directory is empty or
@@ -87,7 +88,6 @@
 
 pub mod audio;
 pub mod config;
-pub mod device;
 pub mod effects;
 pub mod engine;
 pub mod project;
@@ -95,7 +95,6 @@ pub(crate) mod render;
 pub(crate) mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use device::{Device, DeviceError, Stream};
 pub use engine::{Engine, EngineError, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use render::{Renderer, VoiceId};

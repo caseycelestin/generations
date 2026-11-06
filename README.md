@@ -48,13 +48,18 @@ architecture.
 
 ## Building
 
-Requires a Rust toolchain (edition 2024). The crate is a library; the demo
-is an example.
+Requires a Rust toolchain (edition 2024). The crate is a library with no
+audio dependency; the demos are examples.
 
 ```sh
 cargo test
 cargo run --example first_print -- /tmp/myproject
+cargo run --example first_sound -- /tmp/myproject   # needs an output device
 ```
+
+`first_sound` builds against ALSA through `cpal`, a dev-dependency, so it
+needs the ALSA headers (`libasound2-dev` on Debian, `alsa-lib-devel` on
+Fedora). The library itself does not.
 
 ## License
 
