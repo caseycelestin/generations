@@ -112,7 +112,7 @@ impl Engine {
             output: Some(Renderer::new(consumer)),
         };
         for id in engine.project.loaded_samples()? {
-            engine.load_audio(id)?;
+            engine.load(id)?;
         }
         Ok(engine)
     }
@@ -161,31 +161,24 @@ impl Engine {
     }
 
     /// Loads `id`: brings its audio into RAM and marks it loaded, so it
-    /// stays loaded across a reopen. The RAM half is `load_audio`, below.
+    /// stays loaded across a reopen.
     ///
     /// The audio goes into RAM first and the flag is set only if that
     /// succeeded, so the flag is never true for a sample that is not in
-    /// RAM. A sample that does not fit the budget is refused and nothing
-    /// changes. Loading a loaded sample changes nothing.
+    /// RAM. The memory is reserved before the read, from the size the
+    /// project records for the sample, so a refused load never allocates.
+    /// A sample that does not fit the budget is refused and nothing
+    /// changes. Loading a loaded sample changes nothing: the audio is
+    /// already here and storage leaves a flag that already has its value
+    /// alone, so `on` calls this for every sample the project marks loaded
+    /// without writing anything.
     pub fn load(&mut self, id: SampleId) -> Result<(), EngineError> {
-        self.load_audio(id)?;
-        self.project.set_loaded(id, true)?;
-        Ok(())
-    }
-
-    /// The RAM half of [`load`](Self::load): reads `id` from the project
-    /// into RAM, unless it is already there, and touches no flag. Also
-    /// what `on` calls for each sample the project already marks loaded.
-    ///
-    /// The memory is reserved before the read, from the size the project
-    /// records for the sample, so a refused load never allocates.
-    fn load_audio(&mut self, id: SampleId) -> Result<(), EngineError> {
-        if self.loaded.contains_key(&id) {
-            return Ok(());
+        if !self.loaded.contains_key(&id) {
+            let reservation = self.reserve_for(id)?;
+            let audio = self.project.audio(id, &reservation)?;
+            self.loaded.insert(id, (Arc::new(audio), reservation));
         }
-        let reservation = self.reserve_for(id)?;
-        let audio = self.project.audio(id, &reservation)?;
-        self.loaded.insert(id, (Arc::new(audio), reservation));
+        self.project.set_loaded(id, true)?;
         Ok(())
     }
 
