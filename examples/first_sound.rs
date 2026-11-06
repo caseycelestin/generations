@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::config::SAMPLE_RATE;
+use generations::config::{SAMPLE_RAM_BUDGET, SAMPLE_RATE};
 use generations::{AudioBuffer, Engine, effects};
 
 mod device;
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: first_sound <project-dir>")?;
 
-    let mut engine = Engine::open(&dir)?;
+    let mut engine = Engine::open(&dir, SAMPLE_RAM_BUDGET)?;
     let mut output = engine.output().ok_or("output already taken")?;
     // Declared after `engine`, so it is dropped first: the audio thread
     // stops before the engine lets go of its audio.

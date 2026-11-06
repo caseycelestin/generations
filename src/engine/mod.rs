@@ -23,7 +23,7 @@ use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::config::{COMMAND_CAPACITY, SAMPLE_RAM_BUDGET};
+use crate::config::COMMAND_CAPACITY;
 use crate::project::{Project, ProjectError, SampleId};
 use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
@@ -64,7 +64,13 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// An engine on the project at `dir`, created there if none exists.
+    /// An engine on the project at `dir`, created there if none exists,
+    /// with `budget` bytes of RAM for loaded audio.
+    ///
+    /// The budget is the caller's to know: it depends on the machine's RAM
+    /// and on what else runs there, and the engine never reads either.
+    /// [`SAMPLE_RAM_BUDGET`](crate::config::SAMPLE_RAM_BUDGET) is a default
+    /// for a caller with nothing better.
     ///
     /// No audio device is involved: the engine works the same on a machine
     /// without one. To hear it, take [`Engine::output`] and drive it.
@@ -73,8 +79,8 @@ impl Engine {
     /// this returns, so the sampler comes back ready. If they no longer fit
     /// the budget (it shrank, or the project moved to a smaller machine)
     /// the open fails rather than deciding which ones to leave out.
-    pub fn open(dir: &Path) -> Result<Self, EngineError> {
-        Self::on(Project::new(storage::open(dir)?), SAMPLE_RAM_BUDGET)
+    pub fn open(dir: &Path, budget: usize) -> Result<Self, EngineError> {
+        Self::on(Project::new(storage::open(dir)?), budget)
     }
 
     /// An engine on an already open project with `budget` bytes for
@@ -223,9 +229,9 @@ mod tests {
         (engine, output)
     }
 
-    /// An engine on the project at `dir`, as `Engine::open` builds it.
+    /// An engine on the project at `dir`, with no budget to speak of.
     fn on_disk(dir: &Path) -> Engine {
-        Engine::on(Project::new(storage::open(dir).unwrap()), usize::MAX).unwrap()
+        Engine::open(dir, usize::MAX).unwrap()
     }
 
     /// Renders one period of `frames` frames and returns it.
@@ -448,10 +454,7 @@ mod tests {
         e.load(id).unwrap();
         drop(e);
 
-        let result = Engine::on(
-            Project::new(storage::open(dir.path()).unwrap()),
-            ramp(4).bytes() - 1,
-        );
+        let result = Engine::open(dir.path(), ramp(4).bytes() - 1);
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
     }
 

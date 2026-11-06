@@ -64,7 +64,7 @@
 //! # Opening a project, and hearing it
 //!
 //! ```text
-//! Engine::open(dir)
+//! Engine::open(dir, budget)    the caller knows the machine's RAM; the engine does not
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!   └─ Project::new(storage)   plain constructor; nothing left to check
 //!
