@@ -91,10 +91,10 @@ pub enum ConvertError {
     Audio(#[from] AudioError),
 }
 
-/// Bytes [`convert`] will allocate for this audio, over and above the
-/// audio itself, so they can be reserved before it runs. Audio `convert`
-/// would refuse is refused here with the same error, so a bad file is
-/// named as bad rather than as too big.
+/// What [`convert`] will allocate for this audio, in bytes, over and
+/// above the audio itself: its working copies and the result. Reserved
+/// before it runs. Audio `convert` would refuse is refused here with the
+/// same error, so a bad file is named as bad rather than as too big.
 ///
 /// Follows the same branches as `convert`: the exact path allocates only
 /// the PCM result; the same-rate path an `f32` copy and the result; the
@@ -104,7 +104,7 @@ pub enum ConvertError {
 /// moves a float buffer as it is. The ledger would rather over-count than
 /// rest on an optimisation. The resampler's own state is a chunk, not a
 /// clip, and is not counted.
-pub fn working_bytes(decoded: &Decoded) -> Result<usize, ConvertError> {
+pub fn byte_cost(decoded: &Decoded) -> Result<usize, ConvertError> {
     let (_, frames) = check_shape(decoded)?;
     let samples = decoded.samples.len();
     let f32_in = samples * size_of::<f32>();
@@ -153,11 +153,11 @@ fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
 /// stereo stays stereo. More channels than a buffer holds is an error, not
 /// a mixdown.
 ///
-/// `reservation` must cover [`working_bytes`] of the audio; a short one is
+/// `reservation` must cover [`byte_cost`] of the audio; a short one is
 /// refused before anything is allocated. The caller keeps it for as long
 /// as the result lives.
 pub fn convert(decoded: Decoded, reservation: &Reservation) -> Result<AudioBuffer, ConvertError> {
-    let needed = working_bytes(&decoded)?;
+    let needed = byte_cost(&decoded)?;
     if !reservation.covers(needed) {
         return Err(ConvertError::ShortReservation {
             needed,
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn a_short_reservation_is_refused_before_converting() {
         let d = int(SAMPLE_RATE, 1, 24, vec![0; 10]);
-        let needed = working_bytes(&d).unwrap();
+        let needed = byte_cost(&d).unwrap();
         let ledger = Ledger::new(usize::MAX);
         assert!(super::convert(d.clone(), &ledger.reserve(needed).unwrap()).is_ok());
         assert!(matches!(
@@ -258,20 +258,20 @@ mod tests {
     }
 
     #[test]
-    fn working_bytes_follows_the_path_convert_takes() {
+    fn byte_cost_follows_the_path_convert_takes() {
         let pcm = size_of::<Pcm>();
         // Exact: only the result.
         assert_eq!(
-            working_bytes(&int(SAMPLE_RATE, 1, 16, vec![0; 10])).unwrap(),
+            byte_cost(&int(SAMPLE_RATE, 1, 16, vec![0; 10])).unwrap(),
             10 * pcm
         );
         // Same rate, other width or float: an f32 copy and the result.
         assert_eq!(
-            working_bytes(&int(SAMPLE_RATE, 1, 24, vec![0; 10])).unwrap(),
+            byte_cost(&int(SAMPLE_RATE, 1, 24, vec![0; 10])).unwrap(),
             10 * 4 + 10 * pcm
         );
         assert_eq!(
-            working_bytes(&at(SAMPLE_RATE, 2, vec![0.0; 10])).unwrap(),
+            byte_cost(&at(SAMPLE_RATE, 2, vec![0.0; 10])).unwrap(),
             10 * 4 + 10 * pcm
         );
         // Other rate: f32 in, f32 out at the new length, and the result.
@@ -279,23 +279,23 @@ mod tests {
         // of frames.
         let out = (5u64 * u64::from(SAMPLE_RATE)).div_ceil(44_100) as usize * 2;
         assert_eq!(
-            working_bytes(&at(44_100, 2, vec![0.0; 10])).unwrap(),
+            byte_cost(&at(44_100, 2, vec![0.0; 10])).unwrap(),
             10 * 4 + out * 4 + out * pcm
         );
     }
 
     #[test]
-    fn working_bytes_refuses_what_convert_refuses() {
+    fn byte_cost_refuses_what_convert_refuses() {
         assert!(matches!(
-            working_bytes(&at(0, 1, vec![0.0; 10])),
+            byte_cost(&at(0, 1, vec![0.0; 10])),
             Err(ConvertError::ZeroRate)
         ));
         assert!(matches!(
-            working_bytes(&at(44_100, 2, vec![0.0; 3])),
+            byte_cost(&at(44_100, 2, vec![0.0; 3])),
             Err(ConvertError::Audio(AudioError::RaggedFrames { .. }))
         ));
         assert!(matches!(
-            working_bytes(&at(44_100, 6, vec![0.0; 6])),
+            byte_cost(&at(44_100, 6, vec![0.0; 6])),
             Err(ConvertError::Audio(AudioError::BadChannelCount(6)))
         ));
     }

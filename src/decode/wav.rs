@@ -11,11 +11,11 @@ use hound::{SampleFormat, WavReader};
 use super::{DecodeError, Decoded, Samples};
 use crate::ledger::Reservation;
 
-/// Bytes the samples of [`decode`] will take, from the header alone: every
-/// width is carried in a four-byte type, `i32` or `f32`. A file `decode`
+/// What [`decode`] will allocate for this file, from the header alone:
+/// every width is carried in a four-byte type, `i32` or `f32`. A file `decode`
 /// would refuse is refused here, with the same error, so a bad file is
 /// named as bad rather than as too big.
-pub fn size(path: &Path) -> Result<usize, DecodeError> {
+pub fn byte_cost(path: &Path) -> Result<usize, DecodeError> {
     let reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     check_width(path, reader.spec())?;
     bytes(path, &reader)
@@ -81,7 +81,7 @@ fn check_width(path: &Path, spec: hound::WavSpec) -> Result<Width, DecodeError> 
 ///
 /// Not `collect`: collecting through a `Result` loses the exact size hint
 /// and the buffer grows by doubling, so it would end up with as much as
-/// twice the capacity [`size`] reserved for it.
+/// twice the capacity [`byte_cost`] reserved for it.
 fn collect<T>(
     path: &Path,
     len: usize,
@@ -132,7 +132,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("short.wav");
         write(&path, spec(1, 48_000, 16, SampleFormat::Int), &[0i16; 10]);
-        assert_eq!(size(&path).unwrap(), 40);
+        assert_eq!(byte_cost(&path).unwrap(), 40);
         let ledger = Ledger::new(100);
         let enough = ledger.reserve(40).unwrap();
         assert!(super::decode(&path, &enough).is_ok());

@@ -63,7 +63,7 @@ fn sniff(head: &[u8]) -> Option<Format> {
 
 /// Reads an audio file into samples at its own rate and channel count.
 ///
-/// `reservation` must cover [`size`] of the file as it is now; a short one
+/// `reservation` must cover [`byte_cost`] of the file as it is now; a short one
 /// is refused before anything is allocated. The caller keeps it for as
 /// long as the samples live.
 pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeError> {
@@ -72,14 +72,14 @@ pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeE
     }
 }
 
-/// Bytes the samples of [`decode`] on this file will occupy, read from
-/// the file's header without decoding any audio, so the memory can be
-/// reserved before it is allocated. Opens the file again when `decode`
+/// What [`decode`] will allocate for this file, in bytes: the samples it
+/// returns. Read from the file's header without decoding any audio, so
+/// the memory can be reserved before it is allocated. Opens the file again when `decode`
 /// follows; a header is a few bytes and the second open is cheaper than a
 /// decoder that carries state between two calls.
-pub fn size(path: &Path) -> Result<usize, DecodeError> {
+pub fn byte_cost(path: &Path) -> Result<usize, DecodeError> {
     match format(path)? {
-        Format::Wav => wav::size(path),
+        Format::Wav => wav::byte_cost(path),
     }
 }
 
@@ -136,7 +136,7 @@ pub(crate) mod tests {
             DecodeError::UnknownFormat { path: p } if *p == *path
         ));
         assert!(matches!(
-            size(&path).unwrap_err(),
+            byte_cost(&path).unwrap_err(),
             DecodeError::UnknownFormat { path: p } if *p == *path
         ));
     }

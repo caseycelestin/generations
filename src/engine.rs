@@ -143,13 +143,13 @@ impl Engine {
     ///
     /// The buffers in flight count against the budget while they exist:
     /// the decoded samples, reserved from the file's header before any are
-    /// read, and the converter's working set, reserved from the decoded
-    /// audio before it is converted. A file too large to pass through RAM
+    /// read, and what the conversion will allocate, reserved from the
+    /// decoded audio before it is converted. A file too large to pass through RAM
     /// beside what is loaded is refused and nothing is stored.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let decoded_reservation = self.ledger.reserve(decode::size(file)?)?;
+        let decoded_reservation = self.ledger.reserve(decode::byte_cost(file)?)?;
         let decoded = decode::decode(file, &decoded_reservation)?;
-        let conversion_reservation = self.ledger.reserve(convert::working_bytes(&decoded)?)?;
+        let conversion_reservation = self.ledger.reserve(convert::byte_cost(&decoded)?)?;
         let audio = convert::convert(decoded, &conversion_reservation)?;
         // Convert consumed the decoded samples, so their bytes go back now.
         // The conversion's reservation covers `audio` until it is on disk.
