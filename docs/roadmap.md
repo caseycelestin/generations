@@ -362,8 +362,8 @@ the code follows them.
   budget is different: CM4s ship with 1, 2, 4 or 8 GB and the right
   number depends on the cgroup reservation and on what else runs, so no
   constant can be right and the deployment has to supply it. It is a
-  parameter on `Engine::open`; `SAMPLE_RAM_BUDGET` stays as the default
-  the examples pass. The engine never reads the process
+  parameter on `Engine::open` and there is no constant for it in the
+  library; each example carries its own guess. The engine never reads the process
   environment; the binary may, and passes what it learns. The format
   constants (rate, PCM width, channels) are a different kind again: they
   define what a project is, and two machines must not disagree about the

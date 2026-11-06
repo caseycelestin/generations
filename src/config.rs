@@ -20,17 +20,6 @@ pub const MAX_CHANNELS: u16 = 2;
 /// is heard on both.
 pub const OUTPUT_CHANNELS: usize = 2;
 
-/// A default upper bound on sample audio resident in RAM, in bytes, for a
-/// caller with nothing better to pass to `Engine::open`.
-///
-/// Playback reads only resident audio, so everything a pad can trigger
-/// must fit under the budget. Loading past it is an error, not an
-/// eviction. The engine does not read this constant: the right number
-/// depends on the machine's RAM and on what else runs there, which the
-/// caller knows and the engine does not, so the caller passes it in. This
-/// one is generous, for the examples and a desktop.
-pub const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
-
 /// Number of sounds that can play at once.
 ///
 /// A fixed count bounds the work in one audio callback. When every voice

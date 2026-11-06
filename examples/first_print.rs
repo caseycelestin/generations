@@ -10,8 +10,11 @@
 use std::error::Error;
 use std::path::PathBuf;
 
-use generations::config::SAMPLE_RAM_BUDGET;
 use generations::{AudioBuffer, Engine, effects};
+
+/// RAM for loaded audio. The engine does not know the machine; this
+/// example does not either, so it guesses generously for a desktop.
+const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args_os()

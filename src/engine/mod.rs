@@ -69,8 +69,8 @@ impl Engine {
     ///
     /// The budget is the caller's to know: it depends on the machine's RAM
     /// and on what else runs there, and the engine never reads either.
-    /// [`SAMPLE_RAM_BUDGET`](crate::config::SAMPLE_RAM_BUDGET) is a default
-    /// for a caller with nothing better.
+    /// Playback reads only loaded audio, so everything a pad can trigger
+    /// must fit under it. Loading past it is an error, not an eviction.
     ///
     /// No audio device is involved: the engine works the same on a machine
     /// without one. To hear it, take [`Engine::output`] and drive it.
