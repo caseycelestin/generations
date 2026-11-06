@@ -159,15 +159,43 @@ out; the short version of the argument is here so it is not had twice.
 
 ### Playback
 
-Step 4 is being built up one decision at a time, and the decisions so far
-are here even though most of the code is not.
+Step 4 was built up one decision at a time; the decisions are here and
+the code follows them.
 
-- **Playback belongs to the engine.** Pressing a pad is a front-panel
-  action, and the engine is what the front panel calls. The device, the
-  audio thread and the mixer are their own role beside effects, knowing
-  only buffers; the engine is the one place that touches both them and
-  the project. Keeping playback outside would need a second coordinator
-  by step 6.
+- **Sound has a control side and a render side, and the engine is the
+  control side.** Pressing a pad is a front-panel action, and the engine
+  is what the front panel calls; it owns the audio in RAM and the sending
+  end of a command ring. The render side, the `render` module, owns the
+  receiving end and the playing voices and turns commands into frames.
+  The split is by thread, not by feature: one side decides and may be
+  slow, the other moves frames on a deadline and must never wait on the
+  first. A `playback` module that held both halves was removed because
+  the question "which thread am I on" should be answered by the module
+  path. The pattern has several names: a command pattern over a lock-free
+  single-producer single-consumer queue, an active object, control plane
+  and data plane. The engine never reaches into the render side; every
+  change to what is heard is a command, applied at the next period.
+- **The render side is named for what it does, not where it runs.**
+  `render` turns commands into frames and gives the same frames live from
+  a device callback or offline in a loop, so "realtime" was rejected as a
+  name (the code must run offline) and "process" was rejected (it collides
+  with the OS process this roadmap talks about). Recording in step 5 gets
+  a sibling `capture` module, a ring the other way; the pair is the data
+  plane, named by direction, and the rules (no allocation, no lock, no
+  disk, no error path, no clock) apply to both.
+- **The engine mints the renderer and hands it out as its output.** The
+  engine cannot expose a `fill(&mut self, out)` of its own: the audio
+  thread must own what it calls for as long as the stream runs, and the
+  control thread needs the engine for `play` and `import`; a mutex would
+  make the audio thread wait on an fsync. So `Engine::output()` hands out
+  the `Renderer` once, with `render` as its one public method, and the
+  caller moves it into whatever drives it. The engine calls it its
+  output, because that is what the caller holds; the type is named for
+  what it does. A separate `Output` wrapper type was tried and removed:
+  it added a name without adding behaviour. Commands sent before the
+  output is taken wait in the ring. One resident set and one ring per
+  live renderer; if a second output (a cue out) ever exists, the engine
+  routes to it and the render side never learns there is another.
 - **Playback reads only audio already in RAM.** The real-time thread never
   touches storage: storage reads the manifest from disk and fsyncs on every
   write, and an fsync on eMMC can stall other I/O for hundreds of
@@ -225,7 +253,7 @@ are here even though most of the code is not.
   failing, which is how the SP-404 behaves and what a player relies on.
   Per-voice cost grows once pads can be pitched, and the cap earns its
   keep then.
-- **The real-time side is two types: `Voice` and `Renderer`.** A voice is
+- **The render side is two types: `Voice` and `Renderer`.** A voice is
   how one sample is heard: today the whole buffer from first frame to
   last at its own speed. Start and end points, looping, gain and fades
   are fields and lines on the voice when they come. The renderer is
@@ -237,9 +265,13 @@ are here even though most of the code is not.
   is no separate mixer: a list of voices with a sum is a method, not a
   concept. The pattern is JUCE's `Synthesiser` and Kira's `Renderer`; the
   name is Kira's, and "controller" was rejected because the engine gives
-  the orders and this side carries them out.
-- **Voices add into the device's buffer, voice-major.** The device owns
-  the period buffer and hands it in; the renderer never allocates one.
+  the orders and this side carries them out. The resident set and the
+  voices do not overlap: one says which samples are in RAM, keyed by
+  sample and budgeted; the other says what is sounding now and where in
+  it, keyed by voice. They share only an `Arc` to the same bytes.
+- **Voices add into the caller's buffer, voice-major.** Whoever drives
+  the renderer owns the period buffer and hands it in; the renderer never
+  allocates one.
   Each voice adds its next frames into the whole slice in turn, which is
   how samplers and synths are written: one contiguous read and one
   contiguous add per voice, which the compiler vectorises. Frame-major
@@ -271,26 +303,37 @@ are here even though most of the code is not.
   owns the consuming end (as Kira does) rather than taking commands as a
   parameter (as JUCE does): there is one host and one feeder, and the
   device closure is then one line.
-- **The device is its own role, and it takes a callback.** `device.rs` is
-  the only code that knows `cpal` exists and the only code that knows
-  there is an audio thread. `Device::default_output()` picks the system's
-  default output and checks it runs 48 kHz stereo `f32`; `start(render)`
-  runs the callback on the audio thread and returns a `Stream` that plays
-  while held. The device knows nothing about playback: the engine hands it
-  playback's renderer in a closure and holds the stream. Playback never
-  touches a device, so a bounce or a test drives the same renderer with
-  no device at all.
+- **The device is the caller's, not the crate's.** Which machine the
+  sampler is on, and whether it has an audio device at all, is knowledge
+  the caller has and the engine does not; the same reasoning that keeps
+  the budget out of the engine. So the engine never opens a device, and
+  the library has no audio dependency: `examples/device/` is the one
+  piece of code that knows `cpal` exists and that there is an audio
+  thread, `cpal` is a dev-dependency, and the library builds without the
+  ALSA headers. `Device::default_output()` picks the system's default
+  output and checks it runs 48 kHz stereo `f32`; `start(callback)` runs
+  the callback on the audio thread and returns a `Stream` that plays while
+  held. Making sound is three lines in the caller: open the engine, take
+  its output, start a device with it. A headless machine (CI, a CM4
+  before its DAC is wired, an ssh session) runs the engine all the same.
+  The device code moved out in three steps once the engine stopped
+  needing it; it had been a crate role because the engine used to open
+  the stream itself.
 - **`cpal`, and no trait of our own.** `cpal` is already the abstraction
   over ALSA, PipeWire, JACK, CoreAudio and WASAPI, and it runs on the
   development machine and the Pi with no code change. A trait over it
   would have one implementation; tests do not need a fake device because
   they hold the renderer. Going direct to ALSA, or to RtAudio for a duplex
   stream, is the day a second implementation exists. `cpal` needs the ALSA
-  headers to build, so CI installs them.
-- **The stream runs from open to drop.** Opening a stream takes tens of
-  milliseconds and often clicks, so it is opened once and renders silence
-  when nothing plays, as every synth does. Stopping it when idle would put
-  the open cost on the first press.
+  headers to build, so CI installs them for the examples.
+- **The stream runs from open to drop, and the caller drops it before
+  the engine.** Opening a stream takes tens of milliseconds and often
+  clicks, so the caller opens it once and it renders silence when nothing
+  plays, as every synth does. Stopping it when idle would put the open
+  cost on the first press. Because the caller owns both, drop order is
+  the caller's discipline: a voice still ringing holds a reference to its
+  audio, and if the engine goes first that reference is the last one and
+  the buffer is freed on the audio thread. The renderer's doc says so.
 - **The period is the backend's default for now.** It is the latency
   knob: a press lands within one period, and the renderer's work per
   callback is bounded by it. On the Pi it should be chosen deliberately
@@ -298,8 +341,9 @@ are here even though most of the code is not.
   default is around ten milliseconds and good enough to hear.
 - **Recording will be a second stream.** `cpal` opens input and output as
   separate streams with separate callbacks, so recording gets its own
-  input type in `device.rs` and its own ring back to the control side,
-  and playback never learns about it. Two streams have no guaranteed
+  input type in the caller's device code, a `capture` module beside
+  `render` with its own ring back to the engine, and the render side
+  never learns about it. Two streams have no guaranteed
   frame alignment between them; if a resample must land on the frame,
   that is the case for a duplex stream, and it is a change inside the two
   roles.
@@ -310,10 +354,21 @@ are here even though most of the code is not.
   The bounce is the renderer used as a function, and belongs beside
   effects as another kind of print; it does not go through the live
   renderer.
-- **Both constants are set generously.** The real budget depends on the
-  CM4 variant (1, 2, 4 or 8 GB); the real voice count depends on what a
-  voice costs with pitch and processing. They exist so the design can be
-  written in terms of them.
+- **Both constants are set generously, and only one of them stays a
+  constant.** The real voice count depends on what a voice costs with
+  pitch and processing; someone measures that on the target and picks a
+  number under it, once, and it becomes the sampler's polyphony, the same
+  on every unit. The machine bounds it, but a person chooses it, so it
+  stays a constant until the target has variants that disagree. The
+  budget is different: CM4s ship with 1, 2, 4 or 8 GB and the right
+  number depends on the cgroup reservation and on what else runs, so no
+  constant can be right and the deployment has to supply it. It becomes a
+  parameter on `Engine::open` (not yet in code); `SAMPLE_RAM_BUDGET` stays
+  as the default the examples pass. The engine never reads the process
+  environment; the binary may, and passes what it learns. The format
+  constants (rate, PCM width, channels) are a different kind again: they
+  define what a project is, and two machines must not disagree about the
+  same files.
 
 ### Process
 
@@ -323,8 +378,10 @@ are here even though most of the code is not.
   removed in step 3 when it stopped fitting. New steps are designed from
   the decision, then existing code is changed to fit, not the other way
   round.
-- **The demo lives in `examples/`.** The crate is a library; there is no
-  binary until there is a device to run one on.
+- **The demo lives in `examples/`, and so does the device code.** The
+  crate is a library; there is no binary until there is a device to run
+  one on. When there is, the device code and the sound example move into
+  that binary's crate, and the library's CI stops needing audio headers.
 
 ## Storage tiers on the device
 
@@ -340,7 +397,7 @@ changes to it.
 
 ## Deferred ideas
 
-- Effects move into playback. An effect runs live on a voice or the bus,
+- Effects move into the render side. An effect runs live on a voice or the bus,
   heard through the renderer, and a print becomes the committed render of
   what was heard: the same effect code with the same parameters, driven
   offline, stored as a new generation. Today's `print`, an offline function
@@ -363,13 +420,14 @@ changes to it.
   pads clipping is a complaint rather than a design.
 - Unloading a sample while a voice plays it leaves the voice as the last
   holder of the audio, so the free happens on the audio thread. Fix:
-  `ResidentSet::remove` returns the `Arc`, and playback keeps a retiring
+  `ResidentSet::remove` returns the `Arc`, and the engine keeps a retiring
   list it sweeps on the control side for entries whose count has dropped
   to one. Not an audible problem today; a rule to keep before the device
   is the target.
 - Stream errors (the device went away, an xrun the backend could not hide)
-  are printed from the audio thread. They need a way back to the control
-  side, which arrives with whatever reports events to a front panel.
+  are printed from the audio thread by the example's device code. They
+  need a way back to the control side, which arrives with whatever reports
+  events to a front panel.
 - A bound on sample length. Audio in flight (an import's buffer, a print's
   input and output, a recording in progress) is not counted against the
   budget, so the OS reservation must cover the budget plus the largest
