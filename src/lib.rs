@@ -15,6 +15,9 @@
 //!   │
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
 //!   │
+//!   ├─ convert   one pure function: decoded audio, at any rate, to the
+//!   │            project format. Decoders (to come) feed it; it feeds import
+//!   │
 //!   ├─ render    the other side of sound: turns commands into frames,
 //!   │            wherever the caller drives it. One public type: Renderer
 //!   │
@@ -58,6 +61,11 @@
 //!   holds a whole, valid project; opening one creates or validates it.
 //! - **[`effects`]** are offline functions over an [`AudioBuffer`]. Only
 //!   playback, mixing and sequencing will ever be real-time.
+//! - **[`convert`]** is the boundary between the world's audio and the
+//!   project's. Whatever a file format turns out to hold, a decoder hands
+//!   over one plain [`Decoded`] value (rate, channels, interleaved `f32`)
+//!   and [`convert`] resamples and quantises it. Formats are added by
+//!   writing a decoder; nothing about the project format moves.
 //! - **[`audio`]** and **[`config`]** hold the one fixed format every buffer
 //!   uses: 48 kHz, 16-bit PCM, 1 or 2 channels, with `f32` for processing.
 //!
