@@ -50,7 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut output = engine.output().ok_or("output already taken")?;
     // Declared after `engine`, so it is dropped first: the audio thread
     // stops before the engine lets go of its audio.
-    let _stream = Device::default_output()?.start(move |out| output.render(out))?;
+    let mut stream = Device::default_output()?.start(move |out| output.render(out))?;
 
     let root = engine.import(&pluck()?)?;
     let swell = engine.print(root, effects::reverse)?;
@@ -63,5 +63,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("swell, over the pluck's tail");
     engine.play(swell)?;
     sleep(Duration::from_millis(1200));
+
+    // The audio thread queues its complaints; this is where they are read.
+    while let Some(e) = stream.error() {
+        eprintln!("audio stream error: {e}");
+    }
     Ok(())
 }

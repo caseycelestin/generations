@@ -310,8 +310,11 @@ the code follows them.
   piece of code that knows `cpal` exists and that there is an audio
   thread, `cpal` is a dev-dependency, and the library builds without the
   ALSA headers. `Device::default_output()` picks the system's default
-  output and checks it runs 48 kHz stereo `f32`; `start(callback)` runs
-  the callback on the audio thread and returns a `Stream` that plays while
+  output and checks it runs 48 kHz stereo, in `f32` by preference or in
+  `i16` or `i32` with the conversion done in the callback, since `cpal`
+  converts nothing and a raw ALSA `hw:` device, the usual I2S DAC on the
+  target, often offers only integer formats; `start(callback)` runs the
+  callback on the audio thread and returns a `Stream` that plays while
   held. Making sound is three lines in the caller: open the engine, take
   its output, start a device with it. A headless machine (CI, a CM4
   before its DAC is wired, an ssh session) runs the engine all the same.
@@ -424,9 +427,10 @@ changes to it.
   to one. Not an audible problem today; a rule to keep before the device
   is the target.
 - Stream errors (the device went away, an xrun the backend could not hide)
-  are printed from the audio thread by the example's device code. They
-  need a way back to the control side, which arrives with whatever reports
-  events to a front panel.
+  are queued by the audio thread on a lock-free ring and read by the
+  control side through `Stream::error`; the example prints them at the
+  end. Where they go from there arrives with whatever reports events to a
+  front panel.
 - A bound on sample length. Audio in flight (an import's buffer, a print's
   input and output, a recording in progress) is not counted against the
   budget, so the OS reservation must cover the budget plus the largest
