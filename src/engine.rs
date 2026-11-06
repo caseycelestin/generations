@@ -1,9 +1,10 @@
 //! The engine: the one thing a caller holds, and the only way in.
 //!
 //! Every role in the crate knows one thing. The engine is where an action
-//! that needs two of them is written: a print reads the project and runs
-//! an effect, a load reads the project and brings the audio into RAM, a
-//! play looks for it there and, on failure, asks the project why. Nothing
+//! that needs two of them is written: an import decodes a file and adds
+//! the result to the project, a load reads the project and brings the
+//! audio into RAM, a play looks for it there and, on failure, asks the
+//! project why. Nothing
 //! below the engine is reachable from outside the crate except read-only,
 //! so there is one path to every action and the rules hold on it.
 //!
@@ -234,38 +235,11 @@ impl Engine {
             .push(command)
             .map_err(|_| EngineError::CommandsFull)
     }
-
-    /// Prints `effect` applied to `source` as the next generation of its
-    /// lineage, and returns the new sample's id.
-    ///
-    /// The source is untouched. On an unknown `source` nothing is added.
-    ///
-    /// The print's cost is reserved before the source is read: input and
-    /// output as PCM, and both again as `f32`, which is what an effect
-    /// that changes sample values allocates. An effect is a plain function
-    /// and the ledger cannot see inside it, so this is an estimate that
-    /// every effect today lands inside; it becomes exact when effects move
-    /// to the render side and the engine owns their buffers. A print that
-    /// does not fit beside what is loaded is refused and nothing is added.
-    pub fn print(
-        &mut self,
-        source: SampleId,
-        effect: impl FnOnce(&AudioBuffer) -> AudioBuffer,
-    ) -> Result<SampleId, EngineError> {
-        let sample = self.project.sample(source)?;
-        let pcm_bytes = AudioBuffer::bytes_for(sample.channels, sample.frames);
-        let f32_bytes = sample.frames * usize::from(sample.channels) * size_of::<f32>();
-        let print_reservation = self.ledger.reserve(2 * (pcm_bytes + f32_bytes))?;
-        let input = self.project.audio(source, &print_reservation)?;
-        let output = effect(&input);
-        Ok(self.project.add_sample(Some(source), &output)?)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::reverse;
     use crate::project::tests::{memory_project, project};
 
     fn ramp(n: i16) -> AudioBuffer {
@@ -615,70 +589,5 @@ mod tests {
 
         let result = Engine::open(dir.path(), ramp(4).bytes() - 1);
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
-    }
-
-    #[test]
-    fn print_adds_a_child_with_the_effect_applied() {
-        let (mut e, _r) = engine();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        let child = e.print(root, reverse).unwrap();
-
-        assert_eq!(e.project().sample(child).unwrap().parent, Some(root));
-        assert_eq!(audio(&e, child).samples(), &[3, 2, 1, 0]);
-        // The source is untouched.
-        assert_eq!(audio(&e, root).samples(), &[0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn print_reserves_its_cost_and_releases_it() {
-        // Input and output as PCM, and both again as f32.
-        let cost = 2 * (ramp(4).bytes() + 4 * size_of::<f32>());
-        let mut e = Engine::on(memory_project(), cost).unwrap();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.print(root, reverse).unwrap();
-        assert_eq!(e.ledger.in_use(), 0);
-
-        let mut e = Engine::on(memory_project(), cost - 1).unwrap();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        assert!(matches!(
-            e.print(root, reverse),
-            Err(EngineError::OverBudget(_))
-        ));
-    }
-
-    #[test]
-    fn print_that_does_not_fit_is_refused_and_adds_nothing() {
-        let mut e = Engine::on(memory_project(), ramp(4).bytes()).unwrap();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.load(root).unwrap();
-        assert!(matches!(
-            e.print(root, reverse),
-            Err(EngineError::OverBudget(_))
-        ));
-        assert!(e.project().sample(SampleId(root.0 + 1)).is_err());
-        assert_eq!(e.ledger.in_use(), ramp(4).bytes());
-    }
-
-    #[test]
-    fn printing_twice_from_one_source_branches() {
-        let (mut e, _r) = engine();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        let a = e.print(root, reverse).unwrap();
-        let b = e.print(root, reverse).unwrap();
-        assert_ne!(a, b);
-        assert_eq!(e.project().sample(a).unwrap().parent, Some(root));
-        assert_eq!(e.project().sample(b).unwrap().parent, Some(root));
-    }
-
-    #[test]
-    fn print_from_unknown_source_adds_nothing() {
-        let (mut e, _r) = engine();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        let bogus = SampleId(root.0 + 1);
-        assert!(matches!(
-            e.print(bogus, reverse),
-            Err(EngineError::Project(ProjectError::UnknownSample(id))) if id == bogus
-        ));
-        assert!(e.project().sample(bogus).is_err());
     }
 }

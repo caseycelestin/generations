@@ -1,10 +1,10 @@
-//! The first sound: open a project, import a WAV of a tone, print its
-//! reverse, load both, and play them through the default audio device.
+//! The first sound: open a project, import a WAV of a tone, load it, and
+//! play it twice through the default audio device.
 //!
-//! The tone decays, so the root sounds like a pluck and its reverse like a
-//! swell. The second starts while the first is still ringing, which is two
-//! voices summed by the renderer. The WAV is written at 44.1 kHz, so the
-//! import resamples it on the way in.
+//! The tone decays, so it sounds like a pluck. The second press lands while
+//! the first is still ringing, which is two voices summed by the renderer.
+//! The WAV is written at 44.1 kHz, so the import resamples it on the way
+//! in.
 //!
 //! The engine does not know there is a speaker. This file opens the
 //! device, takes the engine's output and hands it over; those are the only
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Engine, effects};
+use generations::Engine;
 
 mod device;
 use device::Device;
@@ -63,16 +63,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut stream = Device::default_output()?.start(move |out| output.render(out))?;
 
     let scratch = tempfile::tempdir()?;
-    let root = engine.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
-    let swell = engine.print(root, effects::reverse)?;
-    engine.load(root)?;
-    engine.load(swell)?;
+    let pluck = engine.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
+    engine.load(pluck)?;
 
     println!("pluck");
-    engine.play(root)?;
+    engine.play(pluck)?;
     sleep(Duration::from_millis(600));
-    println!("swell, over the pluck's tail");
-    engine.play(swell)?;
+    println!("pluck again, over the first one's tail");
+    engine.play(pluck)?;
     sleep(Duration::from_millis(1200));
 
     // The audio thread queues its complaints; this is where they are read.

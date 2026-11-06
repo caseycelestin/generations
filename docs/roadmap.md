@@ -7,7 +7,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | # | Step | Status |
 |---|------|--------|
 | 1 | Core data model | done, then rebuilt in step 3 |
-| 2 | First print: one real effect (reverse) and an engine that applies it | done |
+| 2 | First print: one real effect (reverse) and an engine that applies it | done, then removed in step 5 |
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM ledger: one figure for everything the engine holds in memory | done |
@@ -154,10 +154,16 @@ out; the short version of the argument is here so it is not had twice.
   PCM width. The downward conversion rounds and applies TPDF dither. Effects
   that only reorder frames (reverse) are exempt: they copy PCM directly, so
   they are exact and reversing twice really does give back the root's bytes.
-- **An effect is a function**, `&AudioBuffer -> AudioBuffer`, and the engine
-  takes one as a plain argument. Effects-as-data (an enum with parameters)
-  is what the replayable recipe idea below needs, and it will be introduced
-  with that work rather than ahead of it.
+- **An effect was a function**, `&AudioBuffer -> AudioBuffer`, and the
+  engine took one as a plain argument to `print`. Removed in step 5 along
+  with `print` and the one effect, reverse: by then the decision that
+  effects live on the render side (under Deferred ideas) had been made,
+  so the offline form was dead code that would not be written that way
+  again, and it was the one allocation the ledger could only estimate.
+  The generation model it exercised, a child sample with a parent, stays
+  in the project and is tested there. Effects-as-data (an enum with
+  parameters) is what the replayable recipe idea needs, and arrives with
+  that work.
 
 ### Import
 
@@ -468,9 +474,9 @@ thing the engine holds in RAM that the resident set cannot serve.
   backend takes them from the WAV header rather than repeating them in
   the manifest, so there is one record of the shape and nothing to fall
   out of step; the storage read refuses a reservation that does not
-  cover what the header says before it reads. Import and print have their sizes
-  in hand before they allocate (the file header, the source sample) and
-  reserve the same way. Asking whether a sample exists stays a
+  cover what the header says before it reads. Import has its sizes in hand
+  before it allocates (the file header, then the decoded audio) and
+  reserves the same way. Asking whether a sample exists stays a
   manifest-only question, so a sample whose WAV has gone bad can still be
   unloaded and removed.
 - **The resident set dissolved into a map on the engine.** Once the
@@ -497,13 +503,14 @@ thing the engine holds in RAM that the resident set cannot serve.
   predictable limit matters as a product feature, it is the caller
   stopping the take at N seconds, or a product constant chosen once like
   the voice count. It is not a second number on `open`.
-- **Prints reserve their cost up front.** An effect is a plain function
-  that allocates its own f32 working copies, and the ledger cannot see
-  inside it. The engine reserves the print's known cost before reading
-  the source, from its record: input and output as PCM and both again in
-  f32, and the effect's allocations land inside that estimate. It is
-  accurate for every effect that exists and becomes exact when effects
-  move into the render side and the engine owns their buffers.
+- **A print reserved its cost up front, as an estimate.** An effect was a
+  plain function that allocated its own f32 working copies, which the
+  ledger could not see, so the engine reserved input and output as PCM
+  and both again in f32 before calling it. That was the one place the
+  figure rested on an estimate rather than a check inside the allocator,
+  and one reason the offline print went. When effects come back on the
+  render side they are built on the control side and reserve exactly, as
+  the next bullet says.
 - **An import holds two reservations, each taken from the thing in hand.** The
   decoder reads the file's header and says how large its samples will be;
   the engine reserves that, then decodes. The converter looks at the
@@ -546,7 +553,7 @@ thing the engine holds in RAM that the resident set cannot serve.
 - **Audio never leaves the engine.** There is no method that returns a
   sample's buffer. A copy in a caller's hands would be memory the ledger
   does not count, and nothing outside needs it: playback hears loaded
-  audio through the renderer, a print changes audio inside the engine,
+  audio through the renderer, a print will change audio inside the engine,
   export will stream from storage to a file, and a display asks
   questions with small answers. A waveform is the one that looks like it
   needs the samples and does not: given a frame range and a column count
@@ -577,12 +584,12 @@ changes to it.
 
 ## Deferred ideas
 
-- Effects move into the render side. An effect runs live on a voice or the bus,
-  heard through the renderer, and a print becomes the committed render of
+- Effects live on the render side. An effect runs live on a voice or the bus,
+  heard through the renderer, and a print is the committed render of
   what was heard: the same effect code with the same parameters, driven
-  offline, stored as a new generation. Today's `print`, an offline function
-  over a buffer, is the stand-in until then; the operation it performs,
-  commit a new generation, stays the centre of the engine.
+  offline, stored as a new generation. The step 2 `print`, an offline
+  function over a buffer, stood in for this until step 5 removed it; the
+  operation, commit a new generation, stays the centre of the engine.
 - A replayable recipe on prints, so a chain applied to one sample can be
   applied to others as a preset. Needs effects-as-data first. Not every
   print is replayable, so a label-only form must remain.

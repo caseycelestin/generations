@@ -382,7 +382,6 @@ impl Storage for FileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::reverse;
     use crate::ledger::Ledger;
 
     /// A reservation that pays for anything.
@@ -459,29 +458,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let root = s.add_sample(None, &ramp(2, 16)).unwrap();
-        let rev = s
-            .add_sample(
-                Some(root),
-                &reverse(&s.audio(root, &paid()).unwrap().unwrap()),
-            )
-            .unwrap();
-        let back = s
-            .add_sample(
-                Some(rev),
-                &reverse(&s.audio(rev, &paid()).unwrap().unwrap()),
-            )
-            .unwrap();
+        let rev = s.add_sample(Some(root), &ramp(2, 8)).unwrap();
+        let back = s.add_sample(Some(rev), &ramp(2, 16)).unwrap();
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
         assert_eq!(s.sample(rev).unwrap().unwrap().parent, Some(root));
         assert_eq!(s.sample(back).unwrap().unwrap().parent, Some(rev));
         assert_eq!(s.audio(root, &paid()).unwrap().unwrap(), ramp(2, 16));
-        // Reverse twice is exact, through the disk too.
-        assert_eq!(
-            s.audio(back, &paid()).unwrap(),
-            s.audio(root, &paid()).unwrap()
-        );
+        assert_eq!(s.audio(rev, &paid()).unwrap().unwrap(), ramp(2, 8));
+        assert_eq!(s.audio(back, &paid()).unwrap().unwrap(), ramp(2, 16));
     }
 
     #[test]
