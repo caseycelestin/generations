@@ -20,7 +20,7 @@ use std::path::Path;
 use thiserror::Error;
 
 pub use crate::convert::{Decoded, Samples};
-use crate::ledger::Reservation;
+use crate::ledger::{Reservation, ShortReservation};
 
 /// Reasons a file could not be read into samples.
 #[derive(Debug, Error)]
@@ -39,11 +39,11 @@ pub enum DecodeError {
     Malformed { path: Box<Path>, reason: String },
     /// The reservation offered does not pay for the decoded samples.
     /// Nothing was allocated.
-    #[error("{path}: decoding needs {needed} bytes but {reserved} were reserved")]
+    #[error("{path}: decoding {source}")]
     ShortReservation {
         path: Box<Path>,
-        needed: usize,
-        reserved: usize,
+        #[source]
+        source: ShortReservation,
     },
 }
 
@@ -107,15 +107,9 @@ fn read_head(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
-    use crate::ledger::Ledger;
-
-    /// A reservation that pays for anything, for tests of the decoding
-    /// itself.
-    pub(crate) fn paid() -> Reservation {
-        Ledger::new(usize::MAX).reserve(usize::MAX).unwrap()
-    }
+    use crate::testing::paid;
 
     #[test]
     fn sniff_knows_wav_and_nothing_else() {

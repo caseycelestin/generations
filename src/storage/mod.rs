@@ -19,7 +19,7 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
-use crate::ledger::Reservation;
+use crate::ledger::{Reservation, ShortReservation};
 use crate::project::{Sample, SampleId};
 
 /// Reasons storage cannot do what was asked.
@@ -39,14 +39,11 @@ pub enum StorageError {
     BadAudioFormat { id: SampleId, detail: String },
     /// The reservation offered does not pay for the sample's audio.
     /// Nothing was allocated.
-    #[error(
-        "reading sample {} needs {needed} bytes but {reserved} were reserved",
-        .id.0
-    )]
+    #[error("reading sample {} {source}", .id.0)]
     ShortReservation {
         id: SampleId,
-        needed: usize,
-        reserved: usize,
+        #[source]
+        source: ShortReservation,
     },
     /// Something failed underneath: the filesystem, a codec, a database.
     #[error(transparent)]
@@ -69,9 +66,11 @@ pub trait Storage {
     ///
     /// `channels` and `frames` must describe exactly the bytes [`audio`]
     /// will return for the same id: the engine reserves memory from them
-    /// before it reads, and treats any disagreement as corruption. A
-    /// backend may need to look at the audio to answer, so this can fail
-    /// where the audio is unreadable.
+    /// before it reads. If the audio has grown in between, `audio` refuses
+    /// the reservation as short; if it has shrunk, it is read and the
+    /// reservation over-counts until it is dropped. A backend may need to
+    /// look at the audio to answer, so this can fail where the audio is
+    /// unreadable.
     ///
     /// [`audio`]: Storage::audio
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;

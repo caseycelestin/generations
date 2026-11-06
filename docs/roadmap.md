@@ -64,9 +64,11 @@ out; the short version of the argument is here so it is not had twice.
   only goes up, and never reuses an id, even after a remove. The project
   never touches a number it does not own.
 - **Two reads per sample.** `sample(id)` returns everything stored about a
-  sample except its audio, and grows as fields are added. `audio(id)`
-  returns the bytes. They are separate because structure is small and read
-  often, audio is large and read when a print or playback needs it.
+  sample except its audio, and grows as fields are added. The audio read
+  is the engine's alone, crate-private and paid for by a reservation
+  taken from the record first. They are separate because structure is
+  small and read often, audio is large and read only when a load needs
+  it.
 - **`add_sample` takes a buffer.** Audio in flight is not a copy of the
   project. Recording, import after conversion and print output all produce
   a transient buffer, and storage is where it lands. The thing never to add

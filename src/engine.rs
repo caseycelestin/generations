@@ -241,6 +241,7 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::project::tests::{memory_project, project};
+    use crate::testing::paid;
 
     fn ramp(n: i16) -> AudioBuffer {
         AudioBuffer::new(1, (0..n).collect::<Vec<_>>()).unwrap()
@@ -249,8 +250,7 @@ mod tests {
     /// The stored audio of `id`, read outside the budget. Audio never
     /// leaves the engine; tests look at it through the project directly.
     fn audio(e: &Engine, id: SampleId) -> AudioBuffer {
-        let paid = Ledger::new(usize::MAX).reserve(usize::MAX).unwrap();
-        e.project.audio(id, &paid).unwrap()
+        e.project.audio(id, &paid()).unwrap()
     }
 
     /// An engine on a memory project, and its output, which the test

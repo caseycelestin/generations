@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::audio::{AudioBuffer, AudioError, check_channels};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::ledger::Reservation;
+use crate::ledger::{Reservation, ShortReservation};
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
 /// not the result: the whole clip goes through in one call.
@@ -79,10 +79,13 @@ pub enum ConvertError {
         rate: u32,
         source: ResamplerConstructionError,
     },
-    /// The reservation offered does not pay for the conversion's working
-    /// set. Nothing was allocated.
-    #[error("converting needs {needed} bytes but {reserved} were reserved")]
-    ShortReservation { needed: usize, reserved: usize },
+    /// The reservation offered does not pay for what the conversion
+    /// allocates. Nothing was allocated.
+    #[error("converting {0}")]
+    ShortReservation(#[from] ShortReservation),
+    /// The audio is longer than this machine can count bytes for.
+    #[error("{samples} samples at {rate} Hz are too large to convert")]
+    TooLarge { samples: usize, rate: u32 },
     /// The resampler failed on the audio itself.
     #[error(transparent)]
     Resample(#[from] ResampleError),
@@ -99,31 +102,45 @@ pub enum ConvertError {
 /// Follows the same branches as `convert`: the exact path allocates only
 /// the PCM result; the same-rate path an `f32` copy and the result; the
 /// resampling path an `f32` copy, the resampled `f32` output and the
-/// result. It is an upper bound: the `f32` copy is charged even though
-/// the standard library can turn the integer buffer into it in place and
+/// result. The resampled output is as large as the resampler says it
+/// will make it, which is the clip at the new rate plus its own delay and
+/// one chunk, since it allocates that and truncates without shrinking.
+/// It is an upper bound: the `f32` copy is charged even though the
+/// standard library can turn the integer buffer into it in place and
 /// moves a float buffer as it is. The ledger would rather over-count than
 /// rest on an optimisation. The resampler's own state is a chunk, not a
 /// clip, and is not counted.
 pub fn byte_cost(decoded: &Decoded) -> Result<usize, ConvertError> {
-    let (_, frames) = check_shape(decoded)?;
+    let (channels, frames) = check_shape(decoded)?;
+    cost(decoded, channels, frames)
+}
+
+/// [`byte_cost`] for audio whose shape has been checked.
+fn cost(decoded: &Decoded, channels: usize, frames: usize) -> Result<usize, ConvertError> {
     let samples = decoded.samples.len();
-    let f32_in = samples * size_of::<f32>();
-    let out_samples = if decoded.rate == SAMPLE_RATE {
-        samples
-    } else {
-        let scaled = frames as u64 * u64::from(SAMPLE_RATE);
-        scaled.div_ceil(u64::from(decoded.rate)) as usize * usize::from(decoded.channels)
+    let too_large = || ConvertError::TooLarge {
+        samples,
+        rate: decoded.rate,
     };
-    let pcm_out = out_samples * size_of::<Pcm>();
-    Ok(match &decoded.samples {
-        Samples::Int { bits, .. }
-            if decoded.rate == SAMPLE_RATE && u32::from(*bits) == Pcm::BITS =>
-        {
-            pcm_out
-        }
-        _ if decoded.rate == SAMPLE_RATE => f32_in + pcm_out,
-        _ => f32_in + out_samples * size_of::<f32>() + pcm_out,
-    })
+    let bytes = |n: usize, size: usize| n.checked_mul(size).ok_or_else(too_large);
+    let add = |a: usize, b: usize| a.checked_add(b).ok_or_else(too_large);
+
+    let exact =
+        matches!(&decoded.samples, Samples::Int { bits, .. } if u32::from(*bits) == Pcm::BITS);
+    if decoded.rate == SAMPLE_RATE {
+        let pcm_out = bytes(samples, size_of::<Pcm>())?;
+        return if exact {
+            Ok(pcm_out)
+        } else {
+            add(bytes(samples, size_of::<f32>())?, pcm_out)
+        };
+    }
+    let out_frames = resampler(decoded.rate, channels)?.process_all_needed_output_len(frames);
+    let out_samples = out_frames.checked_mul(channels).ok_or_else(too_large)?;
+    let f32_in = bytes(samples, size_of::<f32>())?;
+    let f32_out = bytes(out_samples, size_of::<f32>())?;
+    let pcm_out = bytes(out_samples, size_of::<Pcm>())?;
+    add(add(f32_in, f32_out)?, pcm_out)
 }
 
 /// Refuses audio no [`AudioBuffer`] could hold or no resampler could take,
@@ -157,14 +174,8 @@ fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
 /// refused before anything is allocated. The caller keeps it for as long
 /// as the result lives.
 pub fn convert(decoded: Decoded, reservation: &Reservation) -> Result<AudioBuffer, ConvertError> {
-    let needed = byte_cost(&decoded)?;
-    if !reservation.covers(needed) {
-        return Err(ConvertError::ShortReservation {
-            needed,
-            reserved: reservation.bytes(),
-        });
-    }
     let (channels, frames) = check_shape(&decoded)?;
+    reservation.claim(cost(&decoded, channels, frames)?)?;
 
     if decoded.rate == SAMPLE_RATE {
         if let Samples::Int { bits, samples } = &decoded.samples
@@ -197,32 +208,34 @@ fn resample(
     channels: usize,
     frames: usize,
 ) -> Result<Vec<f32>, ConvertError> {
-    let mut resampler = Fft::<f32>::new(
-        rate as usize,
-        SAMPLE_RATE as usize,
-        RESAMPLE_CHUNK,
-        channels,
-        FixedSync::Input,
-    )
-    .map_err(|source| ConvertError::Rate { rate, source })?;
+    let mut resampler = resampler(rate, channels)?;
     let input = InterleavedSlice::new(samples, channels, frames)
         .expect("frame count was derived from the slice length");
     let output = resampler.process_all(&input, frames, None)?;
     Ok(output.take_data())
 }
 
+/// A resampler from `rate` to [`SAMPLE_RATE`] for `channels` channels.
+fn resampler(rate: u32, channels: usize) -> Result<Fft<f32>, ConvertError> {
+    Fft::<f32>::new(
+        rate as usize,
+        SAMPLE_RATE as usize,
+        RESAMPLE_CHUNK,
+        channels,
+        FixedSync::Input,
+    )
+    .map_err(|source| ConvertError::Rate { rate, source })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ledger::Ledger;
+    use crate::testing::paid;
 
     /// Converts with a reservation that pays for anything.
     fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
         super::convert(decoded, &paid())
-    }
-
-    fn paid() -> Reservation {
-        Ledger::new(usize::MAX).reserve(usize::MAX).unwrap()
     }
 
     #[test]
@@ -233,7 +246,8 @@ mod tests {
         assert!(super::convert(d.clone(), &ledger.reserve(needed).unwrap()).is_ok());
         assert!(matches!(
             super::convert(d, &ledger.reserve(needed - 1).unwrap()).unwrap_err(),
-            ConvertError::ShortReservation { needed: n, reserved: r } if n == needed && r == needed - 1
+            ConvertError::ShortReservation(ShortReservation { needed: n, reserved: r })
+                if n == needed && r == needed - 1
         ));
     }
 
@@ -274,14 +288,18 @@ mod tests {
             byte_cost(&at(SAMPLE_RATE, 2, vec![0.0; 10])).unwrap(),
             10 * 4 + 10 * pcm
         );
-        // Other rate: f32 in, f32 out at the new length, and the result.
-        // Ten stereo samples are five frames; the output is a whole number
-        // of frames.
-        let out = (5u64 * u64::from(SAMPLE_RATE)).div_ceil(44_100) as usize * 2;
-        assert_eq!(
-            byte_cost(&at(44_100, 2, vec![0.0; 10])).unwrap(),
-            10 * 4 + out * 4 + out * pcm
-        );
+        // Other rate: f32 in, f32 out as large as the resampler will make
+        // it (at least the clip at the new rate), and the result.
+        let cost = byte_cost(&at(44_100, 2, vec![0.0; 10])).unwrap();
+        let out = resampler(44_100, 2)
+            .unwrap()
+            .process_all_needed_output_len(5)
+            * 2;
+        assert!(out >= (5u64 * u64::from(SAMPLE_RATE)).div_ceil(44_100) as usize * 2);
+        assert_eq!(cost, 10 * 4 + out * 4 + out * pcm);
+        // The buffer convert makes really does fit the charge.
+        let b = convert(at(44_100, 2, vec![0.0; 10])).unwrap();
+        assert!(b.bytes() <= out * pcm);
     }
 
     #[test]

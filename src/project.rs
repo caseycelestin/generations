@@ -162,6 +162,7 @@ pub(crate) mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::testing::paid;
 
     /// What the stub storage remembers.
     #[derive(Default)]
@@ -192,16 +193,13 @@ pub(crate) mod tests {
             reservation: &Reservation,
         ) -> Result<Option<AudioBuffer>, StorageError> {
             self.0.borrow_mut().audio_reads += 1;
-            match self.find(id) {
-                Some((s, a)) if !reservation.covers(a.bytes()) => {
-                    Err(StorageError::ShortReservation {
-                        id: s.id,
-                        needed: a.bytes(),
-                        reserved: reservation.bytes(),
-                    })
-                }
-                found => Ok(found.map(|(_, a)| a)),
-            }
+            let Some((_, audio)) = self.find(id) else {
+                return Ok(None);
+            };
+            reservation
+                .claim(audio.bytes())
+                .map_err(|source| StorageError::ShortReservation { id, source })?;
+            Ok(Some(audio))
         }
 
         fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
@@ -290,13 +288,6 @@ pub(crate) mod tests {
 
     fn tone() -> AudioBuffer {
         AudioBuffer::new(1, vec![0, 1, 2, 3]).unwrap()
-    }
-
-    /// A reservation that pays for anything.
-    fn paid() -> Reservation {
-        crate::ledger::Ledger::new(usize::MAX)
-            .reserve(usize::MAX)
-            .unwrap()
     }
 
     fn structure(state: &Rc<RefCell<State>>) -> Vec<(SampleId, Option<SampleId>)> {

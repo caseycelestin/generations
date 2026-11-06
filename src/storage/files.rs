@@ -233,18 +233,18 @@ impl FileStorage {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
         let spec = reader.spec();
-        let needed = AudioBuffer::bytes_for(spec.channels, reader.duration() as usize);
-        if !reservation.covers(needed) {
-            return Err(StorageError::ShortReservation {
-                id,
-                needed,
-                reserved: reservation.bytes(),
-            });
+        reservation
+            .claim(AudioBuffer::bytes_for(
+                spec.channels,
+                reader.duration() as usize,
+            ))
+            .map_err(|source| StorageError::ShortReservation { id, source })?;
+        // Exactly the capacity reserved: collecting through a `Result`
+        // loses the size hint and grows by doubling.
+        let mut data = Vec::with_capacity(reader.len() as usize);
+        for sample in reader.samples::<Pcm>() {
+            data.push(sample.map_err(|e| at(&path, e))?);
         }
-        let data = reader
-            .samples::<Pcm>()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| at(&path, e))?;
         AudioBuffer::new(spec.channels, data).map_err(|e| at(&path, e))
     }
 }
@@ -382,12 +382,8 @@ impl Storage for FileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::Ledger;
-
-    /// A reservation that pays for anything.
-    fn paid() -> Reservation {
-        Ledger::new(usize::MAX).reserve(usize::MAX).unwrap()
-    }
+    use crate::ledger::{Ledger, ShortReservation};
+    use crate::testing::paid;
 
     #[test]
     fn a_short_reservation_is_refused_before_reading() {
@@ -403,7 +399,7 @@ mod tests {
         );
         assert!(matches!(
             s.audio(id, &ledger.reserve(needed - 1).unwrap()).unwrap_err(),
-            StorageError::ShortReservation { id: i, needed: n, reserved: r }
+            StorageError::ShortReservation { id: i, source: ShortReservation { needed: n, reserved: r } }
                 if i == id && n == needed && r == needed - 1
         ));
     }

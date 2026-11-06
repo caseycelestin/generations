@@ -35,14 +35,12 @@ pub fn decode(path: &Path, reservation: &Reservation) -> Result<Decoded, DecodeE
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
     let width = check_width(path, spec)?;
-    let needed = bytes(path, &reader)?;
-    if !reservation.covers(needed) {
-        return Err(DecodeError::ShortReservation {
+    reservation
+        .claim(bytes(path, &reader)?)
+        .map_err(|source| DecodeError::ShortReservation {
             path: path.into(),
-            needed,
-            reserved: reservation.bytes(),
-        });
-    }
+            source,
+        })?;
     let len = reader.len() as usize;
     let samples = match width {
         Width::Float => Samples::Float(collect(path, len, reader.samples::<f32>())?),
@@ -119,8 +117,8 @@ mod tests {
     use hound::{WavSpec, WavWriter};
 
     use super::*;
-    use crate::decode::tests::paid;
-    use crate::ledger::Ledger;
+    use crate::ledger::{Ledger, ShortReservation};
+    use crate::testing::paid;
 
     /// Decodes with a reservation that pays for anything.
     fn decode(path: &Path) -> Result<Decoded, DecodeError> {
@@ -140,8 +138,10 @@ mod tests {
         assert!(matches!(
             super::decode(&path, &short).unwrap_err(),
             DecodeError::ShortReservation {
-                needed: 40,
-                reserved: 39,
+                source: ShortReservation {
+                    needed: 40,
+                    reserved: 39
+                },
                 ..
             }
         ));

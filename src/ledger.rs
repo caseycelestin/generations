@@ -44,6 +44,15 @@ pub struct OverBudget {
     pub budget: usize,
 }
 
+/// The bytes an allocator asked a reservation to pay for are more than it
+/// holds. Nothing was allocated.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("needs {needed} bytes but {reserved} were reserved")]
+pub struct ShortReservation {
+    pub needed: usize,
+    pub reserved: usize,
+}
+
 /// What the ledger and its reservations share: the figure and the count.
 #[derive(Debug)]
 struct Account {
@@ -115,14 +124,22 @@ pub struct Reservation {
 
 impl Reservation {
     /// The bytes this reservation holds.
+    #[cfg(test)]
     pub fn bytes(&self) -> usize {
         self.bytes
     }
 
-    /// Whether this reservation pays for `bytes`. What an allocator asks
-    /// before it allocates.
-    pub fn covers(&self, bytes: usize) -> bool {
-        bytes <= self.bytes
+    /// Checks that this reservation pays for `bytes`. What an allocator
+    /// does before it allocates; on `Err` it allocates nothing.
+    pub fn claim(&self, bytes: usize) -> Result<(), ShortReservation> {
+        if bytes <= self.bytes {
+            Ok(())
+        } else {
+            Err(ShortReservation {
+                needed: bytes,
+                reserved: self.bytes,
+            })
+        }
     }
 }
 
@@ -184,12 +201,18 @@ mod tests {
     }
 
     #[test]
-    fn a_reservation_covers_up_to_its_bytes() {
+    fn a_reservation_pays_up_to_its_bytes() {
         let ledger = Ledger::new(10);
         let r = ledger.reserve(4).unwrap();
-        assert!(r.covers(0));
-        assert!(r.covers(4));
-        assert!(!r.covers(5));
+        assert_eq!(r.claim(0), Ok(()));
+        assert_eq!(r.claim(4), Ok(()));
+        assert_eq!(
+            r.claim(5),
+            Err(ShortReservation {
+                needed: 5,
+                reserved: 4
+            })
+        );
     }
 
     #[test]

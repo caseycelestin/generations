@@ -108,6 +108,8 @@ pub(crate) mod ledger;
 pub mod project;
 pub(crate) mod render;
 pub(crate) mod storage;
+#[cfg(test)]
+pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
 pub use convert::ConvertError;
