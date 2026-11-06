@@ -87,7 +87,7 @@ impl Project {
         audio: &AudioBuffer,
     ) -> Result<SampleId, ProjectError> {
         if let Some(p) = parent {
-            self.sample(p)?;
+            self.check(p)?;
         }
         Ok(self.storage.add_sample(parent, audio)?)
     }
@@ -99,7 +99,7 @@ impl Project {
     /// separate, explicit operation that does not exist yet.
     #[allow(dead_code)] // the engine's remove is not written yet; it will call this
     pub(crate) fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
-        self.sample(id)?;
+        self.check(id)?;
         if self.storage.has_children(id)? {
             return Err(ProjectError::HasChildren(id));
         }
@@ -112,8 +112,19 @@ impl Project {
     /// sets it and moves the audio, and a caller reaching the project
     /// directly would leave the two disagreeing.
     pub(crate) fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), ProjectError> {
-        self.sample(id)?;
+        self.check(id)?;
         Ok(self.storage.set_loaded(id, loaded)?)
+    }
+
+    /// Refuses an id no sample has. Asks only whether the record exists,
+    /// not for the record, so it still works for a sample whose audio has
+    /// gone bad on disk: that sample must stay removable and unloadable.
+    fn check(&self, id: SampleId) -> Result<(), ProjectError> {
+        if self.storage.has_sample(id)? {
+            Ok(())
+        } else {
+            Err(ProjectError::UnknownSample(id))
+        }
     }
 
     /// The ids of every loaded sample, in id order.
@@ -158,6 +169,10 @@ pub(crate) mod tests {
     struct Memory(Rc<RefCell<State>>);
 
     impl Storage for Memory {
+        fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
+            Ok(self.find(id).is_some())
+        }
+
         fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
             Ok(self.find(id).map(|(s, _)| s))
         }

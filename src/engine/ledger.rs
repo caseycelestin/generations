@@ -25,7 +25,7 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(
     "{requested} bytes would put the engine's memory at {} of a {budget} byte budget",
-    in_use + requested
+    in_use.saturating_add(*requested)
 )]
 pub struct OverBudget {
     /// Bytes the refused reservation would have cost.
@@ -181,6 +181,8 @@ mod tests {
     fn an_unbounded_budget_does_not_overflow() {
         let ledger = Ledger::new(usize::MAX);
         let _a = ledger.reserve(usize::MAX - 1).unwrap();
-        assert!(ledger.reserve(2).is_err());
+        let err = ledger.reserve(2).unwrap_err();
+        // Neither the check nor the message overflows.
+        assert!(err.to_string().contains(&usize::MAX.to_string()));
     }
 }

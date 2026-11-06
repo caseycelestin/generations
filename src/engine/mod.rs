@@ -223,7 +223,10 @@ impl Engine {
     ///
     /// The memory is reserved before the read, from the size the project
     /// records for the sample, so a refused load never allocates. Audio
-    /// that comes back a different size than recorded is corrupt storage.
+    /// that comes back any other size than recorded is corrupt storage,
+    /// smaller included: it would fit, but the record and the file
+    /// disagree, and a project that disagrees with itself is refused
+    /// rather than guessed at.
     fn bring_in(&mut self, id: SampleId) -> Result<(), EngineError> {
         if self.loaded.contains_key(&id) {
             return Ok(());
@@ -417,6 +420,22 @@ mod tests {
         assert!(!e.project().sample(b).unwrap().loaded);
         assert!(!e.loaded.contains_key(&b));
         assert!(e.project().sample(a).unwrap().loaded);
+    }
+
+    #[test]
+    fn a_sample_whose_wav_went_bad_can_still_be_unloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
+        e.load(id).unwrap();
+        std::fs::remove_file(dir.path().join("samples").join(format!("{}.wav", id.0))).unwrap();
+
+        // The record cannot be read without the file; existence still can,
+        // so the audio and its reservation are not stuck in RAM.
+        assert!(e.project().sample(id).is_err());
+        e.unload(id).unwrap();
+        assert!(!e.loaded.contains_key(&id));
+        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]

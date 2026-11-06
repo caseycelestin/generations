@@ -455,9 +455,12 @@ thing the engine holds in RAM that the resident set cannot serve.
   backend takes them from the WAV header rather than repeating them in
   the manifest, so there is one record of the shape and nothing to fall
   out of step; the read is refused as corrupt if the audio comes back a
-  different size than the header said. Import and print have their sizes
-  in hand before they allocate (the file header, the source sample) and
-  reserve the same way.
+  different size than the header said. Import and print will have their
+  sizes in hand before they allocate (the file header, the source sample)
+  and are to reserve the same way; they do not yet, and step 5 stays open
+  until they do. Asking whether a sample exists stays a manifest-only
+  question, so a sample whose WAV has gone bad can still be unloaded and
+  removed.
 - **The resident set dissolved into a map on the engine.** Once the
   ledger took the counting, the set was a `HashMap` behind four one-line
   methods, one of which repeated a check the engine already made. It is

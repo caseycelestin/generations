@@ -269,6 +269,10 @@ fn sync_dir(dir: &Path) -> Result<(), StorageError> {
 }
 
 impl Storage for FileStorage {
+    fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
+        Ok(self.read_manifest()?.samples.contains_key(&id.0))
+    }
+
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
         let manifest = self.read_manifest()?;
         let Some(entry) = manifest.samples.get(&id.0) else {
@@ -287,7 +291,7 @@ impl Storage for FileStorage {
     }
 
     fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
-        if !self.read_manifest()?.samples.contains_key(&id.0) {
+        if !self.has_sample(id)? {
             return Ok(None);
         }
         self.read_wav(id).map(Some)
@@ -473,9 +477,10 @@ mod tests {
         let id = s.add_sample(None, &ramp(1, 4)).unwrap();
         fs::rename(s.wav_path(id), dir.path().join("samples/kick.wav")).unwrap();
         // The record takes the audio's shape from the WAV header, so it
-        // cannot be read either.
+        // cannot be read either; existence can, from the manifest.
         assert!(matches!(s.sample(id), Err(StorageError::Backend(_))));
         assert!(matches!(s.audio(id), Err(StorageError::Backend(_))));
+        assert!(s.has_sample(id).unwrap());
     }
 
     #[test]
