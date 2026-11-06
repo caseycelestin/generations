@@ -130,7 +130,7 @@ impl Engine {
     /// holds its own copy. The new sample is not loaded; that is a separate
     /// decision, so an import lands on disk whether or not it fits in RAM.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let audio = convert::convert(&decode::decode(file)?)?;
+        let audio = convert::convert(decode::decode(file)?)?;
         Ok(self.import_audio(&audio)?)
     }
 
@@ -290,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn import_reads_a_wav_at_the_project_rate() {
+    fn import_of_a_wav_in_the_project_format_is_exact() {
         let dir = tempfile::tempdir().unwrap();
         let path = wav(dir.path(), "a.wav", 48_000, &[0, 1000, -1000, 32_767]);
         let (mut e, _r) = engine();
@@ -298,12 +298,8 @@ mod tests {
         let audio = e.project().audio(id).unwrap();
         assert_eq!(audio.channels(), 1);
         assert_eq!(audio.frames(), 4);
-        for (want, got) in [0i16, 1000, -1000, 32_767].iter().zip(audio.samples()) {
-            assert!(
-                (i32::from(*want) - i32::from(*got)).abs() <= 1,
-                "{want} vs {got}"
-            );
-        }
+        // Already the project format: stored byte for byte.
+        assert_eq!(audio.samples(), &[0, 1000, -1000, 32_767]);
         assert_eq!(e.project().sample(id).unwrap().parent, None);
     }
 

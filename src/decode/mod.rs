@@ -1,12 +1,15 @@
 //! Reading audio files into plain samples.
 //!
 //! One function, [`decode`], takes a path and returns a [`Decoded`]: the
-//! file's audio as interleaved `f32` at the file's own rate and channel
-//! count. Which format the file is in is decided here, from the bytes at
-//! its start, and handed to the one submodule that knows that format. A
-//! new format is a new submodule and one more arm in [`sniff`].
+//! file's audio as interleaved samples at the file's own rate, channel
+//! count and width, integers kept as integers. Which format the file is
+//! in is decided here, from the bytes at its start, and handed to the one
+//! submodule that knows that format. A new format is a new submodule and
+//! one more arm in [`sniff`].
 //!
-//! Nothing here knows the project format; that is `convert`'s job.
+//! Nothing here knows the project format; that is `convert`'s job. A
+//! decoder reports what it read, and `convert` notices when that already
+//! is the project format.
 
 mod wav;
 
@@ -16,7 +19,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-pub use crate::convert::Decoded;
+pub use crate::convert::{Decoded, Samples};
 
 /// Reasons a file could not be read into samples.
 #[derive(Debug, Error)]

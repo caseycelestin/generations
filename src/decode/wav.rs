@@ -1,15 +1,14 @@
 //! WAV: RIFF/WAVE with integer PCM at 8 to 32 bits, or 32-bit float.
 //!
-//! Integer samples are scaled by their own bit depth so every width lands
-//! on the same `-1.0..1.0`; float samples are taken as they are. Anything
-//! else `hound` can open but we do not expect is reported as malformed
-//! rather than guessed at.
+//! Integer samples are reported at their own width, float samples as they
+//! are. Anything else `hound` can open but we do not expect is reported as
+//! malformed rather than guessed at.
 
 use std::path::Path;
 
 use hound::{SampleFormat, WavReader};
 
-use super::{DecodeError, Decoded};
+use super::{DecodeError, Decoded, Samples};
 
 pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
     let malformed = |reason: String| DecodeError::Malformed {
@@ -18,15 +17,12 @@ pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
     };
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
-    let samples: Result<Vec<f32>, hound::Error> = match (spec.sample_format, spec.bits_per_sample) {
-        (SampleFormat::Float, 32) => reader.samples::<f32>().collect(),
-        (SampleFormat::Int, bits @ 1..=32) => {
-            let scale = (1u64 << (bits - 1)) as f32;
-            reader
-                .samples::<i32>()
-                .map(|s| s.map(|v| v as f32 / scale))
-                .collect()
-        }
+    let samples = match (spec.sample_format, spec.bits_per_sample) {
+        (SampleFormat::Float, 32) => Samples::Float(collect(path, reader.samples::<f32>())?),
+        (SampleFormat::Int, bits @ 1..=32) => Samples::Int {
+            bits,
+            samples: collect(path, reader.samples::<i32>())?,
+        },
         (format, bits) => {
             return Err(malformed(format!(
                 "{bits}-bit {format:?} samples are not supported"
@@ -36,8 +32,18 @@ pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
     Ok(Decoded {
         rate: spec.sample_rate,
         channels: spec.channels,
-        samples: samples.map_err(|e| hound_error(path, e))?,
+        samples,
     })
+}
+
+/// Drains a sample iterator, attributing any failure to `path`.
+fn collect<T>(
+    path: &Path,
+    samples: impl Iterator<Item = hound::Result<T>>,
+) -> Result<Vec<T>, DecodeError> {
+    samples
+        .collect::<hound::Result<Vec<T>>>()
+        .map_err(|e| hound_error(path, e))
 }
 
 fn hound_error(path: &Path, e: hound::Error) -> DecodeError {
@@ -76,15 +82,15 @@ mod tests {
         w.finalize().unwrap();
     }
 
-    fn close(a: &[f32], b: &[f32], tol: f32) {
-        assert_eq!(a.len(), b.len());
-        for (x, y) in a.iter().zip(b) {
-            assert!((x - y).abs() <= tol, "{x} vs {y}");
+    fn int(s: &Samples) -> (u16, &[i32]) {
+        match s {
+            Samples::Int { bits, samples } => (*bits, samples),
+            Samples::Float(_) => panic!("expected integer samples"),
         }
     }
 
     #[test]
-    fn sixteen_bit_stereo_keeps_rate_channels_and_scale() {
+    fn sixteen_bit_stereo_is_reported_as_16_bit_integers() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.wav");
         write(
@@ -94,15 +100,15 @@ mod tests {
         );
         let d = decode(&path).unwrap();
         assert_eq!((d.rate, d.channels), (44_100, 2));
-        close(&d.samples, &[0.0, 0.5, -1.0, 32_767.0 / 32_768.0], 0.0);
+        assert_eq!(int(&d.samples), (16, &[0, 16_384, -32_768, 32_767][..]));
     }
 
     #[test]
-    fn every_integer_width_lands_on_the_same_scale() {
+    fn every_integer_width_is_reported_at_its_own_width() {
         let dir = tempfile::tempdir().unwrap();
         let p8 = dir.path().join("8.wav");
         write(&p8, spec(1, 48_000, 8, SampleFormat::Int), &[64i8, -128]);
-        close(&decode(&p8).unwrap().samples, &[0.5, -1.0], 0.0);
+        assert_eq!(int(&decode(&p8).unwrap().samples), (8, &[64, -128][..]));
 
         let p24 = dir.path().join("24.wav");
         write(
@@ -110,7 +116,10 @@ mod tests {
             spec(1, 48_000, 24, SampleFormat::Int),
             &[1i32 << 22, -(1 << 23)],
         );
-        close(&decode(&p24).unwrap().samples, &[0.5, -1.0], 0.0);
+        assert_eq!(
+            int(&decode(&p24).unwrap().samples),
+            (24, &[1 << 22, -(1 << 23)][..])
+        );
 
         let p32 = dir.path().join("32.wav");
         write(
@@ -118,7 +127,10 @@ mod tests {
             spec(1, 48_000, 32, SampleFormat::Int),
             &[1i32 << 30, i32::MIN],
         );
-        close(&decode(&p32).unwrap().samples, &[0.5, -1.0], 0.0);
+        assert_eq!(
+            int(&decode(&p32).unwrap().samples),
+            (32, &[1 << 30, i32::MIN][..])
+        );
     }
 
     #[test]
@@ -132,7 +144,7 @@ mod tests {
         );
         let d = decode(&path).unwrap();
         assert_eq!(d.rate, 96_000);
-        close(&d.samples, &[0.25, -0.75, 1.5], 0.0);
+        assert_eq!(d.samples, Samples::Float(vec![0.25, -0.75, 1.5]));
     }
 
     #[test]
