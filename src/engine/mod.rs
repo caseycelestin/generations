@@ -229,11 +229,6 @@ mod tests {
         (engine, output)
     }
 
-    /// An engine on the project at `dir`, with no budget to speak of.
-    fn on_disk(dir: &Path) -> Engine {
-        Engine::open(dir, usize::MAX).unwrap()
-    }
-
     /// Renders one period of `frames` frames and returns it.
     fn period(r: &mut Renderer, frames: usize) -> Vec<f32> {
         let mut out = vec![0.0; frames * 2];
@@ -432,7 +427,7 @@ mod tests {
     #[test]
     fn open_brings_loaded_samples_back_into_ram() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = on_disk(dir.path());
+        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let kept = e.import(&ramp(4)).unwrap();
         let dropped = e.import(&ramp(8)).unwrap();
         e.load(kept).unwrap();
@@ -440,7 +435,7 @@ mod tests {
         e.unload(dropped).unwrap();
         drop(e);
 
-        let e = on_disk(dir.path());
+        let e = Engine::open(dir.path(), usize::MAX).unwrap();
         assert!(e.resident.contains(kept));
         assert!(!e.resident.contains(dropped));
         assert_eq!(e.resident.bytes(), ramp(4).bytes());
@@ -449,7 +444,7 @@ mod tests {
     #[test]
     fn open_fails_when_loaded_samples_no_longer_fit() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = on_disk(dir.path());
+        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let id = e.import(&ramp(4)).unwrap();
         e.load(id).unwrap();
         drop(e);
