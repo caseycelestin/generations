@@ -24,6 +24,8 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::COMMAND_CAPACITY;
+use crate::convert::{self, ConvertError};
+use crate::decode::{self, DecodeError};
 use crate::project::{Project, ProjectError, SampleId};
 use crate::render::{Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
@@ -40,6 +42,10 @@ pub enum EngineError {
     Project(#[from] ProjectError),
     #[error(transparent)]
     OverBudget(#[from] OverBudget),
+    #[error(transparent)]
+    Decode(#[from] DecodeError),
+    #[error(transparent)]
+    Convert(#[from] ConvertError),
     /// The sample exists but is not loaded, so there is nothing resident
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -116,13 +122,24 @@ impl Engine {
         &self.project
     }
 
-    /// Adds audio to the project as a new root.
+    /// Imports an audio file as a new root.
     ///
-    /// This is what a file import or a finished recording calls; once the
-    /// audio is in, the two are indistinguishable. The new sample is not
-    /// loaded; that is a separate decision, so a print or import lands on
-    /// disk whether or not it fits in RAM.
-    pub fn import(&mut self, audio: &AudioBuffer) -> Result<SampleId, ProjectError> {
+    /// The file is read in whatever format it is in, converted to the
+    /// project format (48 kHz, 16-bit, its own channel count up to two)
+    /// and stored. The file itself is not kept or referenced: the project
+    /// holds its own copy. The new sample is not loaded; that is a separate
+    /// decision, so an import lands on disk whether or not it fits in RAM.
+    pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
+        let audio = convert::convert(&decode::decode(file)?)?;
+        Ok(self.import_audio(&audio)?)
+    }
+
+    /// Adds audio already in the project format as a new root.
+    ///
+    /// The last step of [`import`](Self::import), and what a finished
+    /// recording will call; once the audio is in, the two are
+    /// indistinguishable.
+    pub(crate) fn import_audio(&mut self, audio: &AudioBuffer) -> Result<SampleId, ProjectError> {
         self.project.add_sample(None, audio)
     }
 
@@ -246,7 +263,7 @@ mod tests {
     #[test]
     fn commands_sent_before_the_output_is_taken_wait_for_it() {
         let mut e = Engine::on(memory_project(), usize::MAX).unwrap();
-        let id = e.import(&ramp(2)).unwrap();
+        let id = e.import_audio(&ramp(2)).unwrap();
         e.load(id).unwrap();
         e.play(id).unwrap();
 
@@ -256,10 +273,67 @@ mod tests {
         assert_eq!(out, expected);
     }
 
+    fn wav(dir: &Path, name: &str, rate: u32, samples: &[i16]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        for &s in samples {
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+        path
+    }
+
+    #[test]
+    fn import_reads_a_wav_at_the_project_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "a.wav", 48_000, &[0, 1000, -1000, 32_767]);
+        let (mut e, _r) = engine();
+        let id = e.import(&path).unwrap();
+        let audio = e.project().audio(id).unwrap();
+        assert_eq!(audio.channels(), 1);
+        assert_eq!(audio.frames(), 4);
+        for (want, got) in [0i16, 1000, -1000, 32_767].iter().zip(audio.samples()) {
+            assert!(
+                (i32::from(*want) - i32::from(*got)).abs() <= 1,
+                "{want} vs {got}"
+            );
+        }
+        assert_eq!(e.project().sample(id).unwrap().parent, None);
+    }
+
+    #[test]
+    fn import_resamples_a_wav_at_another_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "b.wav", 44_100, &[0; 44_100]);
+        let (mut e, _r) = engine();
+        let id = e.import(&path).unwrap();
+        let frames = e.project().audio(id).unwrap().frames() as i64;
+        assert!((frames - 48_000).abs() <= 2, "{frames}");
+    }
+
+    #[test]
+    fn import_of_a_file_that_is_not_audio_adds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "not audio").unwrap();
+        let (mut e, _r) = engine();
+        assert!(matches!(
+            e.import(&path),
+            Err(EngineError::Decode(DecodeError::UnknownFormat { .. }))
+        ));
+        assert!(e.project().loaded_samples().unwrap().is_empty());
+    }
+
     #[test]
     fn import_creates_a_root() {
         let (mut e, _r) = engine();
-        let id = e.import(&ramp(4)).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
         assert_eq!(e.project().sample(id).unwrap().parent, None);
         assert_eq!(e.project().audio(id).unwrap(), ramp(4));
     }
@@ -267,7 +341,7 @@ mod tests {
     #[test]
     fn import_does_not_load() {
         let (mut e, _r) = engine();
-        let id = e.import(&ramp(4)).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
         assert!(!e.resident.contains(id));
     }
@@ -275,7 +349,7 @@ mod tests {
     #[test]
     fn load_makes_audio_resident_and_sets_the_flag() {
         let (mut e, _r) = engine();
-        let id = e.import(&ramp(4)).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
 
         e.load(id).unwrap();
         assert!(e.project().sample(id).unwrap().loaded);
@@ -290,7 +364,7 @@ mod tests {
     #[test]
     fn unload_clears_the_flag_and_drops_the_audio() {
         let (mut e, _r) = engine();
-        let id = e.import(&ramp(4)).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
         e.load(id).unwrap();
 
         e.unload(id).unwrap();
@@ -306,8 +380,8 @@ mod tests {
     #[test]
     fn load_over_budget_is_refused_and_leaves_the_flag_clear() {
         let mut e = Engine::on(memory_project(), ramp(4).bytes()).unwrap();
-        let a = e.import(&ramp(4)).unwrap();
-        let b = e.import(&ramp(4)).unwrap();
+        let a = e.import_audio(&ramp(4)).unwrap();
+        let b = e.import_audio(&ramp(4)).unwrap();
         e.load(a).unwrap();
 
         assert!(matches!(e.load(b), Err(EngineError::OverBudget(_))));
@@ -319,7 +393,7 @@ mod tests {
     #[test]
     fn load_of_an_unknown_sample_is_refused() {
         let (mut e, _r) = engine();
-        let root = e.import(&ramp(4)).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(
             e.load(bogus),
@@ -335,7 +409,7 @@ mod tests {
     #[test]
     fn play_is_heard_from_the_renderers_next_period() {
         let (mut e, mut r) = engine();
-        let id = e.import(&ramp(2)).unwrap();
+        let id = e.import_audio(&ramp(2)).unwrap();
         e.load(id).unwrap();
 
         let voice = e.play(id).unwrap();
@@ -349,7 +423,7 @@ mod tests {
     #[test]
     fn each_play_is_its_own_voice() {
         let (mut e, mut r) = engine();
-        let id = e.import(&ramp(100)).unwrap();
+        let id = e.import_audio(&ramp(100)).unwrap();
         e.load(id).unwrap();
 
         let a = e.play(id).unwrap();
@@ -371,7 +445,7 @@ mod tests {
     #[test]
     fn a_full_ring_refuses_the_command_and_burns_no_voice_id() {
         let (mut e, mut r) = engine();
-        let id = e.import(&ramp(100)).unwrap();
+        let id = e.import_audio(&ramp(100)).unwrap();
         e.load(id).unwrap();
         let mut last = None;
         for _ in 0..COMMAND_CAPACITY {
@@ -390,7 +464,7 @@ mod tests {
     #[test]
     fn unload_keeps_a_playing_voice_alive() {
         let (mut e, mut r) = engine();
-        let id = e.import(&ramp(100)).unwrap();
+        let id = e.import_audio(&ramp(100)).unwrap();
         e.load(id).unwrap();
         let voice = e.play(id).unwrap();
         period(&mut r, 4);
@@ -404,7 +478,7 @@ mod tests {
     #[test]
     fn play_of_an_unloaded_sample_is_refused() {
         let (mut e, mut r) = engine();
-        let id = e.import(&ramp(4)).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
         assert!(matches!(
             e.play(id),
             Err(EngineError::NotLoaded(s)) if s == id
@@ -416,7 +490,7 @@ mod tests {
     #[test]
     fn play_of_an_unknown_sample_is_refused_as_unknown() {
         let (mut e, _r) = engine();
-        let root = e.import(&ramp(4)).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(
             e.play(bogus),
@@ -428,8 +502,8 @@ mod tests {
     fn open_brings_loaded_samples_back_into_ram() {
         let dir = tempfile::tempdir().unwrap();
         let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
-        let kept = e.import(&ramp(4)).unwrap();
-        let dropped = e.import(&ramp(8)).unwrap();
+        let kept = e.import_audio(&ramp(4)).unwrap();
+        let dropped = e.import_audio(&ramp(8)).unwrap();
         e.load(kept).unwrap();
         e.load(dropped).unwrap();
         e.unload(dropped).unwrap();
@@ -445,7 +519,7 @@ mod tests {
     fn open_fails_when_loaded_samples_no_longer_fit() {
         let dir = tempfile::tempdir().unwrap();
         let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
-        let id = e.import(&ramp(4)).unwrap();
+        let id = e.import_audio(&ramp(4)).unwrap();
         e.load(id).unwrap();
         drop(e);
 
@@ -456,7 +530,7 @@ mod tests {
     #[test]
     fn print_adds_a_child_with_the_effect_applied() {
         let (mut e, _r) = engine();
-        let root = e.import(&ramp(4)).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
         let child = e.print(root, reverse).unwrap();
 
         assert_eq!(e.project().sample(child).unwrap().parent, Some(root));
@@ -468,7 +542,7 @@ mod tests {
     #[test]
     fn printing_twice_from_one_source_branches() {
         let (mut e, _r) = engine();
-        let root = e.import(&ramp(4)).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
         let a = e.print(root, reverse).unwrap();
         let b = e.print(root, reverse).unwrap();
         assert_ne!(a, b);
@@ -479,7 +553,7 @@ mod tests {
     #[test]
     fn print_from_unknown_source_adds_nothing() {
         let (mut e, _r) = engine();
-        let root = e.import(&ramp(4)).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(
             e.print(bogus, reverse),

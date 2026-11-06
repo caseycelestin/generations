@@ -15,6 +15,9 @@
 //!   │
 //!   ├─ effects   pure functions, buffer in, buffer out; know nothing else
 //!   │
+//!   ├─ decode    reads a file into plain samples, whatever format it is in
+//!   │   └─ convert   takes those to the project format: resample, quantise
+//!   │
 //!   ├─ render    the other side of sound: turns commands into frames,
 //!   │            wherever the caller drives it. One public type: Renderer
 //!   │
@@ -58,6 +61,12 @@
 //!   holds a whole, valid project; opening one creates or validates it.
 //! - **[`effects`]** are offline functions over an [`AudioBuffer`]. Only
 //!   playback, mixing and sequencing will ever be real-time.
+//! - **`decode`** and **`convert`** are the boundary between the world's
+//!   audio and the project's. A decoder reads one file format into a plain
+//!   value (rate, channels, interleaved `f32`); `convert` resamples and
+//!   quantises that into a buffer. Formats are added by writing a decoder;
+//!   nothing about the project format moves, and the caller never sees
+//!   either: it hands [`Engine::import`] a path.
 //! - **[`audio`]** and **[`config`]** hold the one fixed format every buffer
 //!   uses: 48 kHz, 16-bit PCM, 1 or 2 channels, with `f32` for processing.
 //!
@@ -88,6 +97,8 @@
 
 pub mod audio;
 pub mod config;
+pub(crate) mod convert;
+pub(crate) mod decode;
 pub mod effects;
 pub mod engine;
 pub mod project;
@@ -95,6 +106,8 @@ pub(crate) mod render;
 pub(crate) mod storage;
 
 pub use audio::{AudioBuffer, AudioError};
+pub use convert::ConvertError;
+pub use decode::DecodeError;
 pub use engine::{Engine, EngineError, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use render::{Renderer, VoiceId};

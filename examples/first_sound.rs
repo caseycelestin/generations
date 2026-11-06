@@ -1,9 +1,10 @@
-//! The first sound: open a project, import a tone, print its reverse, load
-//! both, and play them through the default audio device.
+//! The first sound: open a project, import a WAV of a tone, print its
+//! reverse, load both, and play them through the default audio device.
 //!
 //! The tone decays, so the root sounds like a pluck and its reverse like a
 //! swell. The second starts while the first is still ringing, which is two
-//! voices summed by the renderer.
+//! voices summed by the renderer. The WAV is written at 44.1 kHz, so the
+//! import resamples it on the way in.
 //!
 //! The engine does not know there is a speaker. This file opens the
 //! device, takes the engine's output and hands it over; those are the only
@@ -15,12 +16,11 @@
 
 use std::error::Error;
 use std::f32::consts::TAU;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::config::SAMPLE_RATE;
-use generations::{AudioBuffer, Engine, effects};
+use generations::{Engine, effects};
 
 mod device;
 use device::Device;
@@ -29,15 +29,25 @@ use device::Device;
 /// example does not either, so it guesses generously for a desktop.
 const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
-/// One second of A440, decaying from half scale to near silence.
-fn pluck() -> Result<AudioBuffer, Box<dyn Error>> {
-    let samples: Vec<f32> = (0..SAMPLE_RATE)
-        .map(|i| {
-            let t = i as f32 / SAMPLE_RATE as f32;
-            0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp()
-        })
-        .collect();
-    Ok(AudioBuffer::from_f32(1, &samples)?)
+/// Rate of the WAV this example writes: not the project's, on purpose.
+const WAV_RATE: u32 = 44_100;
+
+/// One second of A440, decaying from half scale to near silence, as a mono
+/// float WAV at `WAV_RATE`.
+fn pluck_wav(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: WAV_RATE,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut w = hound::WavWriter::create(path, spec)?;
+    for i in 0..WAV_RATE {
+        let t = i as f32 / WAV_RATE as f32;
+        w.write_sample(0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp())?;
+    }
+    w.finalize()?;
+    Ok(path.to_path_buf())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -52,7 +62,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // stops before the engine lets go of its audio.
     let mut stream = Device::default_output()?.start(move |out| output.render(out))?;
 
-    let root = engine.import(&pluck()?)?;
+    let scratch = tempfile::tempdir()?;
+    let root = engine.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
     let swell = engine.print(root, effects::reverse)?;
     engine.load(root)?;
     engine.load(swell)?;

@@ -115,7 +115,8 @@ impl fmt::Debug for AudioBuffer {
     }
 }
 
-fn check_channels(channels: u16) -> Result<(), AudioError> {
+/// Checks a channel count against what a buffer may hold.
+pub(crate) fn check_channels(channels: u16) -> Result<(), AudioError> {
     if channels == 0 || channels > MAX_CHANNELS {
         return Err(AudioError::BadChannelCount(channels));
     }
