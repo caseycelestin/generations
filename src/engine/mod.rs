@@ -143,8 +143,17 @@ impl Engine {
     /// and stored. The file itself is not kept or referenced: the project
     /// holds its own copy. The new sample is not loaded; that is a separate
     /// decision, so an import lands on disk whether or not it fits in RAM.
+    ///
+    /// The buffers in flight count against the budget while they exist:
+    /// the decoded samples, reserved from the file's header before any are
+    /// read, and the converter's working set, reserved from the decoded
+    /// audio before it is converted. A file too large to pass through RAM
+    /// beside what is loaded is refused and nothing is stored.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let audio = convert::convert(decode::decode(file)?)?;
+        let _decoding = self.ledger.reserve(decode::size(file)?)?;
+        let decoded = decode::decode(file)?;
+        let _converting = self.ledger.reserve(convert::working_bytes(&decoded))?;
+        let audio = convert::convert(decoded)?;
         Ok(self.import_audio(&audio)?)
     }
 
@@ -253,14 +262,26 @@ impl Engine {
     /// lineage, and returns the new sample's id.
     ///
     /// The source is untouched. On an unknown `source` nothing is added.
+    ///
+    /// The print's cost is reserved before the source is read: input and
+    /// output as PCM, and both again as `f32`, which is what an effect
+    /// that changes sample values allocates. An effect is a plain function
+    /// and the ledger cannot see inside it, so this is an estimate that
+    /// every effect today lands inside; it becomes exact when effects move
+    /// to the render side and the engine owns their buffers. A print that
+    /// does not fit beside what is loaded is refused and nothing is added.
     pub fn print(
         &mut self,
         source: SampleId,
         effect: impl FnOnce(&AudioBuffer) -> AudioBuffer,
-    ) -> Result<SampleId, ProjectError> {
+    ) -> Result<SampleId, EngineError> {
+        let sample = self.project.sample(source)?;
+        let pcm = AudioBuffer::bytes_for(sample.channels, sample.frames);
+        let f32 = sample.frames * usize::from(sample.channels) * size_of::<f32>();
+        let _printing = self.ledger.reserve(2 * (pcm + f32))?;
         let input = self.project.audio(source)?;
         let output = effect(&input);
-        self.project.add_sample(Some(source), &output)
+        Ok(self.project.add_sample(Some(source), &output)?)
     }
 }
 
@@ -360,6 +381,29 @@ mod tests {
             Err(EngineError::Decode(DecodeError::UnknownFormat { .. }))
         ));
         assert!(e.project().loaded_samples().unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_releases_its_working_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "c.wav", 44_100, &[0; 4410]);
+        let (mut e, _r) = engine();
+        e.import(&path).unwrap();
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn import_that_does_not_fit_beside_loaded_audio_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "d.wav", 48_000, &[0; 100]);
+        // Room for the loaded ramp and nothing else.
+        let mut e = Engine::on(memory_project(), ramp(4).bytes()).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
+        e.load(root).unwrap();
+
+        assert!(matches!(e.import(&path), Err(EngineError::OverBudget(_))));
+        assert!(e.project().sample(SampleId(root.0 + 1)).is_err());
+        assert_eq!(e.ledger.in_use(), ramp(4).bytes());
     }
 
     #[test]
@@ -602,6 +646,36 @@ mod tests {
     }
 
     #[test]
+    fn print_reserves_its_cost_and_releases_it() {
+        // Input and output as PCM, and both again as f32.
+        let cost = 2 * (ramp(4).bytes() + 4 * size_of::<f32>());
+        let mut e = Engine::on(memory_project(), cost).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
+        e.print(root, reverse).unwrap();
+        assert_eq!(e.ledger.in_use(), 0);
+
+        let mut e = Engine::on(memory_project(), cost - 1).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
+        assert!(matches!(
+            e.print(root, reverse),
+            Err(EngineError::OverBudget(_))
+        ));
+    }
+
+    #[test]
+    fn print_that_does_not_fit_is_refused_and_adds_nothing() {
+        let mut e = Engine::on(memory_project(), ramp(4).bytes()).unwrap();
+        let root = e.import_audio(&ramp(4)).unwrap();
+        e.load(root).unwrap();
+        assert!(matches!(
+            e.print(root, reverse),
+            Err(EngineError::OverBudget(_))
+        ));
+        assert!(e.project().sample(SampleId(root.0 + 1)).is_err());
+        assert_eq!(e.ledger.in_use(), ramp(4).bytes());
+    }
+
+    #[test]
     fn printing_twice_from_one_source_branches() {
         let (mut e, _r) = engine();
         let root = e.import_audio(&ramp(4)).unwrap();
@@ -619,7 +693,7 @@ mod tests {
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(
             e.print(bogus, reverse),
-            Err(ProjectError::UnknownSample(id)) if id == bogus
+            Err(EngineError::Project(ProjectError::UnknownSample(id))) if id == bogus
         ));
         assert!(e.project().sample(bogus).is_err());
     }

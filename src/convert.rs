@@ -86,6 +86,35 @@ pub enum ConvertError {
     Audio(#[from] AudioError),
 }
 
+/// Bytes [`convert`] will allocate for this audio, over and above the
+/// audio itself, so they can be reserved before it runs.
+///
+/// Follows the same branches as `convert`: the exact path allocates only
+/// the PCM result; the same-rate path an `f32` copy and the result; the
+/// resampling path an `f32` copy, the resampled `f32` output and the
+/// result. The resampler's own state is a chunk, not a clip, and is not
+/// counted.
+pub fn working_bytes(decoded: &Decoded) -> usize {
+    let samples = decoded.samples.len();
+    let f32_in = samples * size_of::<f32>();
+    let out_samples = if decoded.rate == SAMPLE_RATE || decoded.rate == 0 {
+        samples
+    } else {
+        let scaled = samples as u64 * u64::from(SAMPLE_RATE);
+        scaled.div_ceil(u64::from(decoded.rate)) as usize
+    };
+    let pcm_out = out_samples * size_of::<Pcm>();
+    match &decoded.samples {
+        Samples::Int { bits, .. }
+            if decoded.rate == SAMPLE_RATE && u32::from(*bits) == Pcm::BITS =>
+        {
+            pcm_out
+        }
+        _ if decoded.rate == SAMPLE_RATE => f32_in + pcm_out,
+        _ => f32_in + out_samples * size_of::<f32>() + pcm_out,
+    }
+}
+
 /// Converts decoded audio to the project format.
 ///
 /// Audio at another rate is resampled to [`SAMPLE_RATE`]; audio already
@@ -176,6 +205,35 @@ mod tests {
 
     fn peak(s: &[f32]) -> f32 {
         s.iter().fold(0.0f32, |m, &x| m.max(x.abs()))
+    }
+
+    #[test]
+    fn working_bytes_follows_the_path_convert_takes() {
+        let pcm = size_of::<Pcm>();
+        // Exact: only the result.
+        assert_eq!(
+            working_bytes(&int(SAMPLE_RATE, 1, 16, vec![0; 10])),
+            10 * pcm
+        );
+        // Same rate, other width or float: an f32 copy and the result.
+        assert_eq!(
+            working_bytes(&int(SAMPLE_RATE, 1, 24, vec![0; 10])),
+            10 * 4 + 10 * pcm
+        );
+        assert_eq!(
+            working_bytes(&at(SAMPLE_RATE, 2, vec![0.0; 10])),
+            10 * 4 + 10 * pcm
+        );
+        // Other rate: f32 in, f32 out at the new length, and the result.
+        let out = (10u64 * u64::from(SAMPLE_RATE)).div_ceil(44_100) as usize;
+        assert_eq!(
+            working_bytes(&at(44_100, 1, vec![0.0; 10])),
+            10 * 4 + out * 4 + out * pcm
+        );
+        assert_eq!(
+            working_bytes(&at(0, 1, vec![0.0; 10])),
+            10 * 4 + 10 * 4 + 10 * pcm
+        );
     }
 
     #[test]

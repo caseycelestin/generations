@@ -10,6 +10,13 @@ use hound::{SampleFormat, WavReader};
 
 use super::{DecodeError, Decoded, Samples};
 
+/// Bytes the decoded samples will take: every width is carried in a
+/// four-byte type, `i32` or `f32`.
+pub fn size(path: &Path) -> Result<usize, DecodeError> {
+    let reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
+    Ok(reader.len() as usize * 4)
+}
+
 pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
     let malformed = |reason: String| DecodeError::Malformed {
         path: path.into(),

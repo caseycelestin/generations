@@ -54,16 +54,31 @@ fn sniff(head: &[u8]) -> Option<Format> {
 
 /// Reads an audio file into samples at its own rate and channel count.
 pub fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+    match format(path)? {
+        Format::Wav => wav::decode(path),
+    }
+}
+
+/// Bytes the samples of [`decode`] on this file will occupy, read from
+/// the file's header without decoding any audio, so the memory can be
+/// reserved before it is allocated. Opens the file again when `decode`
+/// follows; a header is a few bytes and the second open is cheaper than a
+/// decoder that carries state between two calls.
+pub fn size(path: &Path) -> Result<usize, DecodeError> {
+    match format(path)? {
+        Format::Wav => wav::size(path),
+    }
+}
+
+/// The format of the file at `path`, from its first bytes.
+fn format(path: &Path) -> Result<Format, DecodeError> {
     let io = |source| DecodeError::Io {
         path: path.into(),
         source,
     };
     let mut head = [0u8; 12];
     let n = read_head(&mut File::open(path).map_err(io)?, &mut head).map_err(io)?;
-    match sniff(&head[..n]) {
-        Some(Format::Wav) => wav::decode(path),
-        None => Err(DecodeError::UnknownFormat { path: path.into() }),
-    }
+    sniff(&head[..n]).ok_or_else(|| DecodeError::UnknownFormat { path: path.into() })
 }
 
 /// Fills `buf` as far as the reader goes; a short file is not an error.
@@ -98,6 +113,10 @@ mod tests {
         std::fs::write(&path, b"hello").unwrap();
         assert!(matches!(
             decode(&path).unwrap_err(),
+            DecodeError::UnknownFormat { path: p } if *p == *path
+        ));
+        assert!(matches!(
+            size(&path).unwrap_err(),
             DecodeError::UnknownFormat { path: p } if *p == *path
         ));
     }
