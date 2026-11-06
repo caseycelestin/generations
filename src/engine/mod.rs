@@ -218,19 +218,14 @@ mod tests {
     /// An engine on a memory project, and its output, which the test
     /// drives by hand.
     fn engine() -> (Engine, Renderer) {
-        with_budget(usize::MAX)
-    }
-
-    fn with_budget(budget: usize) -> (Engine, Renderer) {
-        let mut engine = Engine::on(memory_project(), budget).unwrap();
+        let mut engine = Engine::on(memory_project(), usize::MAX).unwrap();
         let output = engine.output().unwrap();
         (engine, output)
     }
 
-    /// An engine on the project at `dir`, as `Engine::open` builds it but
-    /// with `budget` bytes for resident audio.
-    fn on_disk(dir: &Path, budget: usize) -> Engine {
-        Engine::on(Project::new(storage::open(dir).unwrap()), budget).unwrap()
+    /// An engine on the project at `dir`, as `Engine::open` builds it.
+    fn on_disk(dir: &Path) -> Engine {
+        Engine::on(Project::new(storage::open(dir).unwrap()), usize::MAX).unwrap()
     }
 
     /// Renders one period of `frames` frames and returns it.
@@ -309,7 +304,7 @@ mod tests {
 
     #[test]
     fn load_over_budget_is_refused_and_leaves_the_flag_clear() {
-        let (mut e, _r) = with_budget(ramp(4).bytes());
+        let mut e = Engine::on(memory_project(), ramp(4).bytes()).unwrap();
         let a = e.import(&ramp(4)).unwrap();
         let b = e.import(&ramp(4)).unwrap();
         e.load(a).unwrap();
@@ -431,7 +426,7 @@ mod tests {
     #[test]
     fn open_brings_loaded_samples_back_into_ram() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = on_disk(dir.path(), usize::MAX);
+        let mut e = on_disk(dir.path());
         let kept = e.import(&ramp(4)).unwrap();
         let dropped = e.import(&ramp(8)).unwrap();
         e.load(kept).unwrap();
@@ -439,7 +434,7 @@ mod tests {
         e.unload(dropped).unwrap();
         drop(e);
 
-        let e = on_disk(dir.path(), usize::MAX);
+        let e = on_disk(dir.path());
         assert!(e.resident.contains(kept));
         assert!(!e.resident.contains(dropped));
         assert_eq!(e.resident.bytes(), ramp(4).bytes());
@@ -448,7 +443,7 @@ mod tests {
     #[test]
     fn open_fails_when_loaded_samples_no_longer_fit() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = on_disk(dir.path(), usize::MAX);
+        let mut e = on_disk(dir.path());
         let id = e.import(&ramp(4)).unwrap();
         e.load(id).unwrap();
         drop(e);
