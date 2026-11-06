@@ -180,8 +180,9 @@ impl Engine {
     }
 
     /// Unloads `id`: clears the flag and drops its audio from RAM. The
-    /// reservation is released at once; any voice still playing the sample
-    /// keeps the audio itself alive until it finishes. Unloading an
+    /// reservation is released at once. For now a voice still playing the
+    /// sample keeps the audio itself alive until it finishes; the roadmap
+    /// has unload stopping such voices as a todo. Unloading an
     /// unloaded sample changes nothing.
     pub fn unload(&mut self, id: SampleId) -> Result<(), EngineError> {
         self.project.set_loaded(id, false)?;

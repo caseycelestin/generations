@@ -590,12 +590,23 @@ changes to it.
   rather than read a clock.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
-- Unloading a sample while a voice plays it leaves the voice as the last
-  holder of the audio, so the free happens on the audio thread. Fix:
-  unload keeps the removed `Arc`, and the engine keeps a retiring
-  list it sweeps on the control side for entries whose count has dropped
-  to one. Not an audible problem today; a rule to keep before the device
-  is the target.
+- **TODO: unload stops every voice playing the sample.** Decided
+  2026-11-06. Today a voice still playing an unloaded sample keeps its
+  `Arc` and plays to the end, so sound comes from memory the engine says
+  it no longer holds; unload should mean gone from RAM. The fix is a
+  third command keyed the third way: `Stop` is by voice, `StopAll` by
+  nothing, `Evict` by buffer address. The engine sends the address of the
+  buffer it is removing, and the renderer drops every voice whose `Arc`
+  points at it, one pass over at most `VOICE_COUNT` voices. The render
+  side still never learns a sample id. `unload` sends first and fails
+  with `CommandsFull` if the ring is full, like `play` and `stop`. Takes
+  effect on the renderer's next period, and cuts hard, as `stop` does.
+  Own PR after step 5 lands.
+- The free of an unloaded buffer still happens on the audio thread, since
+  the renderer's voice is the last holder when it drops. Fix: unload keeps
+  the removed `Arc`, and the engine keeps a retiring list it sweeps on
+  the control side for entries whose count has dropped to one. Not an
+  audible problem today; a rule to keep before the device is the target.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the
   control side through `Stream::error`; the example prints them at the
