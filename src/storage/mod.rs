@@ -48,8 +48,20 @@ pub enum StorageError {
 /// refuses anything broken. So these operations never have to ask whether
 /// a project is there.
 pub trait Storage {
+    /// Whether a sample with this id is stored. Answered from the record
+    /// alone, so it holds even when the sample's audio cannot be read.
+    fn has_sample(&self, id: SampleId) -> Result<bool, StorageError>;
+
     /// Everything stored about the sample with this id except its audio,
     /// or `None` if there is none.
+    ///
+    /// `channels` and `frames` must describe exactly the bytes [`audio`]
+    /// will return for the same id: the engine reserves memory from them
+    /// before it reads, and treats any disagreement as corruption. A
+    /// backend may need to look at the audio to answer, so this can fail
+    /// where the audio is unreadable.
+    ///
+    /// [`audio`]: Storage::audio
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
 
     /// The stored audio of the sample with this id, or `None` if there is

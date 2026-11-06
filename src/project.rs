@@ -40,6 +40,11 @@ pub struct Sample {
     /// [`Engine::load`]: crate::engine::Engine::load
     /// [`Engine::unload`]: crate::engine::Engine::unload
     pub loaded: bool,
+    /// Channels in the audio, 1 or 2.
+    pub channels: u16,
+    /// Frames in the audio. With `channels`, this says how much RAM the
+    /// audio takes before it is read, so the engine can reserve first.
+    pub frames: usize,
 }
 
 /// Reasons a project operation can fail.
@@ -82,7 +87,7 @@ impl Project {
         audio: &AudioBuffer,
     ) -> Result<SampleId, ProjectError> {
         if let Some(p) = parent {
-            self.sample(p)?;
+            self.check(p)?;
         }
         Ok(self.storage.add_sample(parent, audio)?)
     }
@@ -94,7 +99,7 @@ impl Project {
     /// separate, explicit operation that does not exist yet.
     #[allow(dead_code)] // the engine's remove is not written yet; it will call this
     pub(crate) fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
-        self.sample(id)?;
+        self.check(id)?;
         if self.storage.has_children(id)? {
             return Err(ProjectError::HasChildren(id));
         }
@@ -107,8 +112,19 @@ impl Project {
     /// sets it and moves the audio, and a caller reaching the project
     /// directly would leave the two disagreeing.
     pub(crate) fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), ProjectError> {
-        self.sample(id)?;
+        self.check(id)?;
         Ok(self.storage.set_loaded(id, loaded)?)
+    }
+
+    /// Refuses an id no sample has. Asks only whether the record exists,
+    /// not for the record, so it still works for a sample whose audio has
+    /// gone bad on disk: that sample must stay removable and unloadable.
+    fn check(&self, id: SampleId) -> Result<(), ProjectError> {
+        if self.storage.has_sample(id)? {
+            Ok(())
+        } else {
+            Err(ProjectError::UnknownSample(id))
+        }
     }
 
     /// The ids of every loaded sample, in id order.
@@ -140,9 +156,12 @@ pub(crate) mod tests {
 
     /// What the stub storage remembers.
     #[derive(Default)]
-    struct State {
+    pub(crate) struct State {
         next_id: u32,
         samples: Vec<(Sample, AudioBuffer)>,
+        /// How many times audio has been read, so a test can check that a
+        /// read did not happen.
+        pub(crate) audio_reads: usize,
     }
 
     /// In-memory storage for tests, shared with the test through `Rc` so
@@ -150,11 +169,16 @@ pub(crate) mod tests {
     struct Memory(Rc<RefCell<State>>);
 
     impl Storage for Memory {
+        fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
+            Ok(self.find(id).is_some())
+        }
+
         fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
             Ok(self.find(id).map(|(s, _)| s))
         }
 
         fn audio(&self, id: SampleId) -> Result<Option<AudioBuffer>, StorageError> {
+            self.0.borrow_mut().audio_reads += 1;
             Ok(self.find(id).map(|(_, a)| a))
         }
 
@@ -209,6 +233,8 @@ pub(crate) mod tests {
                     id,
                     parent,
                     loaded: false,
+                    channels: audio.channels(),
+                    frames: audio.frames(),
                 },
                 audio.clone(),
             ));
@@ -232,7 +258,9 @@ pub(crate) mod tests {
         project().0
     }
 
-    fn project() -> (Project, Rc<RefCell<State>>) {
+    /// A project on in-memory storage, and the storage's state so the test
+    /// can look at what the project did to it.
+    pub(crate) fn project() -> (Project, Rc<RefCell<State>>) {
         let state = Rc::new(RefCell::new(State::default()));
         let p = Project::new(Box::new(Memory(state.clone())));
         (p, state)
@@ -278,6 +306,8 @@ pub(crate) mod tests {
                 id: child,
                 parent: Some(root),
                 loaded: false,
+                channels: 1,
+                frames: 4,
             }
         );
         assert_eq!(p.audio(child).unwrap(), tone());
