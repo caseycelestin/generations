@@ -21,7 +21,7 @@ use rtrb::Consumer;
 
 use crate::audio::AudioBuffer;
 use crate::config::VOICE_COUNT;
-use crate::render::command::{Command, VoiceId};
+use crate::render::command::{BufferAddr, Command, VoiceId};
 use crate::render::voice::Voice;
 
 /// The render side of an engine: turns commands and resident audio into
@@ -57,9 +57,9 @@ impl Renderer {
     /// replacing whatever it held.
     ///
     /// Commands the engine has sent since the last call are applied first,
-    /// so a play or stop lands at a period boundary. Then every voice adds
-    /// itself, a voice that reaches its end frees its slot, and the sum is
-    /// clipped once to the unit range.
+    /// so a play, stop or eviction lands at a period boundary. Then every
+    /// voice adds itself, a voice that reaches its end frees its slot, and
+    /// the sum is clipped once to the unit range.
     pub fn render(&mut self, out: &mut [f32]) {
         self.apply_commands();
         out.fill(0.0);
@@ -76,6 +76,7 @@ impl Renderer {
                 Command::Play { id, audio } => self.play(id, audio),
                 Command::Stop(id) => self.stop(id),
                 Command::StopAll => self.voices.clear(),
+                Command::Evict(addr) => self.evict(addr),
             }
         }
     }
@@ -92,6 +93,13 @@ impl Renderer {
     /// Stops voice `id`. A voice that is gone is left gone.
     fn stop(&mut self, id: VoiceId) {
         self.voices.retain(|v| v.id() != id);
+    }
+
+    /// Stops every voice playing the buffer at `addr`, dropping their
+    /// references to it. One pass over at most `VOICE_COUNT` voices; a
+    /// buffer nothing plays costs the pass and changes nothing.
+    fn evict(&mut self, addr: BufferAddr) {
+        self.voices.retain(|v| !v.plays(addr));
     }
 
     /// Whether voice `id` is playing. A front panel will want this; until
@@ -233,6 +241,40 @@ mod tests {
         r.render(&mut out);
         assert!(!r.is_playing(VoiceId(1)));
         assert!(r.is_playing(VoiceId(1000)));
+    }
+
+    #[test]
+    fn evict_stops_every_voice_on_that_buffer_and_no_other() {
+        let (mut p, mut r) = renderer();
+        let gone = mono(vec![HALF; 100]);
+        let kept = mono(vec![HALF; 100]);
+        play(&mut p, 1, &gone);
+        play(&mut p, 2, &kept);
+        play(&mut p, 3, &gone);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert_eq!(r.playing(), 3);
+
+        p.push(Command::Evict(BufferAddr::of(&gone))).unwrap();
+        r.render(&mut out);
+        assert!(!r.is_playing(VoiceId(1)));
+        assert!(r.is_playing(VoiceId(2)));
+        assert!(!r.is_playing(VoiceId(3)));
+        assert_eq!(out, vec![0.5; 4]);
+        // The evicted voices dropped their references in the same period.
+        assert_eq!(Arc::strong_count(&gone), 1);
+        assert_eq!(Arc::strong_count(&kept), 2);
+    }
+
+    #[test]
+    fn evicting_a_buffer_nothing_plays_does_nothing() {
+        let (mut p, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 100]));
+        let other = mono(vec![HALF; 2]);
+        p.push(Command::Evict(BufferAddr::of(&other))).unwrap();
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert_eq!(r.playing(), 1);
     }
 
     #[test]

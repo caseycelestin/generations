@@ -28,7 +28,7 @@ use crate::config::COMMAND_CAPACITY;
 use crate::convert::{self, ConvertError};
 use crate::decode::{self, DecodeError};
 use crate::project::{Project, ProjectError, SampleId};
-use crate::render::{Command, Renderer, VoiceId};
+use crate::render::{BufferAddr, Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
 use crate::ledger::{Ledger, OverBudget, Reservation};
@@ -186,13 +186,29 @@ impl Engine {
         Ok(())
     }
 
-    /// Unloads `id`: clears the flag and drops its audio from RAM. The
-    /// reservation is released at once. For now a voice still playing the
-    /// sample keeps the audio itself alive until it finishes; the roadmap
-    /// has unload stopping such voices as a todo. Unloading an
-    /// unloaded sample changes nothing.
+    /// Unloads `id`: stops every voice playing it, clears the flag and
+    /// drops its audio from RAM. The reservation is released at once.
+    ///
+    /// Unloaded means gone from RAM, so sound from the sample stops too,
+    /// hard, at the output's next render, as `stop` does. Either the whole
+    /// unload happens or none of it: a full ring refuses it with
+    /// `CommandsFull` before the flag is touched, and a flag that cannot
+    /// be written refuses it before the eviction is sent, so a failed
+    /// unload never cuts a sound. The eviction goes out before the engine
+    /// lets go of the buffer, which is what makes the address a safe key;
+    /// see `BufferAddr`. Unloading an unloaded sample changes nothing.
     pub fn unload(&mut self, id: SampleId) -> Result<(), EngineError> {
+        let Some((audio, _)) = self.loaded.get(&id) else {
+            return Ok(self.project.set_loaded(id, false)?);
+        };
+        // Room is checked first and the push comes last, so the push
+        // cannot fail: this is the ring's only producer.
+        if self.commands.is_full() {
+            return Err(EngineError::CommandsFull);
+        }
+        let addr = BufferAddr::of(audio);
         self.project.set_loaded(id, false)?;
+        self.send(Command::Evict(addr))?;
         self.loaded.remove(&id);
         Ok(())
     }
@@ -525,18 +541,82 @@ mod tests {
     }
 
     #[test]
-    fn unload_keeps_a_playing_voice_alive_but_frees_the_budget() {
+    fn unload_stops_the_voices_playing_the_sample() {
         let (mut e, mut r) = engine();
+        let gone = e.project.add_sample(None, &ramp(100)).unwrap();
+        let kept = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.load(gone).unwrap();
+        e.load(kept).unwrap();
+        let a = e.play(gone).unwrap();
+        let b = e.play(kept).unwrap();
+        period(&mut r, 4);
+
+        e.unload(gone).unwrap();
+        // Gone from the output at its next render, and only that sample.
+        period(&mut r, 4);
+        assert!(!r.is_playing(a));
+        assert!(r.is_playing(b));
+    }
+
+    #[test]
+    fn unload_on_a_full_ring_is_refused_and_leaves_the_sample_loaded() {
+        let (mut e, _r) = engine();
+        let id = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.load(id).unwrap();
+        for _ in 0..COMMAND_CAPACITY {
+            e.play(id).unwrap();
+        }
+
+        assert!(matches!(e.unload(id), Err(EngineError::CommandsFull)));
+        assert!(e.loaded.contains_key(&id));
+        assert!(e.project().sample(id).unwrap().loaded);
+        assert_eq!(e.ledger.in_use(), ramp(100).bytes());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unload_whose_flag_cannot_be_written_sends_no_eviction() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
+        let mut r = e.output().unwrap();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.load(id).unwrap();
         let voice = e.play(id).unwrap();
         period(&mut r, 4);
+        // A read-only directory: the manifest cannot be rewritten.
+        let perms = |mode| {
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        perms(0o555);
+        let result = e.unload(id);
+        perms(0o755);
 
-        e.unload(id).unwrap();
-        assert!(!e.loaded.contains_key(&id));
-        assert_eq!(e.ledger.in_use(), 0);
+        assert!(matches!(
+            result,
+            Err(EngineError::Project(ProjectError::Storage(_)))
+        ));
+        // The sample is still in RAM and the sound was not cut.
+        assert!(e.loaded.contains_key(&id));
+        assert!(e.project().sample(id).unwrap().loaded);
         period(&mut r, 4);
         assert!(r.is_playing(voice));
+    }
+
+    #[test]
+    fn unload_of_a_sample_not_in_ram_sends_nothing() {
+        let (mut e, _r) = engine();
+        let id = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.unload(id).unwrap();
+        // The ring still has every slot: nothing was pushed.
+        let mut free = 0;
+        while e.stop_all().is_ok() {
+            free += 1;
+        }
+        assert_eq!(free, COMMAND_CAPACITY);
+        // And with the ring full, the same unload needs no room on it.
+        e.unload(id).unwrap();
     }
 
     #[test]
