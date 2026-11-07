@@ -620,10 +620,12 @@ changes to it.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
 - The free of an unloaded buffer still happens on the audio thread, since
-  the renderer's voice is the last holder when it drops. Fix: unload keeps
-  the removed `Arc`, and the engine keeps a retiring list it sweeps on
-  the control side for entries whose count has dropped to one. Not an
-  audible problem today; a rule to keep before the device is the target.
+  the renderer's voice is the last holder when it drops. Since unload
+  evicts, that is every unload of a sample mid-play, at the eviction
+  rather than at the voice's end. Fix: unload keeps the removed `Arc`,
+  and the engine keeps a retiring list it sweeps on the control side for
+  entries whose count has dropped to one. Not an audible problem today;
+  a rule to keep before the device is the target.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the
   control side through `Stream::error`; the example prints them at the
