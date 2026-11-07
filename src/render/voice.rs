@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::config::OUTPUT_CHANNELS;
-use crate::render::command::VoiceId;
+use crate::render::command::{BufferAddr, VoiceId};
 
 /// A sample playing from the first frame to the last.
 #[derive(Debug)]
@@ -35,6 +35,11 @@ impl Voice {
     /// Which started sound this is.
     pub fn id(&self) -> VoiceId {
         self.id
+    }
+
+    /// Whether this voice is playing the buffer at `addr`.
+    pub fn plays(&self, addr: BufferAddr) -> bool {
+        BufferAddr::of(&self.audio) == addr
     }
 
     /// Adds this voice's next frames into `out`, an interleaved stereo

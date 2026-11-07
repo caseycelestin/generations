@@ -17,8 +17,8 @@
 //! accepts and the [`VoiceId`]s that name voices; the control side imports
 //! them. Nothing here knows what a project, a device or resident audio is:
 //! audio arrives inside a command as an `Arc<AudioBuffer>`, and a voice
-//! holds its clone until it finishes, so freeing happens only where the
-//! control side lets go of the last reference.
+//! holds its clone until it finishes or is told to let go. The control
+//! side names a buffer to this side by its address, never by what it is.
 //!
 //! Outside the crate, all of this is one type with one method: the
 //! [`Renderer`], which the engine mints as its output and the caller
@@ -28,5 +28,5 @@ pub mod command;
 pub mod renderer;
 pub mod voice;
 
-pub use command::{Command, VoiceId};
+pub use command::{BufferAddr, Command, VoiceId};
 pub use renderer::Renderer;

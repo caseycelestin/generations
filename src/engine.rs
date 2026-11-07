@@ -28,7 +28,7 @@ use crate::config::COMMAND_CAPACITY;
 use crate::convert::{self, ConvertError};
 use crate::decode::{self, DecodeError};
 use crate::project::{Project, ProjectError, SampleId};
-use crate::render::{Command, Renderer, VoiceId};
+use crate::render::{BufferAddr, Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
 use crate::ledger::{Ledger, OverBudget, Reservation};
@@ -186,12 +186,19 @@ impl Engine {
         Ok(())
     }
 
-    /// Unloads `id`: clears the flag and drops its audio from RAM. The
-    /// reservation is released at once. For now a voice still playing the
-    /// sample keeps the audio itself alive until it finishes; the roadmap
-    /// has unload stopping such voices as a todo. Unloading an
-    /// unloaded sample changes nothing.
+    /// Unloads `id`: stops every voice playing it, clears the flag and
+    /// drops its audio from RAM. The reservation is released at once.
+    ///
+    /// Unloaded means gone from RAM, so sound from the sample stops too,
+    /// hard, at the output's next render, as `stop` does. The eviction is
+    /// sent before anything changes: a full ring refuses the unload with
+    /// `CommandsFull` and the sample stays loaded, so the engine never
+    /// lets go of a buffer the output has not been told to let go of.
+    /// Unloading an unloaded sample changes nothing.
     pub fn unload(&mut self, id: SampleId) -> Result<(), EngineError> {
+        if let Some((audio, _)) = self.loaded.get(&id) {
+            self.send(Command::Evict(BufferAddr::of(audio)))?;
+        }
         self.project.set_loaded(id, false)?;
         self.loaded.remove(&id);
         Ok(())
@@ -525,18 +532,62 @@ mod tests {
     }
 
     #[test]
-    fn unload_keeps_a_playing_voice_alive_but_frees_the_budget() {
+    fn unload_stops_the_voices_playing_the_sample_and_frees_the_budget() {
+        let (mut e, mut r) = engine();
+        let gone = e.project.add_sample(None, &ramp(100)).unwrap();
+        let kept = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.load(gone).unwrap();
+        e.load(kept).unwrap();
+        let a = e.play(gone).unwrap();
+        let b = e.play(kept).unwrap();
+        let c = e.play(gone).unwrap();
+        period(&mut r, 4);
+        assert_eq!(r.playing(), 3);
+
+        e.unload(gone).unwrap();
+        assert!(!e.loaded.contains_key(&gone));
+        assert_eq!(e.ledger.in_use(), ramp(100).bytes());
+        // Gone from the output at its next render, and only that sample.
+        period(&mut r, 4);
+        assert!(!r.is_playing(a));
+        assert!(r.is_playing(b));
+        assert!(!r.is_playing(c));
+    }
+
+    #[test]
+    fn unload_on_a_full_ring_is_refused_and_leaves_the_sample_loaded() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.load(id).unwrap();
-        let voice = e.play(id).unwrap();
-        period(&mut r, 4);
+        for _ in 0..COMMAND_CAPACITY {
+            e.play(id).unwrap();
+        }
 
+        assert!(matches!(e.unload(id), Err(EngineError::CommandsFull)));
+        assert!(e.loaded.contains_key(&id));
+        assert!(e.project().sample(id).unwrap().loaded);
+
+        // Once the ring drains, the same unload goes through.
+        period(&mut r, 4);
         e.unload(id).unwrap();
         assert!(!e.loaded.contains_key(&id));
-        assert_eq!(e.ledger.in_use(), 0);
         period(&mut r, 4);
-        assert!(r.is_playing(voice));
+        assert_eq!(r.playing(), 0);
+    }
+
+    #[test]
+    fn unload_of_a_sample_not_in_ram_sends_nothing() {
+        let (mut e, _r) = engine();
+        let gone = e.project.add_sample(None, &ramp(100)).unwrap();
+        let other = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.load(gone).unwrap();
+        e.load(other).unwrap();
+        e.unload(gone).unwrap();
+        // Fill the ring. Unloading again has nothing to evict, so it must
+        // not need room on it.
+        while e.play(other).is_ok() {}
+        e.unload(gone).unwrap();
+        assert!(!e.project().sample(gone).unwrap().loaded);
     }
 
     #[test]

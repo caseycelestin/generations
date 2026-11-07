@@ -259,6 +259,20 @@ the code follows them.
   latency never depends on history. What to load is the caller's policy;
   the engine never loads on its own. Load-on-play is two lines in a
   caller that wants it.
+- **Unload stops every voice playing the sample.** Before this, a voice
+  still playing an unloaded sample kept its `Arc` and played to the end,
+  so sound came from memory the engine said it no longer held. Unloaded
+  means gone from RAM. The fix is a third command keyed the third way:
+  `Stop` is by voice, `StopAll` by nothing, `Evict` by buffer address.
+  The engine sends the address of the buffer it is removing and the
+  renderer drops every voice whose `Arc` points at it, one pass over at
+  most `VOICE_COUNT` voices; the render side still never learns a sample
+  id. The address is safe to use because the engine sends before it lets
+  go, so any later buffer at the same address is started by a `Play`
+  behind the eviction on the ring. `unload` sends first and fails with
+  `CommandsFull` if the ring is full, leaving the sample loaded, like
+  `play` and `stop`. It takes effect on the renderer's next period and
+  cuts hard, as `stop` does.
 - **Adding a sample and loading it stay separate.** A print the user made
   must land on disk even when it does not fit in RAM. Combining the two
   would have to either refuse the add or store the sample unloaded anyway,
@@ -607,18 +621,6 @@ changes to it.
   rather than read a clock.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
-- **TODO: unload stops every voice playing the sample.** Decided
-  2026-11-06. Today a voice still playing an unloaded sample keeps its
-  `Arc` and plays to the end, so sound comes from memory the engine says
-  it no longer holds; unload should mean gone from RAM. The fix is a
-  third command keyed the third way: `Stop` is by voice, `StopAll` by
-  nothing, `Evict` by buffer address. The engine sends the address of the
-  buffer it is removing, and the renderer drops every voice whose `Arc`
-  points at it, one pass over at most `VOICE_COUNT` voices. The render
-  side still never learns a sample id. `unload` sends first and fails
-  with `CommandsFull` if the ring is full, like `play` and `stop`. Takes
-  effect on the renderer's next period, and cuts hard, as `stop` does.
-  Own PR after step 5 lands.
 - The free of an unloaded buffer still happens on the audio thread, since
   the renderer's voice is the last holder when it drops. Fix: unload keeps
   the removed `Arc`, and the engine keeps a retiring list it sweeps on
