@@ -267,12 +267,10 @@ the code follows them.
   The engine sends the address of the buffer it is removing and the
   renderer drops every voice whose `Arc` points at it, one pass over at
   most `VOICE_COUNT` voices; the render side still never learns a sample
-  id. The address is safe to use because the engine sends before it lets
-  go, so any later buffer at the same address is started by a `Play`
-  behind the eviction on the ring. `unload` sends first and fails with
-  `CommandsFull` if the ring is full, leaving the sample loaded, like
-  `play` and `stop`. It takes effect on the renderer's next period and
-  cuts hard, as `stop` does.
+  id. `unload` sends first, which is what keeps an address a safe key,
+  and fails with `CommandsFull` if the ring is full, like `play` and
+  `stop`. The argument and the contract are on `BufferAddr` and
+  `Engine::unload` in the crate docs.
 - **Adding a sample and loading it stay separate.** A print the user made
   must land on disk even when it does not fit in RAM. Combining the two
   would have to either refuse the add or store the sample unloaded anyway,
