@@ -28,6 +28,7 @@ use crate::config::COMMAND_CAPACITY;
 use crate::convert::{self, ConvertError};
 use crate::decode::{self, DecodeError};
 use crate::project::{Project, ProjectError, SampleId};
+use crate::record::{self, RecordError, Recorder, Take};
 use crate::render::{BufferAddr, Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
@@ -46,6 +47,8 @@ pub enum EngineError {
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Convert(#[from] ConvertError),
+    #[error(transparent)]
+    Record(#[from] RecordError),
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -132,6 +135,30 @@ impl Engine {
     /// The project this engine operates on.
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    /// Opens a take: a recording of up to `frames` frames of `channels`
+    /// channels that becomes a new root when it is closed.
+    ///
+    /// The whole buffer is reserved and allocated here, so the
+    /// [`Recorder`] never needs memory it does not have: the caller moves
+    /// it to wherever the frames come from, a device callback or a loop,
+    /// and feeds it. The [`Take`] stays with the caller and holds the
+    /// memory until it is closed through the engine or dropped. With
+    /// `keep_loaded`, the stored sample stays in RAM as its loaded copy.
+    ///
+    /// Nothing is written to disk and the engine keeps no record of the
+    /// take; an opened take that is never used leaves no mark. A take too
+    /// large to fit the budget beside what is loaded is refused and
+    /// nothing is allocated.
+    pub fn record(
+        &mut self,
+        channels: u16,
+        frames: usize,
+        keep_loaded: bool,
+    ) -> Result<(Take, Recorder), EngineError> {
+        let reservation = self.ledger.reserve(record::byte_cost(channels, frames)?)?;
+        Ok(record::open(channels, frames, keep_loaded, reservation)?)
     }
 
     /// Imports an audio file as a new root.
@@ -669,5 +696,39 @@ mod tests {
 
         let result = Engine::open(dir.path(), ramp(4).bytes() - 1);
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
+    }
+    #[test]
+    fn record_reserves_the_take_and_touches_nothing_else() {
+        let (p, state) = project();
+        let mut e = Engine::on(p, usize::MAX).unwrap();
+        let (take, recorder) = e.record(2, 1000, false).unwrap();
+        assert_eq!(e.ledger.in_use(), AudioBuffer::bytes_for(2, 1000));
+        assert_eq!(state.borrow().sample_count(), 0);
+        drop(recorder);
+        assert_eq!(e.ledger.in_use(), AudioBuffer::bytes_for(2, 1000));
+        drop(take);
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn record_over_budget_is_refused_and_reserves_nothing() {
+        let cost = AudioBuffer::bytes_for(1, 1000);
+        let mut e = Engine::on(memory_project(), cost - 1).unwrap();
+        assert!(matches!(
+            e.record(1, 1000, false),
+            Err(EngineError::OverBudget(_))
+        ));
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn record_of_a_shape_no_buffer_can_have_is_refused() {
+        let (mut e, _r) = engine();
+        assert!(matches!(
+            e.record(3, 10, false),
+            Err(EngineError::Record(_))
+        ));
+        assert!(matches!(e.record(1, 0, false), Err(EngineError::Record(_))));
+        assert_eq!(e.ledger.in_use(), 0);
     }
 }
