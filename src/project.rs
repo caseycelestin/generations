@@ -174,14 +174,6 @@ pub(crate) mod tests {
         pub(crate) audio_reads: usize,
     }
 
-    impl State {
-        /// How many samples storage holds, so a test can check that
-        /// nothing was added.
-        pub(crate) fn sample_count(&self) -> usize {
-            self.samples.len()
-        }
-    }
-
     /// In-memory storage for tests, shared with the test through `Rc` so
     /// it can be inspected after the project takes ownership.
     struct Memory(Rc<RefCell<State>>);
