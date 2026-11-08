@@ -100,6 +100,7 @@
 //! decisions behind it.
 
 pub mod audio;
+pub(crate) mod capture;
 pub mod config;
 pub(crate) mod convert;
 pub(crate) mod decode;
