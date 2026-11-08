@@ -133,7 +133,7 @@ pub(crate) fn check_channels(channels: u16) -> Result<(), AudioError> {
 ///
 /// Backed by `rand`'s `SmallRng` with a fixed seed, so conversion is
 /// deterministic for a given input.
-struct Dither {
+pub(crate) struct Dither {
     rng: SmallRng,
 }
 
