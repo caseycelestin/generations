@@ -155,21 +155,51 @@ impl Engine {
     }
 
     /// Saves what `recorder` last recorded as a new root and returns its
-    /// id.
+    /// id. With `keep_loaded`, the sample is also loaded, from the copy in
+    /// hand rather than back from disk.
     ///
     /// The recording is stored once: a second save finds nothing, and so
     /// does a save before any take has been written. A save while a take
     /// is still out is refused. The recorder keeps its buffer and its
-    /// memory throughout, so nothing is allocated and the budget does not
-    /// move; if storage refuses, the recording stays in the recorder to
-    /// be saved again. The new sample is not loaded, as an import is not:
-    /// that is a separate decision, so a save lands on disk whether or not
-    /// it fits in RAM.
-    pub fn save(&mut self, recorder: &mut Recorder) -> Result<SampleId, EngineError> {
+    /// memory throughout, so without `keep_loaded` nothing is allocated
+    /// and the budget does not move. With it, the loaded copy is reserved
+    /// and made before anything is stored, so a save that would not fit in
+    /// RAM is refused whole, with nothing on disk; a saved sample is loaded
+    /// or the save did not happen. If storage refuses, the recording stays
+    /// in the recorder to be saved again.
+    pub fn save_take(
+        &mut self,
+        recorder: &mut Recorder,
+        keep_loaded: bool,
+    ) -> Result<SampleId, EngineError> {
         let audio = recorder.recorded()?;
-        let result = self.project.add_sample(None, &audio);
+        let result = self.add_take(&audio, keep_loaded);
         recorder.restore(audio, result.is_ok());
-        Ok(result?)
+        result
+    }
+
+    /// Stores `audio` as a new root, loading it first if asked. Split from
+    /// `save_take` so the recorder gets its buffer back whatever happens here.
+    fn add_take(
+        &mut self,
+        audio: &AudioBuffer,
+        keep_loaded: bool,
+    ) -> Result<SampleId, EngineError> {
+        let copy = if keep_loaded {
+            let reservation = self.ledger.reserve(audio.bytes())?;
+            // A clone is exactly `bytes()` long, so the reservation covers
+            // it by construction; there is no shorter path to check.
+            Some((Arc::new(audio.clone()), reservation))
+        } else {
+            None
+        };
+        let id = self.project.add_sample(None, audio)?;
+        if let Some(entry) = copy {
+            // As `load` does: the audio is in RAM before the flag says so.
+            self.loaded.insert(id, entry);
+            self.project.set_loaded(id, true)?;
+        }
+        Ok(id)
     }
 
     /// Imports an audio file as a new root.
@@ -728,7 +758,7 @@ mod tests {
         t.write(&[0.5, -0.5, 0.25, -0.25]);
         drop(t);
 
-        let id = e.save(&mut rec).unwrap();
+        let id = e.save_take(&mut rec, false).unwrap();
         let stored = audio(&e, id);
         assert_eq!(
             stored,
@@ -741,9 +771,56 @@ mod tests {
         assert_eq!(e.ledger.in_use(), in_use);
 
         assert!(matches!(
-            e.save(&mut rec),
+            e.save_take(&mut rec, false),
             Err(EngineError::Record(RecordError::Nothing))
         ));
+    }
+
+    #[test]
+    fn save_keep_loaded_loads_the_copy_and_pays_for_it() {
+        let (mut e, mut o) = engine();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let in_use = e.ledger.in_use();
+        let mut t = rec.take().unwrap();
+        t.write(&[0.5, 0.5]);
+        drop(t);
+
+        let id = e.save_take(&mut rec, true).unwrap();
+        assert!(e.project.sample(id).unwrap().loaded);
+        assert_eq!(e.ledger.in_use(), in_use + AudioBuffer::bytes_for(1, 2));
+        e.play(id).unwrap();
+        let out = period(&mut o, 2);
+        let expected: Vec<f32> = AudioBuffer::from_f32(1, &[0.5, 0.5])
+            .unwrap()
+            .frames_f32(0..2)
+            .flat_map(|s| [s, s])
+            .collect();
+        assert_eq!(out, expected);
+        // The recorder is free to record again; the copy is the engine's.
+        assert!(rec.take().is_ok());
+    }
+
+    #[test]
+    fn save_keep_loaded_over_budget_is_refused_whole() {
+        let recorder_cost = AudioBuffer::bytes_for(1, 4);
+        let (p, state) = project();
+        let mut e = Engine::on(p, recorder_cost + AudioBuffer::bytes_for(1, 2) - 1).unwrap();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let mut t = rec.take().unwrap();
+        t.write(&[0.5, 0.5]);
+        drop(t);
+
+        assert!(matches!(
+            e.save_take(&mut rec, true),
+            Err(EngineError::OverBudget(_))
+        ));
+        assert_eq!(state.borrow().audio_reads, 0);
+        assert_eq!(e.ledger.in_use(), recorder_cost);
+        // Nothing stored, and the recording is still there to save
+        // without keeping it.
+        assert!(e.project.loaded_samples().unwrap().is_empty());
+        let id = e.save_take(&mut rec, false).unwrap();
+        assert_eq!(audio(&e, id).frames(), 2);
     }
 
     #[test]
@@ -752,12 +829,12 @@ mod tests {
         let mut rec = e.recorder(1, 4).unwrap();
         let t = rec.take().unwrap();
         assert!(matches!(
-            e.save(&mut rec),
+            e.save_take(&mut rec, false),
             Err(EngineError::Record(RecordError::Busy))
         ));
         drop(t);
         assert!(matches!(
-            e.save(&mut rec),
+            e.save_take(&mut rec, false),
             Err(EngineError::Record(RecordError::Nothing))
         ));
     }
@@ -769,12 +846,12 @@ mod tests {
         let mut t = rec.take().unwrap();
         t.write(&[0.1, 0.2]);
         drop(t);
-        let first = e.save(&mut rec).unwrap();
+        let first = e.save_take(&mut rec, false).unwrap();
         let mut t = rec.take().unwrap();
         t.write(&[0.3, 0.4, 0.5, 0.6, 0.7]);
         assert!(t.is_finished());
         drop(t);
-        let second = e.save(&mut rec).unwrap();
+        let second = e.save_take(&mut rec, false).unwrap();
         assert_ne!(first, second);
         assert_eq!(audio(&e, first).frames(), 2);
         assert_eq!(audio(&e, second).frames(), 4);
