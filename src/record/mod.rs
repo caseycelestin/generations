@@ -11,9 +11,9 @@
 //! The audio side is the [`Take`]: the recorder's buffer, moved to wherever
 //! the frames come from, live on the audio thread or offline in a loop,
 //! with the render module's rules: no allocation, no lock, no disk, no
-//! error path, no clock. A take is finished when it is dropped, and
-//! finishing hands the buffer back to the recorder over a one-slot ring.
-//! Nothing travels the other way.
+//! error path, no clock. A take is finished when its buffer fills or when
+//! it is dropped, and finishing hands the buffer back to the recorder over
+//! a one-slot ring. Nothing travels the other way.
 //!
 //! ```text
 //! control side                                audio side
@@ -160,33 +160,74 @@ impl Recorder {
 /// The audio side of a take: fills the recorder's buffer, wherever the
 /// frames are.
 ///
-/// Finished by being dropped, which hands the buffer back to the recorder.
-/// Dropping the stream that holds it is how a live take ends.
+/// Fed interleaved `f32` frames with [`Take::write`]. Finishes when the
+/// buffer is full or when it is dropped, and either way hands the buffer
+/// back to the recorder. Full is the take doing exactly what it was asked;
+/// dropping the stream that holds it is how a live take ends early.
 pub struct Take {
     /// The recorder's buffer. The length is how much has been written and
     /// the capacity is the recorder's size. Never grows.
-    #[allow(dead_code)]
     data: Vec<Pcm>,
     /// Channels per frame, one or two.
     channels: u16,
     /// Quantiser state, so every sample is dithered as it lands and the
     /// buffer is in the project format from the first frame.
-    #[allow(dead_code)]
     dither: Dither,
     /// The one-slot ring back to the recorder. `None` once the buffer has
     /// been handed over.
     finished: Option<Producer<Vec<Pcm>>>,
 }
 
-impl Drop for Take {
-    /// Hands the buffer back. If the recorder is gone the push finds no
-    /// receiver and the buffer is freed here instead, wherever here is;
+impl Take {
+    /// Writes interleaved `f32` frames, as many as fit.
+    ///
+    /// Each sample is quantised to the project format as it lands. When
+    /// the last frame that fits has landed the take finishes and hands
+    /// its buffer back; frames after that, in this call or any later one,
+    /// are dropped. Only whole frames are taken: a slice that is not a
+    /// whole number of frames is a caller bug, and its tail is ignored.
+    /// Nothing here allocates or can fail.
+    pub fn write(&mut self, frames: &[f32]) {
+        if self.finished.is_none() {
+            return;
+        }
+        let channels = usize::from(self.channels);
+        debug_assert!(
+            frames.len().is_multiple_of(channels),
+            "{} samples is not a whole number of {channels}-channel frames",
+            frames.len()
+        );
+        let whole = frames.len() - frames.len() % channels;
+        // The capacity and the length are both whole frames, so the room
+        // is too, and pushing within it never reallocates.
+        let room = self.data.capacity() - self.data.len();
+        for &sample in &frames[..whole.min(room)] {
+            self.data.push(self.dither.quantise(sample));
+        }
+        if self.data.len() == self.data.capacity() {
+            self.finish();
+        }
+    }
+
+    /// Whether the take has handed its buffer back.
+    pub fn is_finished(&self) -> bool {
+        self.finished.is_none()
+    }
+
+    /// Hands the buffer back, once. If the recorder is gone the push finds
+    /// no receiver and the buffer is freed here instead, wherever here is;
     /// the roadmap lists the free on the audio thread with the renderer's.
-    fn drop(&mut self) {
+    fn finish(&mut self) {
         if let Some(mut finished) = self.finished.take() {
             // `mem::take` leaves an empty vector that allocates nothing.
             let _ = finished.push(std::mem::take(&mut self.data));
         }
+    }
+}
+
+impl Drop for Take {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
@@ -286,6 +327,87 @@ mod tests {
         assert_eq!(t.data.capacity(), 10);
     }
 
+    /// The buffer the recorder has after its take has come back.
+    fn recorded(r: &mut Recorder) -> &[Pcm] {
+        r.collect();
+        r.data.as_ref().unwrap()
+    }
+
+    /// What the crate's quantiser makes of `samples`, for comparing a take
+    /// against the same path a whole buffer goes through.
+    fn quantised(channels: u16, samples: &[f32]) -> Vec<Pcm> {
+        AudioBuffer::from_f32(channels, samples)
+            .unwrap()
+            .samples()
+            .to_vec()
+    }
+
+    #[test]
+    fn write_quantises_frames_as_from_f32_does() {
+        let input = [0.0, 0.5, -0.5, 1.0, -1.0, 0.25, 2.0, -2.0];
+        let mut r = Recorder::new(2, 4, paid()).unwrap();
+        let mut t = r.take().unwrap();
+        t.write(&input[..4]);
+        assert!(!t.is_finished());
+        t.write(&input[4..]);
+        assert!(t.is_finished());
+        drop(t);
+        assert_eq!(recorded(&mut r), quantised(2, &input));
+    }
+
+    #[test]
+    fn a_full_take_finishes_itself_and_drops_the_rest() {
+        let mut r = Recorder::new(1, 3, paid()).unwrap();
+        let mut t = r.take().unwrap();
+        t.write(&[0.1, 0.2, 0.3, 0.4, 0.5]);
+        assert!(t.is_finished());
+        // The buffer is already back; the take has nothing more to say.
+        assert!(!r.is_recording());
+        t.write(&[0.9]);
+        drop(t);
+        assert_eq!(recorded(&mut r), quantised(1, &[0.1, 0.2, 0.3]));
+    }
+
+    #[test]
+    fn write_never_grows_the_buffer() {
+        let mut r = Recorder::new(2, 4, paid()).unwrap();
+        let mut t = r.take().unwrap();
+        let before = t.data.as_ptr();
+        t.write(&[0.0; 6]);
+        assert_eq!(t.data.as_ptr(), before);
+        assert_eq!(t.data.capacity(), 8);
+        t.write(&[0.0; 6]);
+        drop(t);
+        let data = recorded(&mut r);
+        assert_eq!(data.len(), 8);
+        assert_eq!(data.as_ptr(), before);
+    }
+
+    #[test]
+    fn write_takes_whole_frames_only() {
+        let mut r = Recorder::new(2, 4, paid()).unwrap();
+        let mut t = r.take().unwrap();
+        // Release builds ignore the ragged tail; debug builds assert on it.
+        if cfg!(debug_assertions) {
+            assert!(
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.write(&[0.0; 3])))
+                    .is_err()
+            );
+        } else {
+            t.write(&[0.0; 3]);
+            assert_eq!(t.data.len(), 2);
+        }
+    }
+
+    #[test]
+    fn a_take_ended_early_keeps_what_was_written() {
+        let mut r = Recorder::new(1, 10, paid()).unwrap();
+        let mut t = r.take().unwrap();
+        t.write(&[0.5, -0.5]);
+        drop(t);
+        assert_eq!(recorded(&mut r), quantised(1, &[0.5, -0.5]));
+    }
+
     #[test]
     fn a_take_outliving_its_recorder_drops_quietly() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
@@ -295,11 +417,13 @@ mod tests {
     }
 
     #[test]
-    fn a_take_can_go_to_another_thread() {
+    fn a_take_can_be_written_on_another_thread() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let t = r.take().unwrap();
-        std::thread::spawn(move || drop(t)).join().unwrap();
-        assert!(r.take().is_ok());
+        let mut t = r.take().unwrap();
+        std::thread::spawn(move || t.write(&[0.5; 4]))
+            .join()
+            .unwrap();
+        assert_eq!(recorded(&mut r), quantised(1, &[0.5; 4]));
     }
 
     #[test]

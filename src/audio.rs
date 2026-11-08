@@ -57,13 +57,7 @@ impl AudioBuffer {
     pub fn from_f32(channels: u16, samples: &[f32]) -> Result<Self, AudioError> {
         check_channels(channels)?;
         let mut dither = Dither::default();
-        let data: Vec<Pcm> = samples
-            .iter()
-            .map(|&s| {
-                let scaled = s.clamp(-1.0, 1.0) * SCALE + dither.next();
-                scaled.round().clamp(Pcm::MIN as f32, Pcm::MAX as f32) as Pcm
-            })
-            .collect();
+        let data: Vec<Pcm> = samples.iter().map(|&s| dither.quantise(s)).collect();
         Self::new(channels, data)
     }
 
@@ -149,6 +143,15 @@ impl Dither {
     /// Sum of two uniforms, centred: triangular on `-1.0..1.0`.
     fn next(&mut self) -> f32 {
         self.rng.random::<f32>() + self.rng.random::<f32>() - 1.0
+    }
+
+    /// One normalised sample to PCM: clamped to full scale, dithered,
+    /// rounded to the nearest value. The only quantiser in the crate;
+    /// whole buffers and single frames on the audio thread both come
+    /// through here, and it allocates nothing.
+    pub(crate) fn quantise(&mut self, sample: f32) -> Pcm {
+        let scaled = sample.clamp(-1.0, 1.0) * SCALE + self.next();
+        scaled.round().clamp(Pcm::MIN as f32, Pcm::MAX as f32) as Pcm
     }
 }
 
