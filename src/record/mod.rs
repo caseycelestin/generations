@@ -50,6 +50,10 @@ pub enum RecordError {
     /// The last take is still out; its buffer has not come back.
     #[error("the last take has not finished")]
     Busy,
+    /// There is nothing to save: no take has been recorded since the
+    /// recorder was made or last saved.
+    #[error("nothing has been recorded")]
+    Nothing,
 }
 
 /// Bytes a recorder of `frames` frames of `channels` channels holds: what
@@ -144,6 +148,41 @@ impl Recorder {
             dither: Dither::default(),
             finished: Some(producer),
         })
+    }
+
+    /// The last take's audio, lent to the engine to store. Refused while a
+    /// take is out, or when nothing has been recorded.
+    ///
+    /// The buffer leaves the recorder for the length of the save and comes
+    /// back through [`Recorder::restore`]; the engine holds the recorder
+    /// exclusively between the two, so no take can be asked for meanwhile.
+    /// Nothing is copied: the buffer is wrapped as it stands.
+    pub(crate) fn recorded(&mut self) -> Result<AudioBuffer, RecordError> {
+        if self.is_recording() {
+            return Err(RecordError::Busy);
+        }
+        let data = self
+            .data
+            .as_mut()
+            .expect("not recording means the buffer is here");
+        if data.is_empty() {
+            return Err(RecordError::Nothing);
+        }
+        // `mem::take` leaves an empty vector that allocates nothing.
+        let data = std::mem::take(data);
+        Ok(AudioBuffer::new(self.channels, data).expect("a take writes whole frames"))
+    }
+
+    /// Takes the buffer back after a save. If `saved`, the recording is
+    /// cleared so it is stored once and the next save finds nothing; if
+    /// not, it is kept so the save can be tried again. The capacity is the
+    /// recorder's either way.
+    pub(crate) fn restore(&mut self, audio: AudioBuffer, saved: bool) {
+        let mut data = audio.into_samples();
+        if saved {
+            data.clear();
+        }
+        self.data = Some(data);
     }
 
     /// Brings the buffer back if the live take has handed it over.
@@ -406,6 +445,42 @@ mod tests {
         t.write(&[0.5, -0.5]);
         drop(t);
         assert_eq!(recorded(&mut r), quantised(1, &[0.5, -0.5]));
+    }
+
+    #[test]
+    fn recorded_lends_the_buffer_and_restore_returns_it_without_a_copy() {
+        let mut r = Recorder::new(1, 10, paid()).unwrap();
+        let mut t = r.take().unwrap();
+        t.write(&[0.5, -0.5]);
+        drop(t);
+        let before = recorded(&mut r).as_ptr();
+
+        let audio = r.recorded().unwrap();
+        assert_eq!(audio.samples().as_ptr(), before);
+        assert_eq!(audio.samples(), quantised(1, &[0.5, -0.5]));
+        r.restore(audio, false);
+        let data = r.data.as_ref().unwrap();
+        assert_eq!(data.as_ptr(), before);
+        assert_eq!(data.len(), 2);
+        assert_eq!(data.capacity(), 10);
+
+        let audio = r.recorded().unwrap();
+        r.restore(audio, true);
+        let data = r.data.as_ref().unwrap();
+        assert_eq!(data.as_ptr(), before);
+        assert!(data.is_empty());
+        assert_eq!(data.capacity(), 10);
+        assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
+    }
+
+    #[test]
+    fn recorded_is_refused_while_a_take_is_out_or_nothing_was_written() {
+        let mut r = Recorder::new(1, 10, paid()).unwrap();
+        assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
+        let t = r.take().unwrap();
+        assert_eq!(r.recorded().unwrap_err(), RecordError::Busy);
+        drop(t);
+        assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
     }
 
     #[test]

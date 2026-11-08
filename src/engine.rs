@@ -154,6 +154,24 @@ impl Engine {
         Ok(Recorder::new(channels, frames, reservation)?)
     }
 
+    /// Saves what `recorder` last recorded as a new root and returns its
+    /// id.
+    ///
+    /// The recording is stored once: a second save finds nothing, and so
+    /// does a save before any take has been written. A save while a take
+    /// is still out is refused. The recorder keeps its buffer and its
+    /// memory throughout, so nothing is allocated and the budget does not
+    /// move; if storage refuses, the recording stays in the recorder to
+    /// be saved again. The new sample is not loaded, as an import is not:
+    /// that is a separate decision, so a save lands on disk whether or not
+    /// it fits in RAM.
+    pub fn save(&mut self, recorder: &mut Recorder) -> Result<SampleId, EngineError> {
+        let audio = recorder.recorded()?;
+        let result = self.project.add_sample(None, &audio);
+        recorder.restore(audio, result.is_ok());
+        Ok(result?)
+    }
+
     /// Imports an audio file as a new root.
     ///
     /// The file is read in whatever format it is in, converted to the
@@ -699,6 +717,67 @@ mod tests {
         assert!(matches!(e.recorder(1, 1), Err(EngineError::OverBudget(_))));
         drop(r);
         assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn save_stores_the_last_take_as_a_root_once_and_loads_nothing() {
+        let (mut e, _r) = engine();
+        let mut rec = e.recorder(2, 4).unwrap();
+        let in_use = e.ledger.in_use();
+        let mut t = rec.take().unwrap();
+        t.write(&[0.5, -0.5, 0.25, -0.25]);
+        drop(t);
+
+        let id = e.save(&mut rec).unwrap();
+        let stored = audio(&e, id);
+        assert_eq!(
+            stored,
+            AudioBuffer::from_f32(2, &[0.5, -0.5, 0.25, -0.25]).unwrap()
+        );
+        let sample = e.project.sample(id).unwrap();
+        assert_eq!(sample.parent, None);
+        assert!(!sample.loaded);
+        assert!(matches!(e.play(id), Err(EngineError::NotLoaded(_))));
+        assert_eq!(e.ledger.in_use(), in_use);
+
+        assert!(matches!(
+            e.save(&mut rec),
+            Err(EngineError::Record(RecordError::Nothing))
+        ));
+    }
+
+    #[test]
+    fn save_while_a_take_is_out_is_refused() {
+        let (mut e, _r) = engine();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let t = rec.take().unwrap();
+        assert!(matches!(
+            e.save(&mut rec),
+            Err(EngineError::Record(RecordError::Busy))
+        ));
+        drop(t);
+        assert!(matches!(
+            e.save(&mut rec),
+            Err(EngineError::Record(RecordError::Nothing))
+        ));
+    }
+
+    #[test]
+    fn a_recorder_records_again_after_a_save() {
+        let (mut e, _r) = engine();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let mut t = rec.take().unwrap();
+        t.write(&[0.1, 0.2]);
+        drop(t);
+        let first = e.save(&mut rec).unwrap();
+        let mut t = rec.take().unwrap();
+        t.write(&[0.3, 0.4, 0.5, 0.6, 0.7]);
+        assert!(t.is_finished());
+        drop(t);
+        let second = e.save(&mut rec).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(audio(&e, first).frames(), 2);
+        assert_eq!(audio(&e, second).frames(), 4);
     }
 
     #[test]

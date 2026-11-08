@@ -32,12 +32,16 @@ pub enum AudioError {
 #[derive(Clone, PartialEq, Eq)]
 pub struct AudioBuffer {
     channels: u16,
-    data: Box<[Pcm]>,
+    /// A vector rather than a boxed slice so a buffer with spare capacity,
+    /// a recorder's, can be wrapped and unwrapped without a copy. The
+    /// length is the audio; the capacity is nobody's business but the
+    /// owner's.
+    data: Vec<Pcm>,
 }
 
 impl AudioBuffer {
     /// Wraps interleaved samples, checking the frame invariant.
-    pub fn new(channels: u16, data: impl Into<Box<[Pcm]>>) -> Result<Self, AudioError> {
+    pub fn new(channels: u16, data: impl Into<Vec<Pcm>>) -> Result<Self, AudioError> {
         let data = data.into();
         check_channels(channels)?;
         if data.len() % usize::from(channels) != 0 {
@@ -86,6 +90,11 @@ impl AudioBuffer {
     /// Number of frames, where one frame holds one sample per channel.
     pub fn frames(&self) -> usize {
         self.data.len() / usize::from(self.channels)
+    }
+
+    /// The samples back, as they came in. Nothing is copied or freed.
+    pub(crate) fn into_samples(self) -> Vec<Pcm> {
+        self.data
     }
 
     /// All samples, interleaved.
