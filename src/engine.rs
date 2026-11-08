@@ -135,16 +135,19 @@ impl Engine {
         &self.project
     }
 
-    /// A recorder: the control side of recording, which mints takes
-    /// against this engine's budget.
+    /// A recorder with room for `frames` frames of `channels` channels:
+    /// the control side of recording, which the caller keeps.
     ///
-    /// The recorder reserves through its own handle on the ledger, so a
-    /// take's buffer counts against the same figure as everything else
-    /// the engine holds, and a take that does not fit beside what is
-    /// loaded is refused there. The engine keeps no record of recorders
-    /// or of takes; it meets a take again only when asked to store it.
-    pub fn recorder(&self) -> Recorder {
-        Recorder::new(self.ledger.clone())
+    /// The memory is reserved here, against the same figure as everything
+    /// else the engine holds, and belongs to the recorder until it is
+    /// dropped. A recorder that does not fit beside what is loaded is
+    /// refused and nothing changes. The engine keeps no record of
+    /// recorders; it meets a recording again only when asked to store it.
+    pub fn recorder(&self, channels: u16, frames: usize) -> Result<Recorder, EngineError> {
+        let reservation = self
+            .ledger
+            .reserve(AudioBuffer::bytes_for(channels, frames))?;
+        Ok(Recorder::new(reservation))
     }
 
     /// Imports an audio file as a new root.
@@ -684,13 +687,13 @@ mod tests {
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
     }
     #[test]
-    fn a_recorder_shares_the_engine_budget() {
-        let e = Engine::on(memory_project(), 100).unwrap();
-        let r = e.recorder();
-        let held = r.ledger().reserve(60).unwrap();
-        assert_eq!(e.ledger.in_use(), 60);
-        assert!(matches!(e.ledger.reserve(41), Err(OverBudget { .. })));
-        drop(held);
+    fn a_recorder_pays_for_its_memory_when_it_is_made() {
+        let cost = AudioBuffer::bytes_for(2, 1000);
+        let e = Engine::on(memory_project(), cost).unwrap();
+        let r = e.recorder(2, 1000).unwrap();
+        assert_eq!(e.ledger.in_use(), cost);
+        assert!(matches!(e.recorder(1, 1), Err(EngineError::OverBudget(_))));
+        drop(r);
         assert_eq!(e.ledger.in_use(), 0);
     }
 }

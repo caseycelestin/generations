@@ -63,10 +63,7 @@ struct Account {
 }
 
 /// The engine's memory budget and how much of it is spoken for.
-///
-/// Cloning gives a second handle on the same figure, not a second budget:
-/// every holder reserves against the one count.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Ledger {
     account: Arc<Account>,
 }
