@@ -23,6 +23,13 @@
 //! only ever borrow the reservation; the caller keeps it, and so decides
 //! when the bytes are given back. None of them learns the budget or what
 //! else is in RAM, only that these bytes were paid for.
+//!
+//! **Every reservation is made by the engine.** The ledger has one holder,
+//! and only the engine calls its reserve. Anything else that needs memory,
+//! a decoder, a conversion, a recorder, is given a reservation the engine
+//! made, by reference if it only uses the bytes and by value if it keeps
+//! them. So there is one place to read to know everything that can be
+//! promised, and nothing below the engine can grow what the engine holds.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

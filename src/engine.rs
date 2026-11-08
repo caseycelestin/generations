@@ -9,7 +9,9 @@
 //! so there is one path to every action and the rules hold on it.
 //!
 //! The engine is also the control side of sound. It owns the memory budget
-//! (`Ledger`), the loaded audio and the sending end of the command ring; the other end
+//! (`Ledger`), and every reservation against it is made here: whatever
+//! else holds memory was handed its reservation by the engine. It owns the
+//! loaded audio and the sending end of the command ring; the other end
 //! is the [`Renderer`] it mints as its output, which turns commands into
 //! frames wherever the caller drives it. Nothing the engine does can block that: every
 //! change to what is heard is a command pushed on the ring, never a call
