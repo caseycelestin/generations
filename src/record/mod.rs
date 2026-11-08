@@ -109,18 +109,32 @@ impl Recorder {
         })
     }
 
+    /// Whether a take is out: alive somewhere, or finished and not yet
+    /// collected. While it is, [`Recorder::take`] is refused.
+    pub fn is_recording(&mut self) -> bool {
+        self.collect();
+        self.data.is_none()
+    }
+
     /// A take: the recorder's buffer, empty, ready to be moved to where
     /// the frames are and filled.
     ///
-    /// Refused with [`RecordError::Busy`] while the last take is out. Once
-    /// it has come back, a new take starts over and what the last one
-    /// recorded is gone, so store it first if it is wanted. The ring the
-    /// take will hand the buffer back on is made here, on the control
-    /// side; it is the one allocation a take costs and it is not in
-    /// proportion to audio length.
+    /// Refused with [`RecordError::Busy`] while a take is out, before
+    /// anything changes; there is one buffer and the live take has it.
+    /// [`Recorder::is_recording`] says so without asking. Once the take
+    /// has come back, a new one starts over and what the last recorded is
+    /// gone, so store it first if it is wanted. The ring the take will
+    /// hand the buffer back on is made here, on the control side; it is
+    /// the one allocation a take costs and it is not in proportion to
+    /// audio length.
     pub fn take(&mut self) -> Result<Take, RecordError> {
-        self.collect();
-        let mut data = self.data.take().ok_or(RecordError::Busy)?;
+        if self.is_recording() {
+            return Err(RecordError::Busy);
+        }
+        let mut data = self
+            .data
+            .take()
+            .expect("not recording means the buffer is here");
         data.clear();
         let (producer, consumer) = RingBuffer::new(1);
         self.finished = Some(consumer);
@@ -231,13 +245,20 @@ mod tests {
     #[test]
     fn a_take_is_the_recorder_buffer_and_only_one_is_out_at_a_time() {
         let mut r = Recorder::new(2, 10, paid()).unwrap();
+        assert!(!r.is_recording());
         let t = r.take().unwrap();
         assert_eq!(t.data.capacity(), 20);
         assert!(t.data.is_empty());
         assert_eq!(t.channels, 2);
         assert!(r.data.is_none());
+        assert!(r.is_recording());
         assert_eq!(r.take().unwrap_err(), RecordError::Busy);
+        // A refused take changed nothing: the live one still owns the
+        // buffer and still has somewhere to hand it back.
+        assert!(r.is_recording());
+        assert!(r.finished.is_some());
         drop(t);
+        assert!(!r.is_recording());
         assert!(r.take().is_ok());
     }
 
