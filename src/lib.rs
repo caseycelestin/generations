@@ -118,6 +118,6 @@ pub use decode::DecodeError;
 pub use engine::{Engine, EngineError};
 pub use ledger::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
-pub use record::Recorder;
+pub use record::{RecordError, Recorder};
 pub use render::{Renderer, VoiceId};
 pub use storage::StorageError;

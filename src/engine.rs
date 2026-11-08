@@ -30,7 +30,7 @@ use crate::config::COMMAND_CAPACITY;
 use crate::convert::{self, ConvertError};
 use crate::decode::{self, DecodeError};
 use crate::project::{Project, ProjectError, SampleId};
-use crate::record::Recorder;
+use crate::record::{self, RecordError, Recorder};
 use crate::render::{BufferAddr, Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
@@ -49,6 +49,8 @@ pub enum EngineError {
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Convert(#[from] ConvertError),
+    #[error(transparent)]
+    Record(#[from] RecordError),
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -141,15 +143,15 @@ impl Engine {
     /// the control side of recording, which the caller keeps.
     ///
     /// The memory is reserved here, against the same figure as everything
-    /// else the engine holds, and belongs to the recorder until it is
-    /// dropped. A recorder that does not fit beside what is loaded is
+    /// else the engine holds, and the recorder allocates all of it as it
+    /// is made, so nothing recorded through it allocates later. It belongs
+    /// to the recorder until it is dropped. A recorder that does not fit
+    /// beside what is loaded, or whose shape no buffer can have, is
     /// refused and nothing changes. The engine keeps no record of
     /// recorders; it meets a recording again only when asked to store it.
     pub fn recorder(&self, channels: u16, frames: usize) -> Result<Recorder, EngineError> {
-        let reservation = self
-            .ledger
-            .reserve(AudioBuffer::bytes_for(channels, frames))?;
-        Ok(Recorder::new(reservation))
+        let reservation = self.ledger.reserve(record::byte_cost(channels, frames)?)?;
+        Ok(Recorder::new(channels, frames, reservation)?)
     }
 
     /// Imports an audio file as a new root.
@@ -696,6 +698,14 @@ mod tests {
         assert_eq!(e.ledger.in_use(), cost);
         assert!(matches!(e.recorder(1, 1), Err(EngineError::OverBudget(_))));
         drop(r);
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn a_recorder_of_a_shape_no_buffer_can_have_is_refused() {
+        let (e, _r) = engine();
+        assert!(matches!(e.recorder(3, 10), Err(EngineError::Record(_))));
+        assert!(matches!(e.recorder(1, 0), Err(EngineError::Record(_))));
         assert_eq!(e.ledger.in_use(), 0);
     }
 }
