@@ -173,27 +173,24 @@ impl Engine {
         keep_loaded: bool,
     ) -> Result<SampleId, EngineError> {
         let audio = recorder.recorded()?;
-        let result = self.add_take(&audio, keep_loaded);
-        recorder.restore(audio, result.is_ok());
-        result
-    }
-
-    /// Stores `audio` as a new root, loading it first if asked. Split from
-    /// `save_take` so the recorder gets its buffer back whatever happens here.
-    fn add_take(
-        &mut self,
-        audio: &AudioBuffer,
-        keep_loaded: bool,
-    ) -> Result<SampleId, EngineError> {
+        // Everything that can fail while the buffer is on loan is folded
+        // into one result, so it goes back in exactly one place.
         let copy = if keep_loaded {
-            let reservation = self.ledger.reserve(audio.bytes())?;
             // A clone is exactly `bytes()` long, so the reservation covers
             // it by construction; there is no shorter path to check.
-            Some((Arc::new(audio.clone()), reservation))
+            self.ledger
+                .reserve(audio.bytes())
+                .map(|reservation| Some((Arc::new(audio.clone()), reservation)))
+                .map_err(EngineError::from)
         } else {
-            None
+            Ok(None)
         };
-        let id = self.project.add_sample(None, audio)?;
+        let stored = copy.and_then(|copy| {
+            let id = self.project.add_sample(None, &audio)?;
+            Ok((id, copy))
+        });
+        recorder.restore(audio, stored.is_ok());
+        let (id, copy) = stored?;
         if let Some(entry) = copy {
             // As `load` does: the audio is in RAM before the flag says so.
             self.loaded.insert(id, entry);
