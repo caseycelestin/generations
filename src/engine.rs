@@ -29,8 +29,7 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::config::COMMAND_CAPACITY;
 use crate::dsp::{BufferAddr, Command, Renderer, VoiceId};
-use crate::import::convert::{self as convert, ConvertError};
-use crate::import::decode::{self as decode, DecodeError};
+use crate::import::{self as import, ImportError};
 use crate::memory::Ledger;
 use crate::project::{Project, ProjectError, SampleId};
 use crate::storage::{self as storage, StorageError};
@@ -43,9 +42,7 @@ pub enum EngineError {
     #[error(transparent)]
     Project(#[from] ProjectError),
     #[error(transparent)]
-    Decode(#[from] DecodeError),
-    #[error(transparent)]
-    Convert(#[from] ConvertError),
+    Import(#[from] ImportError),
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -136,24 +133,18 @@ impl Engine {
     /// Imports an audio file as a new root.
     ///
     /// The file is read in whatever format it is in, converted to the
-    /// project format (48 kHz, `f32`, its own channel count up to two)
-    /// and stored. The file itself is not kept or referenced: the project
-    /// holds its own copy. The new sample is not loaded; that is a separate
-    /// decision, so an import lands on disk whether or not it fits in RAM.
-    /// The add itself is the project's; a finished recording will make the
-    /// same call with its own buffer, and once in, the two are
-    /// indistinguishable.
+    /// project format and stored. The file itself is not kept or
+    /// referenced: the project holds its own copy. The new sample is not
+    /// loaded; that is a separate decision, so an import lands on disk
+    /// whether or not it fits in RAM. The add itself is the project's; a
+    /// finished recording will make the same call with its own buffer,
+    /// and once in, the two are indistinguishable.
     ///
-    /// The buffers in flight are blocks from the budget while they exist:
-    /// the decoded samples, sized from the file's header before any are
-    /// read, and the converted audio, which the conversion allocates once
-    /// it knows the length, or which is the decoded block itself when the
-    /// file is already at the project rate. A file too large to pass
-    /// through RAM beside what is loaded is refused, at whichever of the
-    /// two allocations does not fit, and nothing is stored.
+    /// The import passes through the budget on its way to disk; a file
+    /// too large to pass through RAM beside what is loaded is refused,
+    /// and nothing is stored.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, EngineError> {
-        let decoded = decode::decode(file, &self.ledger)?;
-        let audio = convert::convert(decoded, &self.ledger)?;
+        let audio = import::import(file, &self.ledger)?;
         Ok(self.project.add_sample(None, &audio)?)
     }
 
@@ -259,6 +250,7 @@ mod tests {
 
     use super::*;
     use crate::config::Pcm;
+    use crate::import::DecodeError;
     use crate::project::tests::memory_project;
     use crate::testing::{audio, unlimited};
 
@@ -366,7 +358,9 @@ mod tests {
         let (mut e, _r) = engine();
         assert!(matches!(
             e.import(&path),
-            Err(EngineError::Decode(DecodeError::Malformed { .. }))
+            Err(EngineError::Import(ImportError::Decode(
+                DecodeError::Malformed { .. }
+            )))
         ));
         assert!(e.project().loaded_samples().unwrap().is_empty());
     }
@@ -391,7 +385,9 @@ mod tests {
 
         assert!(matches!(
             e.import(&path),
-            Err(EngineError::Decode(DecodeError::OverBudget { .. }))
+            Err(EngineError::Import(ImportError::Decode(
+                DecodeError::OverBudget { .. }
+            )))
         ));
         assert!(e.project().sample(SampleId(root.0 + 1)).is_err());
         assert_eq!(e.ledger.in_use(), ramp_bytes(4));
