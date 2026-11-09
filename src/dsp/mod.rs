@@ -10,8 +10,9 @@
 //!
 //! ```text
 //! control side                          render side
-//! (the engine)  ── Command ring ──▶     Renderer    commands in, a period out
-//!                                         Voice     one sample playing
+//! (the engine)  ── Command ring ──▶     Renderer    the wiring: commands in, a period out
+//!                                         VoiceTable    the samples playing, one source
+//!                                           Voice   one sample playing
 //! ```
 //!
 //! The dependency points one way. This module defines the [`Command`]s it
@@ -28,6 +29,7 @@
 pub mod command;
 pub mod renderer;
 pub mod voice;
+pub mod voice_table;
 
 pub use command::{BufferAddr, Command, VoiceId};
 pub use renderer::Renderer;

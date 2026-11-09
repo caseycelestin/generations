@@ -2,27 +2,28 @@
 //!
 //! The [`Renderer`] is real-time safe, not real-time only. Each call to
 //! `render` is given a stereo `f32` slice; the renderer applies the
-//! commands that have arrived, which start and stop voices, then zeroes
-//! the slice, lets every playing voice add itself, clips the sum once, and
-//! returns. Nothing in here allocates, locks, blocks, fails or reads a
-//! clock, so an audio device can call it from its callback with a hard
-//! deadline, and a bounce can call it in a loop as fast as the CPU goes
-//! and get the same frames.
+//! commands that have arrived, then zeroes the slice, lets each source
+//! add itself, clips the sum once, and returns. Nothing in here
+//! allocates, locks, blocks, fails or reads a clock, so an audio device
+//! can call it from its callback with a hard deadline, and a bounce can
+//! call it in a loop as fast as the CPU goes and get the same frames.
+//!
+//! The renderer is the wiring: it says which sources there are and the
+//! order they are summed, and maps each command onto the piece it is
+//! for. What a source does to make its frames is that source's business;
+//! today there is one, the [`VoiceTable`] playing.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
 //! end; the engine owns the producing end. The engine mints one renderer
 //! and hands it out as its output; everything else here is the engine's
 //! business, so `render` is the one public method.
 
-use std::sync::Arc;
-
-use heapless::Deque;
 use rtrb::Consumer;
 
-use crate::audio::AudioBuffer;
-use crate::config::VOICE_COUNT;
-use crate::dsp::command::{BufferAddr, Command, VoiceId};
-use crate::dsp::voice::Voice;
+use crate::dsp::command::Command;
+#[cfg(test)]
+use crate::dsp::command::VoiceId;
+use crate::dsp::voice_table::VoiceTable;
 
 /// The render side of an engine: turns commands and resident audio into
 /// periods of output.
@@ -39,9 +40,8 @@ use crate::dsp::voice::Voice;
 pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
-    /// The voices playing, oldest first. Fixed capacity, stored inline:
-    /// the work in one period is bounded and nothing here can allocate.
-    voices: Deque<Voice, VOICE_COUNT>,
+    /// Every voice playing, summed as one source.
+    voice_table: VoiceTable,
 }
 
 impl Renderer {
@@ -49,7 +49,7 @@ impl Renderer {
     pub(crate) fn new(commands: Consumer<Command>) -> Self {
         Self {
             commands,
-            voices: Deque::new(),
+            voice_table: VoiceTable::new(),
         }
     }
 
@@ -57,71 +57,53 @@ impl Renderer {
     /// replacing whatever it held.
     ///
     /// Commands the engine has sent since the last call are applied first,
-    /// so a play, stop or eviction lands at a period boundary. Then every
-    /// voice adds itself, a voice that reaches its end frees its slot, and
-    /// the sum is clipped once to the unit range.
+    /// so a play, stop or eviction lands at a period boundary. Then each
+    /// source adds itself, and the sum is clipped once to the unit range.
     pub fn render(&mut self, out: &mut [f32]) {
         self.apply_commands();
         out.fill(0.0);
-        self.voices.retain_mut(|voice| !voice.mix_into(out));
+        self.voice_table.mix_into(out);
         for o in out.iter_mut() {
             *o = o.clamp(-1.0, 1.0);
         }
     }
 
-    /// Applies every command that has arrived.
+    /// Applies every command that has arrived, each to the piece it is
+    /// for.
     fn apply_commands(&mut self) {
         while let Ok(command) = self.commands.pop() {
             match command {
-                Command::Play { id, audio } => self.play(id, audio),
-                Command::Stop(id) => self.stop(id),
-                Command::StopAll => self.voices.clear(),
-                Command::Evict(addr) => self.evict(addr),
+                Command::Play { id, audio } => self.voice_table.play(id, audio),
+                Command::Stop(id) => self.voice_table.stop(id),
+                Command::StopAll => self.voice_table.stop_all(),
+                Command::Evict(addr) => self.voice_table.evict(addr),
             }
         }
     }
 
-    /// Starts a voice, stealing the oldest when every voice is in use.
-    fn play(&mut self, id: VoiceId, audio: Arc<AudioBuffer>) {
-        if self.voices.is_full() {
-            self.voices.pop_front();
-        }
-        // Cannot fail: there is room, either already or because of the pop.
-        let _ = self.voices.push_back(Voice::new(id, audio));
-    }
-
-    /// Stops voice `id`. A voice that is gone is left gone.
-    fn stop(&mut self, id: VoiceId) {
-        self.voices.retain(|v| v.id() != id);
-    }
-
-    /// Stops every voice playing the buffer at `addr`, dropping their
-    /// references to it. One pass over at most `VOICE_COUNT` voices; a
-    /// buffer nothing plays costs the pass and changes nothing.
-    fn evict(&mut self, addr: BufferAddr) {
-        self.voices.retain(|v| !v.plays(addr));
-    }
-
-    /// Whether voice `id` is playing. A front panel will want this; until
-    /// then only tests ask.
+    /// Whether voice `id` is playing.
     #[cfg(test)]
     pub(crate) fn is_playing(&self, id: VoiceId) -> bool {
-        self.voices.iter().any(|v| v.id() == id)
+        self.voice_table.is_playing(id)
     }
 
     /// How many voices are playing.
     #[cfg(test)]
     pub(crate) fn playing(&self) -> usize {
-        self.voices.len()
+        self.voice_table.playing()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rtrb::{Producer, RingBuffer};
 
     use super::*;
-    use crate::config::Pcm;
+    use crate::audio::AudioBuffer;
+    use crate::config::{Pcm, VOICE_COUNT};
+    use crate::dsp::command::{BufferAddr, VoiceId};
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
