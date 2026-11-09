@@ -35,6 +35,12 @@ const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 /// How long to record when the command line does not say.
 const DEFAULT_SECONDS: u64 = 3;
 
+/// Slack past the recording time before the input stream is dropped. The
+/// device takes a moment to start delivering, so without it the take ends
+/// a few periods short of full. A short take is still a take; this only
+/// makes the common run fill.
+const START_SLACK: Duration = Duration::from_millis(300);
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
     let dir = args
@@ -59,9 +65,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("recording {seconds} s, {} channel(s)", input.channels());
     let mut capture = input.start(move |heard| take.write(heard))?;
-    sleep(Duration::from_secs(seconds));
-    // The take filled and handed itself back a moment ago. Dropping the
-    // stream drops the finished take; nothing more comes from it.
+    sleep(Duration::from_secs(seconds) + START_SLACK);
+    // The take filled and handed itself back a moment ago, and the stream
+    // has been calling a finished take since. Dropping the stream drops
+    // the take; nothing more comes from it.
     while let Some(e) = capture.error() {
         eprintln!("input stream error: {e}");
     }
