@@ -34,7 +34,6 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
-use rtrb::Producer;
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
@@ -72,69 +71,12 @@ impl From<cpal::Error> for DeviceError {
     }
 }
 
-/// A device opened for one direction: picked once for the engine's rate
-/// and a channel count, not yet running. What [`Device`] and [`Input`]
-/// share; the direction is in which `cpal` calls they make.
-struct Opened {
+/// An output device that can run at the engine's format, not yet running.
+pub struct Device {
     device: cpal::Device,
     format: SampleFormat,
     config: StreamConfig,
 }
-
-impl Opened {
-    /// Opens `device`, or fails with `missing` if there is none, at the
-    /// engine's rate and `channels` channels, choosing from the
-    /// configurations `supported` lists for it.
-    fn open<I>(
-        device: Option<cpal::Device>,
-        missing: DeviceError,
-        channels: u16,
-        supported: impl FnOnce(&cpal::Device) -> Result<I, cpal::Error>,
-    ) -> Result<Self, DeviceError>
-    where
-        I: Iterator<Item = cpal::SupportedStreamConfigRange>,
-    {
-        let device = device.ok_or(missing)?;
-        let picked = pick(supported(&device)?, channels)?;
-        Ok(Self {
-            device,
-            format: picked.sample_format(),
-            config: picked.config(),
-        })
-    }
-
-    /// Builds the stream with `build`, which gets the device, the config,
-    /// the format to build for and the sending end of the error queue,
-    /// then starts it. The queue and the [`Stream`] around it are the same
-    /// in both directions.
-    fn start(
-        self,
-        build: impl FnOnce(
-            &cpal::Device,
-            &StreamConfig,
-            SampleFormat,
-            Producer<cpal::Error>,
-        ) -> Result<cpal::Stream, DeviceError>,
-    ) -> Result<Stream, DeviceError> {
-        let (errors_in, errors) = RingBuffer::new(ERROR_CAPACITY);
-        let inner = build(&self.device, &self.config, self.format, errors_in)?;
-        inner.play()?;
-        Ok(Stream { inner, errors })
-    }
-}
-
-impl std::fmt::Debug for Opened {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Opened")
-            .field("format", &self.format)
-            .field("config", &self.config)
-            .finish_non_exhaustive()
-    }
-}
-
-/// An output device that can run at the engine's format, not yet running.
-#[derive(Debug)]
-pub struct Device(Opened);
 
 impl Device {
     /// The system's default output device, at [`SAMPLE_RATE`], stereo.
@@ -144,12 +86,16 @@ impl Device {
     /// size is the backend's default for now; a fixed size for the Pi
     /// would be set on the config here.
     pub fn default_output() -> Result<Self, DeviceError> {
-        Ok(Self(Opened::open(
-            cpal::default_host().default_output_device(),
-            DeviceError::NoOutputDevice,
-            OUTPUT_CHANNELS as u16,
-            |d| d.supported_output_configs(),
-        )?))
+        let channels = OUTPUT_CHANNELS as u16;
+        let device = cpal::default_host()
+            .default_output_device()
+            .ok_or(DeviceError::NoOutputDevice)?;
+        let supported = pick(device.supported_output_configs()?, channels)?;
+        Ok(Self {
+            device,
+            format: supported.sample_format(),
+            config: supported.config(),
+        })
     }
 
     /// Starts the device. From now until the returned [`Stream`] is
@@ -159,13 +105,16 @@ impl Device {
         self,
         render: impl FnMut(&mut [f32]) + Send + 'static,
     ) -> Result<Stream, DeviceError> {
-        self.0.start(|device, config, format, errors| match format {
-            SampleFormat::F32 => build::<f32>(device, config, render, errors),
-            SampleFormat::I16 => build::<i16>(device, config, render, errors),
-            SampleFormat::I32 => build::<i32>(device, config, render, errors),
-            // `pick` chose from these three.
+        let (errors_in, errors) = RingBuffer::new(ERROR_CAPACITY);
+        let inner = match self.format {
+            SampleFormat::F32 => build::<f32>(&self.device, &self.config, render, errors_in),
+            SampleFormat::I16 => build::<i16>(&self.device, &self.config, render, errors_in),
+            SampleFormat::I32 => build::<i32>(&self.device, &self.config, render, errors_in),
+            // `default_output` picked from these three.
             _ => unreachable!("device format was chosen from the convertible set"),
-        })
+        }?;
+        inner.play()?;
+        Ok(Stream { inner, errors })
     }
 }
 
@@ -204,7 +153,7 @@ fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &StreamConfig,
     mut render: impl FnMut(&mut [f32]) + Send + 'static,
-    mut errors: Producer<cpal::Error>,
+    mut errors: rtrb::Producer<cpal::Error>,
 ) -> Result<cpal::Stream, DeviceError> {
     let mut scratch = vec![0.0f32; SCRATCH_FRAMES * usize::from(config.channels)];
     Ok(device.build_output_stream(
@@ -229,10 +178,22 @@ fn build<T: SizedSample + FromSample<f32>>(
     )?)
 }
 
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Device")
+            .field("format", &self.format)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
 /// An input device that can run at the engine's rate with the channel
 /// count asked for, not yet running.
-#[derive(Debug)]
-pub struct Input(Opened);
+pub struct Input {
+    device: cpal::Device,
+    format: SampleFormat,
+    config: StreamConfig,
+}
 
 impl Input {
     /// The system's default input device, at [`SAMPLE_RATE`], with
@@ -241,12 +202,15 @@ impl Input {
     /// the device cannot give it; see [`Input::default_input_any`] to take
     /// whichever it has.
     pub fn default_input(channels: u16) -> Result<Self, DeviceError> {
-        Ok(Self(Opened::open(
-            cpal::default_host().default_input_device(),
-            DeviceError::NoInputDevice,
-            channels,
-            |d| d.supported_input_configs(),
-        )?))
+        let device = cpal::default_host()
+            .default_input_device()
+            .ok_or(DeviceError::NoInputDevice)?;
+        let supported = pick(device.supported_input_configs()?, channels)?;
+        Ok(Self {
+            device,
+            format: supported.sample_format(),
+            config: supported.config(),
+        })
     }
 
     /// The default input with whichever of mono or stereo it offers, mono
@@ -257,7 +221,7 @@ impl Input {
 
     /// Channels per frame the callback will see.
     pub fn channels(&self) -> u16 {
-        self.0.config.channels
+        self.config.channels
     }
 
     /// Starts the device. From now until the returned [`Stream`] is
@@ -267,12 +231,15 @@ impl Input {
         self,
         capture: impl FnMut(&[f32]) + Send + 'static,
     ) -> Result<Stream, DeviceError> {
-        self.0.start(|device, config, format, errors| match format {
-            SampleFormat::F32 => build_input::<f32>(device, config, capture, errors),
-            SampleFormat::I16 => build_input::<i16>(device, config, capture, errors),
-            SampleFormat::I32 => build_input::<i32>(device, config, capture, errors),
+        let (errors_in, errors) = RingBuffer::new(ERROR_CAPACITY);
+        let inner = match self.format {
+            SampleFormat::F32 => build_input::<f32>(&self.device, &self.config, capture, errors_in),
+            SampleFormat::I16 => build_input::<i16>(&self.device, &self.config, capture, errors_in),
+            SampleFormat::I32 => build_input::<i32>(&self.device, &self.config, capture, errors_in),
             _ => unreachable!("device format was chosen from the convertible set"),
-        })
+        }?;
+        inner.play()?;
+        Ok(Stream { inner, errors })
     }
 }
 
@@ -284,7 +251,7 @@ fn build_input<T: SizedSample>(
     device: &cpal::Device,
     config: &StreamConfig,
     mut capture: impl FnMut(&[f32]) + Send + 'static,
-    mut errors: Producer<cpal::Error>,
+    mut errors: rtrb::Producer<cpal::Error>,
 ) -> Result<cpal::Stream, DeviceError>
 where
     f32: FromSample<T>,
@@ -307,6 +274,15 @@ where
         },
         None,
     )?)
+}
+
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Input")
+            .field("format", &self.format)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A running stream, output or input. Running while held; dropping it
