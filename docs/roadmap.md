@@ -148,15 +148,31 @@ out; the short version of the argument is here so it is not had twice.
 
 - **Target hardware** is a Raspberry Pi Compute Module 4. The reference
   device for feel and specs is the Roland SP-404 MK2.
-- **One fixed format**: 48 kHz, 16-bit, set in `config.rs`. Import converts
-  to it, output converts from it, nothing in between checks. Channel count
-  is kept per buffer so mono samples do not pay for stereo. How import
-  converts is under Import below.
-- **Storage is i16, DSP is f32.** Every effect converts in and out through
-  `AudioBuffer::to_f32` / `from_f32`, which are the only code that knows the
-  PCM width. The downward conversion rounds and applies TPDF dither. Effects
-  that only reorder frames (reverse) are exempt: they copy PCM directly, so
-  they are exact and reversing twice really does give back the root's bytes.
+- **One fixed format**: 48 kHz, set in `config.rs`. Import converts to it,
+  nothing in between checks. Channel count is kept per buffer so mono
+  samples do not pay for stereo. How import converts is under Import below.
+- **One sample type, `f32`, on disk, in RAM and on the render path.**
+  Decided 2026-11-09, replacing the day-one split of `i16` storage and
+  `f32` processing. That split bought half the resident bytes and cost a
+  second sample type, a dither and quantise step, and a conversion on every
+  read the render side makes. Three things decided it. The Compute Module
+  4's cores have hardware float with NEON, so `f32` is the native type for
+  this work and `i16` is not a performance choice on this hardware; the
+  pipelines that run in integers are on microcontrollers without a float
+  unit. Serious gear records at 24 bits, which `i16` throws away on every
+  import and every take, and which `f32` holds exactly; a device that
+  resamples its own output as generations would apply that ceiling at every
+  print. And the render path should read samples, not convert them: a
+  conversion per sample per play is work the control side could have done
+  once at load, if it needed doing at all. The cost is capacity: about 65
+  minutes of resident stereo in a 1.5 GB budget instead of 130, and 32-bit
+  float WAV on the card at twice the size of a 16-bit file. For a sampler
+  whose project is mostly one-shots and loops, that is hundreds of pads,
+  and the memory ledger counts it either way. The `Pcm` alias stays so the
+  decision is visible in one place and reversible; the first type to carry
+  it is `audio_v2::AudioBuffer`, over `Block<f32>`. The old `audio` module,
+  its dither, `to_f32`/`from_f32` and the quantise in `Take::write` go as
+  their callers port to it.
 - **An effect was a function**, `&AudioBuffer -> AudioBuffer`, and the
   engine took one as a plain argument to `print`. Removed in step 5 along
   with `print` and the one effect, reverse: by then the decision that
@@ -765,3 +781,24 @@ changes to it.
   per voice, and has to stay clear of our own fsyncs.
 - A budget read from the device's configuration rather than compiled in,
   once the CM4 variant is known and the free memory is measured.
+- An `i16` build of the engine for low-powered hardware: a microcontroller
+  class target without a float unit, or a module with far less RAM, where
+  the integer pipeline is the sane one and half the resident bytes matter.
+  Not a runtime switch and not a trait over sample types: with effects on
+  the render side that is two pipelines behind one interface, so it would
+  be a second engine configuration chosen at build time. The `Pcm` alias
+  in `config.rs` is where the type is named, so the format stays in one
+  place for whichever build. Decided 2026-11-09 alongside the move to
+  `f32`, under Audio.
+- A project whose stored format is not the engine's. Today a WAV that is
+  not 48 kHz in the engine's sample type is refused on open as corrupt,
+  and the manifest records only a file-format version, not the audio
+  format. A project made on this engine and opened on a different build,
+  the `i16` one above or one at another rate, would not open at all. The
+  shape decided for it: a conversion between the stored format and the
+  engine's on load, and saves always in the engine's format. Each sample
+  carries its own format, the WAV header already does, so a project can
+  hold samples in more than one format without a per-project setting,
+  and it drifts toward the engine's format as samples are re-saved. Not
+  needed while there is one engine format; noted 2026-11-09 with the move
+  to `f32`.
