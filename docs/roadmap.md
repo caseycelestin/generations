@@ -651,10 +651,9 @@ and the first thing the audio thread hands back to the control side.
   `f32` in the callback, and the config picking shared with the output
   side. `first_take` records a few seconds into a take sized to fill at
   the end, drops the stream, saves the take loaded and plays it back. The
-  input stream starts late, so a sleep as long as the take leaves it a few
-  periods short; the example waits on `is_recording` instead, which is
-  the signal the hand-back exists to give, with a bound so a silent device
-  cannot hang it.
+  input stream starts late, so the example sleeps a moment past the take's
+  length. It is an example: it shows the path once on one machine, and is
+  not made to cope with every device.
 - **The caller is a patch bay; the engine is the mixer.** Which device,
   which channel, duplex or two streams, what format: the caller's, and
   thin, one line per destination with no decisions in it. What is heard,

@@ -197,10 +197,7 @@ pub struct Input {
 
 impl Input {
     /// The system's default input device, at [`SAMPLE_RATE`], with
-    /// `channels` channels. Microphones are often mono and interfaces
-    /// often stereo, so the caller says which it wants and is refused if
-    /// the device cannot give it; see [`Input::default_input_any`] to take
-    /// whichever it has.
+    /// `channels` channels, refused if it cannot give them.
     pub fn default_input(channels: u16) -> Result<Self, DeviceError> {
         let device = cpal::default_host()
             .default_input_device()
@@ -211,17 +208,6 @@ impl Input {
             format: supported.sample_format(),
             config: supported.config(),
         })
-    }
-
-    /// The default input with whichever of mono or stereo it offers, mono
-    /// first. For a caller that will record what it gets.
-    pub fn default_input_any() -> Result<Self, DeviceError> {
-        Self::default_input(1).or_else(|_| Self::default_input(2))
-    }
-
-    /// Channels per frame the callback will see.
-    pub fn channels(&self) -> u16 {
-        self.config.channels
     }
 
     /// Starts the device. From now until the returned [`Stream`] is

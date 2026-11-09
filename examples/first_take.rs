@@ -7,10 +7,9 @@
 //! other; `device/` beside this file is the only code that knows `cpal`.
 //!
 //! The take is sized to the recording time, so it fills on its own at the
-//! end and hands itself back while the input stream is still running. The
-//! recorder says when that has happened; the stream is then dropped and
-//! the take saved. Stopping early would be the same with the stream
-//! dropped sooner.
+//! end and hands itself back while the input stream is still running; the
+//! stream is then dropped and the take saved. Stopping early would be the
+//! same with the stream dropped sooner.
 //!
 //! Usage: `cargo run --example first_take -- <project-dir> [seconds]`. The
 //! directory is created if it does not exist. Needs an input and an output
@@ -19,7 +18,7 @@
 use std::error::Error;
 use std::path::PathBuf;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use generations::Engine;
 use generations::config::SAMPLE_RATE;
@@ -34,11 +33,9 @@ const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 /// How long to record when the command line does not say.
 const DEFAULT_SECONDS: u64 = 3;
 
-/// How long past the recording time to keep waiting for the take to fill
-/// before giving up on the device and saving what there is. The device
-/// takes a moment to start delivering, so the take fills a little after
-/// its own length; a device that never delivers must not hang the example.
-const PATIENCE: Duration = Duration::from_secs(2);
+/// A moment past the recording time, since the device takes a moment to
+/// start delivering.
+const START_SLACK: Duration = Duration::from_millis(300);
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -58,32 +55,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     // stops before the engine lets go of its audio.
     let mut playback = Device::default_output()?.start(move |out| output.render(out))?;
 
-    let input = Input::default_input_any()?;
-    let mut recorder = engine.recorder(input.channels(), frames)?;
+    let input = Input::default_input(1)?;
+    let mut recorder = engine.recorder(1, frames)?;
     let mut take = recorder.start_take()?;
 
-    println!("recording {seconds} s, {} channel(s)", input.channels());
+    println!("recording {seconds} s, mono");
     let mut capture = input.start(move |heard| take.write(heard))?;
-    // The take hands itself back the moment it fills, while the stream is
-    // still running and calling a finished take; the recorder is where
-    // that shows. Dropping the stream drops the take; nothing more comes
-    // from it.
-    let give_up = Instant::now() + Duration::from_secs(seconds) + PATIENCE;
-    while recorder.is_recording() && Instant::now() < give_up {
-        sleep(Duration::from_millis(20));
-    }
-    if recorder.is_recording() {
-        eprintln!("the input delivered less than {seconds} s; saving what arrived");
-    }
+    sleep(Duration::from_secs(seconds) + START_SLACK);
+    // The take filled and handed itself back a moment ago. Dropping the
+    // stream drops the finished take; nothing more comes from it.
     while let Some(e) = capture.error() {
         eprintln!("input stream error: {e}");
     }
-    // On a short take, the take is still alive inside the callback and is
-    // dropped with the stream. That the drop below has happened by the
-    // time it returns holds on ALSA, where dropping a stream joins its
-    // thread; a host that stops the stream asynchronously would still be
-    // holding the take here and the save would be refused as busy. Then
-    // wait on `is_recording` again before saving.
     drop(capture);
 
     let id = engine.save_take(&mut recorder, true)?;
