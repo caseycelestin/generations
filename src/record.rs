@@ -43,9 +43,13 @@ pub enum RecordError {
     /// A recorder of no frames was asked for.
     #[error("a recorder must hold at least one frame")]
     Empty,
-    /// The reservation offered does not pay for the recorder's buffer.
-    /// Nothing was allocated.
-    #[error("making a recorder")]
+    /// The recorder asked for is larger than this machine can count bytes
+    /// for.
+    #[error("{frames} frames of {channels} channels are too large to record")]
+    TooLarge { channels: u16, frames: usize },
+    /// A reservation made for a recording does not pay for what was then
+    /// allocated against it. Nothing was allocated.
+    #[error(transparent)]
     ShortReservation(#[from] ShortReservation),
     /// The last take is still out; its buffer has not come back.
     #[error("the last take has not finished")]
@@ -64,7 +68,7 @@ pub(crate) fn byte_cost(channels: u16, frames: usize) -> Result<usize, RecordErr
     if frames == 0 {
         return Err(RecordError::Empty);
     }
-    Ok(AudioBuffer::bytes_for(channels, frames))
+    AudioBuffer::bytes_for(channels, frames).ok_or(RecordError::TooLarge { channels, frames })
 }
 
 /// The control side of recording: holds the memory a recording uses and
@@ -164,19 +168,19 @@ impl Recorder {
     /// take is out, or when nothing has been recorded.
     ///
     /// The buffer leaves the recorder for the length of the save and comes
-    /// back through [`Recorder::restore`]; the engine holds the recorder
-    /// exclusively between the two, so no take can be asked for meanwhile.
-    /// Nothing is copied: the buffer is wrapped as it stands.
+    /// back through [`Recorder::restore`]. While it is out the recorder is
+    /// recording as far as anyone can tell, and `Busy` to every request,
+    /// which is the honest state: the buffer is elsewhere. Nothing is
+    /// copied: the buffer is wrapped as it stands.
     pub(crate) fn recorded(&mut self) -> Result<AudioBuffer, RecordError> {
         self.collect();
-        let Some(data) = &mut self.data else {
+        let Some(data) = &self.data else {
             return Err(RecordError::Busy);
         };
         if data.is_empty() {
             return Err(RecordError::Nothing);
         }
-        // `mem::take` leaves an empty vector that allocates nothing.
-        let data = std::mem::take(data);
+        let data = self.data.take().expect("checked just above");
         Ok(AudioBuffer::new(self.channels, data).expect("a take writes whole frames"))
     }
 
@@ -301,8 +305,15 @@ mod tests {
 
     #[test]
     fn byte_cost_is_the_buffer_the_recorder_will_hold() {
-        assert_eq!(byte_cost(1, 10), Ok(AudioBuffer::bytes_for(1, 10)));
-        assert_eq!(byte_cost(2, 10), Ok(AudioBuffer::bytes_for(2, 10)));
+        assert_eq!(byte_cost(1, 10), Ok(AudioBuffer::bytes_for(1, 10).unwrap()));
+        assert_eq!(byte_cost(2, 10), Ok(AudioBuffer::bytes_for(2, 10).unwrap()));
+        assert_eq!(
+            byte_cost(2, usize::MAX / 2 + 1),
+            Err(RecordError::TooLarge {
+                channels: 2,
+                frames: usize::MAX / 2 + 1
+            })
+        );
     }
 
     #[test]
@@ -461,7 +472,11 @@ mod tests {
         let audio = r.recorded().unwrap();
         assert_eq!(audio.samples().as_ptr(), before);
         assert_eq!(audio.samples(), quantised(1, &[0.5, -0.5]));
+        // Lent out is busy, not empty.
+        assert!(r.is_recording());
+        assert_eq!(r.start_take().unwrap_err(), RecordError::Busy);
         r.restore(audio, false);
+        assert!(!r.is_recording());
         let data = r.data.as_ref().unwrap();
         assert_eq!(data.as_ptr(), before);
         assert_eq!(data.len(), 2);

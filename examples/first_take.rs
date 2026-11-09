@@ -78,6 +78,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     while let Some(e) = capture.error() {
         eprintln!("input stream error: {e}");
     }
+    // On a short take, the take is still alive inside the callback and is
+    // dropped with the stream. That the drop below has happened by the
+    // time it returns holds on ALSA, where dropping a stream joins its
+    // thread; a host that stops the stream asynchronously would still be
+    // holding the take here and the save would be refused as busy. Then
+    // wait on `is_recording` again before saving.
     drop(capture);
 
     let id = engine.save_take(&mut recorder, true)?;

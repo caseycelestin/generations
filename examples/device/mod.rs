@@ -26,7 +26,10 @@
 //! PipeWire, JACK and the rest; a trait of our own waits for a second
 //! implementation.
 
-// Shared by the examples, and each one uses part of it.
+// Shared by the examples, and each one uses part of it: first_sound has no
+// input, first_take uses everything. The allow is module-wide, which also
+// hides anything here that stops being used by every example; the price of
+// keeping one copy. It goes when the device code moves to the binary crate.
 #![allow(dead_code)]
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

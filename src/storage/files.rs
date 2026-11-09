@@ -233,11 +233,18 @@ impl FileStorage {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
         let spec = reader.spec();
+        let frames = reader.duration() as usize;
+        let bytes = AudioBuffer::bytes_for(spec.channels, frames).ok_or_else(|| {
+            StorageError::BadAudioFormat {
+                id,
+                detail: format!(
+                    "{frames} frames of {} channels are too large to hold",
+                    spec.channels
+                ),
+            }
+        })?;
         reservation
-            .can_hold(AudioBuffer::bytes_for(
-                spec.channels,
-                reader.duration() as usize,
-            ))
+            .can_hold(bytes)
             .map_err(|source| StorageError::ShortReservation { id, source })?;
         // Exactly the capacity reserved: collecting through a `Result`
         // loses the size hint and grows by doubling.

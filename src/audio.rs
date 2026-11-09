@@ -98,7 +98,12 @@ impl AudioBuffer {
     /// lives.
     pub(crate) fn copy(&self, reservation: &Reservation) -> Result<Self, ShortReservation> {
         reservation.can_hold(self.bytes())?;
-        Ok(self.clone())
+        // `to_vec` allocates exactly the length: the source's spare
+        // capacity, if it has any, is not copied and not paid for.
+        Ok(Self {
+            channels: self.channels,
+            data: self.data.to_vec(),
+        })
     }
 
     /// The samples back, as they came in. Nothing is copied or freed.
@@ -118,9 +123,14 @@ impl AudioBuffer {
     }
 
     /// Bytes a buffer of `frames` frames of `channels` channels occupies,
-    /// for reserving the memory before the buffer exists.
-    pub(crate) fn bytes_for(channels: u16, frames: usize) -> usize {
-        frames * usize::from(channels) * std::mem::size_of::<Pcm>()
+    /// for reserving the memory before the buffer exists. `None` when the
+    /// count does not fit this machine's `usize`: a shape that large can
+    /// come in from a caller or a file header and must be refused, not
+    /// wrapped to a small number and reserved.
+    pub(crate) fn bytes_for(channels: u16, frames: usize) -> Option<usize> {
+        frames
+            .checked_mul(usize::from(channels))?
+            .checked_mul(std::mem::size_of::<Pcm>())
     }
 }
 
@@ -176,6 +186,36 @@ impl Dither {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::Ledger;
+
+    #[test]
+    fn copy_allocates_the_length_and_pays_for_exactly_that() {
+        let mut data = Vec::with_capacity(100);
+        data.extend([1, 2, 3, 4]);
+        let source = AudioBuffer::new(2, data).unwrap();
+        let ledger = Ledger::new(usize::MAX);
+        let copy = source
+            .copy(&ledger.reserve(source.bytes()).unwrap())
+            .unwrap();
+        assert_eq!(copy, source);
+        assert_eq!(copy.data.capacity(), 4);
+        assert!(
+            source
+                .copy(&ledger.reserve(source.bytes() - 1).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bytes_for_refuses_a_shape_too_large_to_count() {
+        assert_eq!(bytes_for_ok(1, 10), 20);
+        assert_eq!(AudioBuffer::bytes_for(2, usize::MAX / 2 + 1), None);
+        assert_eq!(AudioBuffer::bytes_for(1, usize::MAX), None);
+    }
+
+    fn bytes_for_ok(channels: u16, frames: usize) -> usize {
+        AudioBuffer::bytes_for(channels, frames).unwrap()
+    }
 
     #[test]
     fn frames_f32_reads_a_range_of_frames() {
