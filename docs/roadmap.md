@@ -89,7 +89,7 @@ out; the short version of the argument is here so it is not had twice.
   project read-only; every change is an engine method. Some changes are
   only half a project write (`load` sets a flag and moves audio into RAM),
   and a caller reaching a role directly would leave the two disagreeing.
-  So the roles the engine owns (`project`'s mutation, `render`, `device`,
+  So the roles the engine owns (`project`'s mutation, `dsp`, `device`,
   `storage`) are crate-private, and what is public is the engine, the
   project's read side, the value types in the engine's signatures, the
   errors, the effects and config. One path to each action, and the rules
@@ -228,7 +228,7 @@ the code follows them.
 - **Sound has a control side and a render side, and the engine is the
   control side.** Pressing a pad is a front-panel action, and the engine
   is what the front panel calls; it owns the audio in RAM and the sending
-  end of a command ring. The render side, the `render` module, owns the
+  end of a command ring. The render side, the `dsp` module, owns the
   receiving end and the playing voices and turns commands into frames.
   The split is by thread, not by feature: one side decides and may be
   slow, the other moves frames on a deadline and must never wait on the
@@ -239,7 +239,7 @@ the code follows them.
   and data plane. The engine never reaches into the render side; every
   change to what is heard is a command, applied at the next period.
 - **The render side is named for what it does, not where it runs.**
-  `render` turns commands into frames and gives the same frames live from
+  `dsp` turns commands into frames and gives the same frames live from
   a device callback or offline in a loop, so "realtime" was rejected as a
   name (the code must run offline) and "process" was rejected (it collides
   with the OS process this roadmap talks about). Recording in step 6 got
@@ -420,7 +420,7 @@ the code follows them.
 - **Recording is a second stream.** `cpal` opens input and output as
   separate streams with separate callbacks, so recording got its own
   input type in the caller's device code, a `record` module beside
-  `render` with its own ring back to the control side, and the render side
+  `dsp` with its own ring back to the control side, and the render side
   never learns about it. Two streams have no guaranteed
   frame alignment between them; if a resample must land on the frame,
   that is the case for a duplex stream, and it is a change inside the two
