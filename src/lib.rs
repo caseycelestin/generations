@@ -105,6 +105,7 @@ pub(crate) mod convert;
 pub(crate) mod decode;
 pub mod engine;
 pub(crate) mod ledger;
+pub(crate) mod memory;
 pub mod project;
 pub(crate) mod record;
 pub(crate) mod render;
