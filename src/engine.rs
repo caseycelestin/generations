@@ -751,7 +751,7 @@ mod tests {
         let (mut e, _r) = engine();
         let mut rec = e.recorder(2, 4).unwrap();
         let in_use = e.ledger.in_use();
-        let mut t = rec.take().unwrap();
+        let mut t = rec.start_take().unwrap();
         t.write(&[0.5, -0.5, 0.25, -0.25]);
         drop(t);
 
@@ -778,7 +778,7 @@ mod tests {
         let (mut e, mut o) = engine();
         let mut rec = e.recorder(1, 4).unwrap();
         let in_use = e.ledger.in_use();
-        let mut t = rec.take().unwrap();
+        let mut t = rec.start_take().unwrap();
         t.write(&[0.5, 0.5]);
         drop(t);
 
@@ -794,7 +794,7 @@ mod tests {
             .collect();
         assert_eq!(out, expected);
         // The recorder is free to record again; the copy is the engine's.
-        assert!(rec.take().is_ok());
+        assert!(rec.start_take().is_ok());
     }
 
     #[test]
@@ -803,7 +803,7 @@ mod tests {
         let (p, state) = project();
         let mut e = Engine::on(p, recorder_cost + AudioBuffer::bytes_for(1, 2) - 1).unwrap();
         let mut rec = e.recorder(1, 4).unwrap();
-        let mut t = rec.take().unwrap();
+        let mut t = rec.start_take().unwrap();
         t.write(&[0.5, 0.5]);
         drop(t);
 
@@ -824,7 +824,7 @@ mod tests {
     fn save_while_a_take_is_out_is_refused() {
         let (mut e, _r) = engine();
         let mut rec = e.recorder(1, 4).unwrap();
-        let t = rec.take().unwrap();
+        let t = rec.start_take().unwrap();
         assert!(matches!(
             e.save_take(&mut rec, false),
             Err(EngineError::Record(RecordError::Busy))
@@ -840,11 +840,11 @@ mod tests {
     fn a_recorder_records_again_after_a_save() {
         let (mut e, _r) = engine();
         let mut rec = e.recorder(1, 4).unwrap();
-        let mut t = rec.take().unwrap();
+        let mut t = rec.start_take().unwrap();
         t.write(&[0.1, 0.2]);
         drop(t);
         let first = e.save_take(&mut rec, false).unwrap();
-        let mut t = rec.take().unwrap();
+        let mut t = rec.start_take().unwrap();
         t.write(&[0.3, 0.4, 0.5, 0.6, 0.7]);
         assert!(t.is_finished());
         drop(t);

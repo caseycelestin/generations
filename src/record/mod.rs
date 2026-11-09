@@ -17,7 +17,7 @@
 //!
 //! ```text
 //! control side                                audio side
-//! Recorder  ── take() moves the buffer ──▶   Take
+//! Recorder  ── start_take() moves the buffer ──▶   Take
 //!           ◀── one-slot ring, on drop ────  (fills it, hands it back)
 //! ```
 //!
@@ -114,7 +114,7 @@ impl Recorder {
     }
 
     /// Whether a take is out: alive somewhere, or finished and not yet
-    /// collected. While it is, [`Recorder::take`] is refused.
+    /// collected. While it is, [`Recorder::start_take`] is refused.
     pub fn is_recording(&mut self) -> bool {
         self.collect();
         self.data.is_none()
@@ -131,7 +131,7 @@ impl Recorder {
     /// hand the buffer back on is made here, on the control side; it is
     /// the one allocation a take costs and it is not in proportion to
     /// audio length.
-    pub fn take(&mut self) -> Result<Take, RecordError> {
+    pub fn start_take(&mut self) -> Result<Take, RecordError> {
         if self.is_recording() {
             return Err(RecordError::Busy);
         }
@@ -326,26 +326,26 @@ mod tests {
     fn a_take_is_the_recorder_buffer_and_only_one_is_out_at_a_time() {
         let mut r = Recorder::new(2, 10, paid()).unwrap();
         assert!(!r.is_recording());
-        let t = r.take().unwrap();
+        let t = r.start_take().unwrap();
         assert_eq!(t.data.capacity(), 20);
         assert!(t.data.is_empty());
         assert_eq!(t.channels, 2);
         assert!(r.data.is_none());
         assert!(r.is_recording());
-        assert_eq!(r.take().unwrap_err(), RecordError::Busy);
+        assert_eq!(r.start_take().unwrap_err(), RecordError::Busy);
         // A refused take changed nothing: the live one still owns the
         // buffer and still has somewhere to hand it back.
         assert!(r.is_recording());
         assert!(r.finished.is_some());
         drop(t);
         assert!(!r.is_recording());
-        assert!(r.take().is_ok());
+        assert!(r.start_take().is_ok());
     }
 
     #[test]
     fn a_dropped_take_hands_the_buffer_back_without_losing_capacity() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         t.data.extend([1, 2, 3]);
         drop(t);
         r.collect();
@@ -358,10 +358,10 @@ mod tests {
     #[test]
     fn a_new_take_starts_over() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         t.data.extend([1, 2, 3]);
         drop(t);
-        let t = r.take().unwrap();
+        let t = r.start_take().unwrap();
         assert!(t.data.is_empty());
         assert_eq!(t.data.capacity(), 10);
     }
@@ -385,7 +385,7 @@ mod tests {
     fn write_quantises_frames_as_from_f32_does() {
         let input = [0.0, 0.5, -0.5, 1.0, -1.0, 0.25, 2.0, -2.0];
         let mut r = Recorder::new(2, 4, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         t.write(&input[..4]);
         assert!(!t.is_finished());
         t.write(&input[4..]);
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn a_full_take_finishes_itself_and_drops_the_rest() {
         let mut r = Recorder::new(1, 3, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         t.write(&[0.1, 0.2, 0.3, 0.4, 0.5]);
         assert!(t.is_finished());
         // The buffer is already back; the take has nothing more to say.
@@ -410,7 +410,7 @@ mod tests {
     #[test]
     fn write_never_grows_the_buffer() {
         let mut r = Recorder::new(2, 4, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         let before = t.data.as_ptr();
         t.write(&[0.0; 6]);
         assert_eq!(t.data.as_ptr(), before);
@@ -425,7 +425,7 @@ mod tests {
     #[test]
     fn write_takes_whole_frames_only() {
         let mut r = Recorder::new(2, 4, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         // Release builds ignore the ragged tail; debug builds assert on it.
         if cfg!(debug_assertions) {
             assert!(
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn a_take_ended_early_keeps_what_was_written() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         t.write(&[0.5, -0.5]);
         drop(t);
         assert_eq!(recorded(&mut r), quantised(1, &[0.5, -0.5]));
@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn recorded_lends_the_buffer_and_restore_returns_it_without_a_copy() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         t.write(&[0.5, -0.5]);
         drop(t);
         let before = recorded(&mut r).as_ptr();
@@ -477,7 +477,7 @@ mod tests {
     fn recorded_is_refused_while_a_take_is_out_or_nothing_was_written() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
         assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
-        let t = r.take().unwrap();
+        let t = r.start_take().unwrap();
         assert_eq!(r.recorded().unwrap_err(), RecordError::Busy);
         drop(t);
         assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
@@ -486,7 +486,7 @@ mod tests {
     #[test]
     fn a_take_outliving_its_recorder_drops_quietly() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let t = r.take().unwrap();
+        let t = r.start_take().unwrap();
         drop(r);
         drop(t);
     }
@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn a_take_can_be_written_on_another_thread() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.take().unwrap();
+        let mut t = r.start_take().unwrap();
         std::thread::spawn(move || t.write(&[0.5; 4]))
             .join()
             .unwrap();

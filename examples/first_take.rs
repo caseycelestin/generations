@@ -61,7 +61,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let input = Input::default_input_any()?;
     let mut recorder = engine.recorder(input.channels(), frames)?;
-    let mut take = recorder.take()?;
+    let mut take = recorder.start_take()?;
 
     println!("recording {seconds} s, {} channel(s)", input.channels());
     let mut capture = input.start(move |heard| take.write(heard))?;
