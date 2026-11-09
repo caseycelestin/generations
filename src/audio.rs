@@ -1,22 +1,20 @@
-//! Raw PCM storage.
+//! Project audio over a `Block` from the memory ledger.
 //!
-//! An [`AudioBuffer`] is dumb, immutable data: an interleaved block of
-//! [`Pcm`] samples with a channel count. It has no identity and knows nothing
-//! about where it came from. Processing happens in `f32`; the two conversion
-//! functions here are the only code that knows what `Pcm` actually is.
+//! An [`AudioBuffer`] is a block of [`Pcm`] samples with a channel count:
+//! immutable, interleaved, at the project's fixed rate, with no identity
+//! and no idea where it came from. The block is where the memory was paid
+//! for, so a buffer is never uncounted and cannot be copied without going
+//! back to the ledger for another block. The sample type is the one the
+//! render side mixes in, so a read is a slice and nothing converts.
+//!
 
 use std::fmt;
 use std::ops::Range;
 
-use rand::rngs::SmallRng;
-use rand::{RngExt, SeedableRng};
 use thiserror::Error;
 
 use crate::config::{MAX_CHANNELS, Pcm};
-use crate::ledger::{Reservation, ShortReservation};
-
-/// Full-scale magnitude of the PCM type, as a float.
-const SCALE: f32 = 32_768.0;
+use crate::memory::Block;
 
 /// Reasons a buffer cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -29,57 +27,39 @@ pub enum AudioError {
     RaggedFrames { samples: usize, channels: u16 },
 }
 
-/// Interleaved PCM audio at the engine's fixed sample rate.
-#[derive(Clone, PartialEq, Eq)]
+/// Interleaved [`Pcm`] audio at the engine's fixed sample rate, in a block
+/// paid for against the ledger.
+///
+/// The audio is the block's length; the block's capacity is what was
+/// paid for and may be larger, as it is for a take that stopped before
+/// its block was full. Both stay as they are for the buffer's life: the
+/// audio never changes and the bytes return when the block drops.
 pub struct AudioBuffer {
     channels: u16,
-    /// A vector rather than a boxed slice so a buffer with spare capacity
-    /// can be wrapped and unwrapped without a copy. The length is the
-    /// audio; the capacity is nobody's business but the owner's.
-    data: Vec<Pcm>,
+    data: Block<Pcm>,
 }
 
 impl AudioBuffer {
-    /// Wraps interleaved samples, checking the frame invariant.
-    pub fn new(channels: u16, data: impl Into<Vec<Pcm>>) -> Result<Self, AudioError> {
-        let data = data.into();
-        check_channels(channels)?;
-        if data.len() % usize::from(channels) != 0 {
-            return Err(AudioError::RaggedFrames {
-                samples: data.len(),
-                channels,
-            });
+    /// Wraps a block of interleaved samples, checking the channel count
+    /// and that the block holds whole frames.
+    ///
+    /// Refused audio hands the block back beside the error: nothing is
+    /// freed here, so a caller that wants to try again with a different
+    /// channel count still holds the memory.
+    pub fn new(channels: u16, data: Block<Pcm>) -> Result<Self, (AudioError, Block<Pcm>)> {
+        if let Err(e) = check_channels(channels) {
+            return Err((e, data));
+        }
+        if !data.len().is_multiple_of(usize::from(channels)) {
+            return Err((
+                AudioError::RaggedFrames {
+                    samples: data.len(),
+                    channels,
+                },
+                data,
+            ));
         }
         Ok(Self { channels, data })
-    }
-
-    /// Builds a buffer from normalised `f32` samples in `-1.0..=1.0`.
-    ///
-    /// Input is clamped to full scale, dithered with triangular noise, and
-    /// rounded to the nearest PCM value. This is the only way audio enters
-    /// storage from processing, so it is where quantisation happens.
-    pub fn from_f32(channels: u16, samples: &[f32]) -> Result<Self, AudioError> {
-        check_channels(channels)?;
-        let mut dither = Dither::default();
-        let data: Vec<Pcm> = samples.iter().map(|&s| dither.quantise(s)).collect();
-        Self::new(channels, data)
-    }
-
-    /// Converts to normalised `f32` samples, still interleaved.
-    pub fn to_f32(&self) -> Vec<f32> {
-        self.data.iter().map(|&s| f32::from(s) / SCALE).collect()
-    }
-
-    /// The samples of frames `frames`, interleaved, as normalised `f32`,
-    /// without allocating. This is how playback reads: a period's worth at
-    /// a time, converting as it goes.
-    ///
-    /// Panics if the range runs past the end.
-    pub fn frames_f32(&self, frames: Range<usize>) -> impl Iterator<Item = f32> + '_ {
-        let c = usize::from(self.channels);
-        self.data[frames.start * c..frames.end * c]
-            .iter()
-            .map(|&s| f32::from(s) / SCALE)
     }
 
     /// Number of interleaved channels.
@@ -92,54 +72,18 @@ impl AudioBuffer {
         self.data.len() / usize::from(self.channels)
     }
 
-    /// A copy of this audio, paid for by `reservation`, which must cover
-    /// [`AudioBuffer::bytes`]; a short one is refused before anything is
-    /// allocated. The caller keeps the reservation for as long as the copy
-    /// lives.
-    pub(crate) fn copy(&self, reservation: &Reservation) -> Result<Self, ShortReservation> {
-        reservation.can_hold(self.bytes())?;
-        // `to_vec` allocates exactly the length: the source's spare
-        // capacity, if it has any, is not copied and not paid for.
-        Ok(Self {
-            channels: self.channels,
-            data: self.data.to_vec(),
-        })
-    }
-
-    /// The samples back, as they came in. Nothing is copied or freed.
-    pub(crate) fn into_samples(self) -> Vec<Pcm> {
-        self.data
+    /// The samples of frames `frames`, interleaved. This is how playback
+    /// reads: a period's worth at a time, straight from the block.
+    ///
+    /// Panics if the range runs past the end.
+    pub fn frames_in(&self, frames: Range<usize>) -> &[Pcm] {
+        let c = usize::from(self.channels);
+        &self.data[frames.start * c..frames.end * c]
     }
 
     /// All samples, interleaved.
     pub fn samples(&self) -> &[Pcm] {
         &self.data
-    }
-
-    /// Size of the audio in memory, in bytes. This is what resident audio
-    /// costs against the RAM budget.
-    pub fn bytes(&self) -> usize {
-        std::mem::size_of_val(&*self.data)
-    }
-
-    /// Bytes a buffer of `frames` frames of `channels` channels occupies,
-    /// for reserving the memory before the buffer exists. `None` when the
-    /// count does not fit this machine's `usize`: a shape that large can
-    /// come in from a caller or a file header and must be refused, not
-    /// wrapped to a small number and reserved.
-    pub(crate) fn bytes_for(channels: u16, frames: usize) -> Option<usize> {
-        frames
-            .checked_mul(usize::from(channels))?
-            .checked_mul(std::mem::size_of::<Pcm>())
-    }
-}
-
-impl fmt::Debug for AudioBuffer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AudioBuffer")
-            .field("channels", &self.channels)
-            .field("frames", &self.frames())
-            .finish_non_exhaustive()
     }
 }
 
@@ -151,103 +95,76 @@ pub(crate) fn check_channels(channels: u16) -> Result<(), AudioError> {
     Ok(())
 }
 
-/// Triangular (TPDF) dither in the range `-1.0..1.0` LSB.
-///
-/// Backed by `rand`'s `SmallRng` with a fixed seed, so conversion is
-/// deterministic for a given input.
-pub(crate) struct Dither {
-    rng: SmallRng,
-}
-
-impl Default for Dither {
-    fn default() -> Self {
-        Self {
-            rng: SmallRng::seed_from_u64(0x9E37_79B9),
-        }
-    }
-}
-
-impl Dither {
-    /// Sum of two uniforms, centred: triangular on `-1.0..1.0`.
-    fn next(&mut self) -> f32 {
-        self.rng.random::<f32>() + self.rng.random::<f32>() - 1.0
-    }
-
-    /// One normalised sample to PCM: clamped to full scale, dithered,
-    /// rounded to the nearest value. The only quantiser in the crate;
-    /// whole buffers and single frames on the audio thread both come
-    /// through here, and it allocates nothing.
-    pub(crate) fn quantise(&mut self, sample: f32) -> Pcm {
-        let scaled = sample.clamp(-1.0, 1.0) * SCALE + self.next();
-        scaled.round().clamp(Pcm::MIN as f32, Pcm::MAX as f32) as Pcm
+impl fmt::Debug for AudioBuffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioBuffer")
+            .field("channels", &self.channels)
+            .field("frames", &self.frames())
+            .finish_non_exhaustive()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
-    use crate::ledger::Ledger;
+    use crate::memory::Ledger;
 
-    #[test]
-    fn copy_allocates_the_length_and_pays_for_exactly_that() {
-        let mut data = Vec::with_capacity(100);
-        data.extend([1, 2, 3, 4]);
-        let source = AudioBuffer::new(2, data).unwrap();
+    /// A block holding `data`, from a ledger that refuses nothing.
+    fn block(data: &[Pcm]) -> (Arc<Ledger>, Block<Pcm>) {
         let ledger = Ledger::new(usize::MAX);
-        let copy = source
-            .copy(&ledger.reserve(source.bytes()).unwrap())
-            .unwrap();
-        assert_eq!(copy, source);
-        assert_eq!(copy.data.capacity(), 4);
-        assert!(
-            source
-                .copy(&ledger.reserve(source.bytes() - 1).unwrap())
-                .is_err()
-        );
+        let mut block = ledger.alloc(data.len()).unwrap();
+        block.extend(data.iter().copied());
+        (ledger, block)
+    }
+
+    fn buffer(channels: u16, data: &[Pcm]) -> AudioBuffer {
+        AudioBuffer::new(channels, block(data).1).unwrap()
     }
 
     #[test]
-    fn bytes_for_refuses_a_shape_too_large_to_count() {
-        assert_eq!(bytes_for_ok(1, 10), 20);
-        assert_eq!(AudioBuffer::bytes_for(2, usize::MAX / 2 + 1), None);
-        assert_eq!(AudioBuffer::bytes_for(1, usize::MAX), None);
-    }
-
-    fn bytes_for_ok(channels: u16, frames: usize) -> usize {
-        AudioBuffer::bytes_for(channels, frames).unwrap()
+    fn frames_count_per_channel() {
+        let b = buffer(2, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(b.frames(), 2);
+        assert_eq!(b.channels(), 2);
+        assert_eq!(b.samples(), &[1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
-    fn frames_f32_reads_a_range_of_frames() {
-        let b = AudioBuffer::new(2, vec![0, 16_384, -16_384, 32_767, 0, 0]).unwrap();
-        let mid: Vec<f32> = b.frames_f32(1..2).collect();
-        assert_eq!(mid, vec![-0.5, 32_767.0 / 32_768.0]);
-        assert_eq!(b.frames_f32(0..3).count(), 6);
-        assert_eq!(b.frames_f32(3..3).count(), 0);
+    fn frames_in_reads_a_range_of_frames() {
+        let b = buffer(2, &[0.0, 0.5, -0.5, 1.0, 0.0, 0.0]);
+        assert_eq!(b.frames_in(1..2), &[-0.5, 1.0]);
+        assert_eq!(b.frames_in(0..3).len(), 6);
+        assert_eq!(b.frames_in(3..3).len(), 0);
     }
 
     #[test]
-    fn bytes_is_samples_times_pcm_width() {
-        let b = AudioBuffer::new(2, vec![0; 6]).unwrap();
-        assert_eq!(b.bytes(), 6 * std::mem::size_of::<Pcm>());
-        assert_eq!(AudioBuffer::new(1, vec![]).unwrap().bytes(), 0);
+    fn the_audio_is_the_length_and_the_payment_is_the_capacity() {
+        let ledger = Ledger::new(usize::MAX);
+        let mut block: Block<Pcm> = ledger.alloc(10).unwrap();
+        block.extend([1.0, 2.0, 3.0, 4.0]);
+        let b = AudioBuffer::new(1, block).unwrap();
+        assert_eq!(b.frames(), 4);
+        assert_eq!(ledger.in_use(), 10 * size_of::<Pcm>());
+        drop(b);
+        assert_eq!(ledger.in_use(), 0);
     }
 
     #[test]
-    fn rejects_bad_channel_counts() {
-        assert_eq!(
-            AudioBuffer::new(0, vec![]).unwrap_err(),
-            AudioError::BadChannelCount(0)
-        );
-        assert_eq!(
-            AudioBuffer::new(3, vec![]).unwrap_err(),
-            AudioError::BadChannelCount(3)
-        );
+    fn rejects_bad_channel_counts_and_keeps_the_block() {
+        let (ledger, block) = block(&[]);
+        let (err, block) = AudioBuffer::new(0, block).unwrap_err();
+        assert_eq!(err, AudioError::BadChannelCount(0));
+        let (err, _block) = AudioBuffer::new(3, block).unwrap_err();
+        assert_eq!(err, AudioError::BadChannelCount(3));
+        assert_eq!(ledger.in_use(), 0);
     }
 
     #[test]
-    fn rejects_ragged_frames() {
-        let err = AudioBuffer::new(2, vec![0, 0, 0]).unwrap_err();
+    fn rejects_ragged_frames_and_keeps_the_block() {
+        let (ledger, block) = block(&[0.0, 0.0, 0.0]);
+        let (err, block) = AudioBuffer::new(2, block).unwrap_err();
         assert_eq!(
             err,
             AudioError::RaggedFrames {
@@ -255,41 +172,17 @@ mod tests {
                 channels: 2
             }
         );
+        assert_eq!(ledger.in_use(), 3 * size_of::<Pcm>());
+        drop(block);
+        assert_eq!(ledger.in_use(), 0);
     }
 
     #[test]
-    fn frames_count_per_channel() {
-        let b = AudioBuffer::new(2, vec![1, 2, 3, 4]).unwrap();
-        assert_eq!(b.frames(), 2);
-        assert_eq!(b.channels(), 2);
-        assert_eq!(b.samples(), &[1, 2, 3, 4]);
-    }
-
-    #[test]
-    fn f32_round_trip_is_within_dither() {
-        let b = AudioBuffer::new(1, vec![0, 1000, -1000, Pcm::MAX, Pcm::MIN]).unwrap();
-        let back = AudioBuffer::from_f32(1, &b.to_f32()).unwrap();
-        for (a, b) in b.samples().iter().zip(back.samples()) {
-            assert!((i32::from(*a) - i32::from(*b)).abs() <= 2, "{a} vs {b}");
-        }
-    }
-
-    #[test]
-    fn from_f32_clamps_out_of_range() {
-        let b = AudioBuffer::from_f32(1, &[2.0, -2.0]).unwrap();
-        assert!(b.samples()[0] >= Pcm::MAX - 1);
-        assert!(b.samples()[1] <= Pcm::MIN + 1);
-    }
-
-    #[test]
-    fn dither_is_triangular_and_bounded() {
-        let mut d = Dither::default();
-        let mut sum = 0.0f64;
-        for _ in 0..10_000 {
-            let v = d.next();
-            assert!((-1.0..1.0).contains(&v));
-            sum += f64::from(v);
-        }
-        assert!((sum / 10_000.0).abs() < 0.02);
+    fn debug_shows_shape_not_samples() {
+        let b = buffer(2, &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            format!("{b:?}"),
+            "AudioBuffer { channels: 2, frames: 2, .. }"
+        );
     }
 }

@@ -7,8 +7,10 @@
 
 use thiserror::Error;
 
+use std::sync::Arc;
+
 use crate::audio::AudioBuffer;
-use crate::ledger::Reservation;
+use crate::memory::Ledger;
 use crate::storage::{Storage, StorageError};
 
 /// Identity of a sample within one project.
@@ -41,11 +43,6 @@ pub struct Sample {
     /// [`Engine::load`]: crate::engine::Engine::load
     /// [`Engine::unload`]: crate::engine::Engine::unload
     pub loaded: bool,
-    /// Channels in the audio, 1 or 2.
-    pub channels: u16,
-    /// Frames in the audio. With `channels`, this says how much RAM the
-    /// audio takes before it is read, so the engine can reserve first.
-    pub frames: usize,
 }
 
 /// Reasons a project operation can fail.
@@ -54,9 +51,6 @@ pub enum ProjectError {
     /// No sample with this id exists in the project.
     #[error("no sample with id {}", .0.0)]
     UnknownSample(SampleId),
-    /// The sample has children and cannot be removed on its own.
-    #[error("sample {} has children and cannot be removed", .0.0)]
-    HasChildren(SampleId),
     #[error(transparent)]
     Storage(#[from] StorageError),
 }
@@ -91,20 +85,6 @@ impl Project {
             self.check(p)?;
         }
         Ok(self.storage.add_sample(parent, audio)?)
-    }
-
-    /// Removes a sample that has no children.
-    ///
-    /// A sample with children is refused: later generations depend on it
-    /// and the lineage must stay readable. Removing a whole lineage is a
-    /// separate, explicit operation that does not exist yet.
-    #[allow(dead_code)] // the engine's remove is not written yet; it will call this
-    pub(crate) fn remove_sample(&mut self, id: SampleId) -> Result<(), ProjectError> {
-        self.check(id)?;
-        if self.storage.has_children(id)? {
-            return Err(ProjectError::HasChildren(id));
-        }
-        Ok(self.storage.remove_sample(id)?)
     }
 
     /// Records whether the sample with this id is loaded.
@@ -142,16 +122,16 @@ impl Project {
 
     /// The audio of the sample with this id, read from storage.
     ///
-    /// Crate-private because reading allocates the whole buffer, so the
-    /// read must be paid for first; the engine does that and is the one
-    /// place a caller gets audio from.
+    /// Crate-private because reading allocates the whole buffer against
+    /// `ledger`; the engine holds that and is the one place a caller gets
+    /// audio from.
     pub(crate) fn audio(
         &self,
         id: SampleId,
-        reservation: &Reservation,
+        ledger: &Arc<Ledger>,
     ) -> Result<AudioBuffer, ProjectError> {
         self.storage
-            .audio(id, reservation)?
+            .audio(id, ledger)?
             .ok_or(ProjectError::UnknownSample(id))
     }
 }
@@ -162,16 +142,16 @@ pub(crate) mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::testing::paid;
+    use crate::config::Pcm;
+    use crate::testing::{audio, unlimited};
 
     /// What the stub storage remembers.
     #[derive(Default)]
     pub(crate) struct State {
         next_id: u32,
-        samples: Vec<(Sample, AudioBuffer)>,
-        /// How many times audio has been read, so a test can check that a
-        /// read did not happen.
-        pub(crate) audio_reads: usize,
+        /// Each sample with its channel count and audio as plain samples:
+        /// the backend's own copy, outside the budget, as a disk is.
+        samples: Vec<(Sample, u16, Vec<Pcm>)>,
     }
 
     /// In-memory storage for tests, shared with the test through `Rc` so
@@ -184,31 +164,22 @@ pub(crate) mod tests {
         }
 
         fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
-            Ok(self.find(id).map(|(s, _)| s))
+            Ok(self.find(id).map(|(s, _, _)| s))
         }
 
         fn audio(
             &self,
             id: SampleId,
-            reservation: &Reservation,
+            ledger: &Arc<Ledger>,
         ) -> Result<Option<AudioBuffer>, StorageError> {
-            self.0.borrow_mut().audio_reads += 1;
-            let Some((_, audio)) = self.find(id) else {
+            let Some((_, channels, samples)) = self.find(id) else {
                 return Ok(None);
             };
-            reservation
-                .can_hold(audio.bytes())
-                .map_err(|source| StorageError::ShortReservation { id, source })?;
-            Ok(Some(audio))
-        }
-
-        fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
-            Ok(self
-                .0
-                .borrow()
-                .samples
-                .iter()
-                .any(|(s, _)| s.parent == Some(id)))
+            let mut block = ledger
+                .alloc(samples.len())
+                .map_err(|source| StorageError::OverBudget { id, source })?;
+            block.extend(samples);
+            Ok(Some(AudioBuffer::new(channels, block).unwrap()))
         }
 
         fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError> {
@@ -217,23 +188,18 @@ pub(crate) mod tests {
                 .borrow()
                 .samples
                 .iter()
-                .filter(|(s, _)| s.loaded)
-                .map(|(s, _)| s.id)
+                .filter(|(s, _, _)| s.loaded)
+                .map(|(s, _, _)| s.id)
                 .collect())
         }
 
-        fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
-            self.0.borrow_mut().samples.retain(|(s, _)| s.id != id);
-            Ok(())
-        }
-
         fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
-            if let Some((s, _)) = self
+            if let Some((s, _, _)) = self
                 .0
                 .borrow_mut()
                 .samples
                 .iter_mut()
-                .find(|(s, _)| s.id == id)
+                .find(|(s, _, _)| s.id == id)
             {
                 s.loaded = loaded;
             }
@@ -253,22 +219,21 @@ pub(crate) mod tests {
                     id,
                     parent,
                     loaded: false,
-                    channels: audio.channels(),
-                    frames: audio.frames(),
                 },
-                audio.clone(),
+                audio.channels(),
+                audio.samples().to_vec(),
             ));
             Ok(id)
         }
     }
 
     impl Memory {
-        fn find(&self, id: SampleId) -> Option<(Sample, AudioBuffer)> {
+        fn find(&self, id: SampleId) -> Option<(Sample, u16, Vec<Pcm>)> {
             self.0
                 .borrow()
                 .samples
                 .iter()
-                .find(|(s, _)| s.id == id)
+                .find(|(s, _, _)| s.id == id)
                 .cloned()
         }
     }
@@ -287,7 +252,7 @@ pub(crate) mod tests {
     }
 
     fn tone() -> AudioBuffer {
-        AudioBuffer::new(1, vec![0, 1, 2, 3]).unwrap()
+        audio(1, &[0.0, 0.1, 0.2, 0.3])
     }
 
     fn structure(state: &Rc<RefCell<State>>) -> Vec<(SampleId, Option<SampleId>)> {
@@ -295,7 +260,7 @@ pub(crate) mod tests {
             .borrow()
             .samples
             .iter()
-            .map(|(s, _)| (s.id, s.parent))
+            .map(|(s, _, _)| (s.id, s.parent))
             .collect()
     }
 
@@ -326,11 +291,12 @@ pub(crate) mod tests {
                 id: child,
                 parent: Some(root),
                 loaded: false,
-                channels: 1,
-                frames: 4,
             }
         );
-        assert_eq!(p.audio(child, &paid()).unwrap(), tone());
+        assert_eq!(
+            p.audio(child, &unlimited()).unwrap().samples(),
+            tone().samples()
+        );
     }
 
     #[test]
@@ -350,41 +316,9 @@ pub(crate) mod tests {
         let bogus = SampleId(7);
         assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
         assert!(matches!(
-            p.audio(bogus, &paid()),
+            p.audio(bogus, &unlimited()),
             Err(ProjectError::UnknownSample(id)) if id == bogus
         ));
-    }
-
-    #[test]
-    fn remove_refuses_a_sample_with_children() {
-        let (mut p, state) = project();
-        let root = p.add_sample(None, &tone()).unwrap();
-        let child = p.add_sample(Some(root), &tone()).unwrap();
-        assert!(matches!(
-            p.remove_sample(root),
-            Err(ProjectError::HasChildren(id)) if id == root
-        ));
-        p.remove_sample(child).unwrap();
-        p.remove_sample(root).unwrap();
-        assert!(structure(&state).is_empty());
-    }
-
-    #[test]
-    fn remove_of_unknown_sample_is_refused() {
-        let (mut p, _state) = project();
-        assert!(matches!(
-            p.remove_sample(SampleId(3)),
-            Err(ProjectError::UnknownSample(SampleId(3)))
-        ));
-    }
-
-    #[test]
-    fn ids_are_not_reused_after_a_remove() {
-        let (mut p, _state) = project();
-        let a = p.add_sample(None, &tone()).unwrap();
-        p.remove_sample(a).unwrap();
-        let b = p.add_sample(None, &tone()).unwrap();
-        assert_ne!(a, b);
     }
 
     #[test]

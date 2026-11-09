@@ -56,14 +56,14 @@ impl Voice {
         match self.audio.channels() {
             1 => {
                 let (frames, _) = out.as_chunks_mut::<OUTPUT_CHANNELS>();
-                for (frame, s) in frames.iter_mut().zip(self.audio.frames_f32(range)) {
+                for (frame, &s) in frames.iter_mut().zip(self.audio.frames_in(range)) {
                     for o in frame {
                         *o += s;
                     }
                 }
             }
             _ => {
-                for (o, s) in out.iter_mut().zip(self.audio.frames_f32(range)) {
+                for (o, &s) in out.iter_mut().zip(self.audio.frames_in(range)) {
                     *o += s;
                 }
             }
@@ -82,15 +82,14 @@ impl Voice {
 mod tests {
     use super::*;
     use crate::config::Pcm;
+    use crate::testing::audio;
 
-    /// Half scale, which converts to exactly 0.5.
-    const HALF: Pcm = 16_384;
+    /// Half scale.
+    const HALF: Pcm = 0.5;
+    const ZERO: Pcm = 0.0;
 
     fn voice(channels: u16, data: Vec<Pcm>) -> Voice {
-        Voice::new(
-            VoiceId(0),
-            Arc::new(AudioBuffer::new(channels, data).unwrap()),
-        )
+        Voice::new(VoiceId(0), Arc::new(audio(channels, &data)))
     }
 
     #[test]
@@ -103,7 +102,7 @@ mod tests {
 
     #[test]
     fn a_stereo_sample_is_heard_as_stored() {
-        let mut v = voice(2, vec![HALF, -HALF, 0, HALF]);
+        let mut v = voice(2, vec![HALF, -HALF, ZERO, HALF]);
         let mut out = vec![0.0; 4];
         assert!(v.mix_into(&mut out));
         assert_eq!(out, vec![0.5, -0.5, 0.0, 0.5]);
@@ -112,7 +111,7 @@ mod tests {
     #[test]
     fn mixing_adds_to_what_is_already_there() {
         let mut a = voice(1, vec![HALF, HALF]);
-        let mut b = voice(2, vec![HALF, 0, -HALF, 0]);
+        let mut b = voice(2, vec![HALF, ZERO, -HALF, ZERO]);
         let mut out = vec![0.0; 4];
         a.mix_into(&mut out);
         b.mix_into(&mut out);

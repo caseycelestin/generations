@@ -8,16 +8,11 @@
 //! exists, and release cannot be forgotten or counted twice.
 //!
 //! Who may allocate is decided by who holds a `&Arc<Ledger>`. The control
-//! side does: decode, convert, storage reads, the recorder, the engine.
+//! side does: decode, convert, storage reads, the engine.
 //! The render side never does, and so cannot allocate even by mistake;
 //! what it works on arrives already allocated, by command. A block holds
 //! its own handle to the ledger it came from, but only to repay it: that
 //! field is private to this module, so holding a block grants nothing.
-//!
-//! Replaces `ledger`, which is a quota beside the allocation rather than
-//! the allocation itself. Not yet wired to a caller.
-
-#![allow(dead_code)] // until the first caller is ported
 
 use std::mem::size_of;
 use std::sync::Arc;
@@ -84,21 +79,10 @@ impl Ledger {
         Ok(Block::new(Vec::with_capacity(samples), Arc::clone(self)))
     }
 
-    /// The bytes this ledger was opened with.
-    pub fn budget(&self) -> usize {
-        self.budget
-    }
-
     /// Bytes held by live blocks right now.
+    #[cfg(test)] // read by nothing but tests until a panel asks
     pub fn in_use(&self) -> usize {
         self.in_use.load(Ordering::Relaxed)
-    }
-
-    /// Bytes an `alloc` could still take. The control side allocates only
-    /// when asked, and a block dropping elsewhere only frees, so a caller
-    /// who reads this and then allocates is never refused for less.
-    pub fn available(&self) -> usize {
-        self.budget - self.in_use()
     }
 
     /// Gives `bytes` back. Called by a block as it drops; nothing else
@@ -130,18 +114,15 @@ mod tests {
     #[test]
     fn a_new_ledger_has_nothing_in_use() {
         let ledger = Ledger::new(100);
-        assert_eq!(ledger.budget(), 100);
         assert_eq!(ledger.in_use(), 0);
-        assert_eq!(ledger.available(), 100);
     }
 
     #[test]
-    fn available_is_what_is_left_and_an_alloc_of_it_succeeds() {
+    fn an_alloc_of_exactly_what_is_left_succeeds() {
         let ledger = Ledger::new(100);
         let _a: Block<u8> = ledger.alloc(30).unwrap();
-        assert_eq!(ledger.available(), 70);
-        let _b: Block<u8> = ledger.alloc(ledger.available()).unwrap();
-        assert_eq!(ledger.available(), 0);
+        let _b: Block<u8> = ledger.alloc(70).unwrap();
+        assert_eq!(ledger.in_use(), 100);
     }
 
     #[test]

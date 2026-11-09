@@ -169,10 +169,9 @@ out; the short version of the argument is here so it is not had twice.
   float WAV on the card at twice the size of a 16-bit file. For a sampler
   whose project is mostly one-shots and loops, that is hundreds of pads,
   and the memory ledger counts it either way. The `Pcm` alias stays so the
-  decision is visible in one place and reversible; the first type to carry
-  it is `audio_v2::AudioBuffer`, over `Block<f32>`. The old `audio` module,
-  its dither, `to_f32`/`from_f32` and the quantise in `Take::write` go as
-  their callers port to it.
+  decision is visible in one place and reversible; `AudioBuffer` carries
+  it over `Block<f32>`. The `i16` module, its dither, `to_f32`/`from_f32`
+  and the quantise in `Take::write` went with the memory port.
 - **An effect was a function**, `&AudioBuffer -> AudioBuffer`, and the
   engine took one as a plain argument to `print`. Removed in step 5 along
   with `print` and the one effect, reverse: by then the decision that

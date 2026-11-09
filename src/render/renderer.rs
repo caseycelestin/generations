@@ -122,9 +122,10 @@ mod tests {
 
     use super::*;
     use crate::config::Pcm;
+    use crate::testing::audio;
 
-    const HALF: Pcm = 16_384;
-    const FULL: Pcm = Pcm::MAX;
+    const HALF: Pcm = 0.5;
+    const FULL: Pcm = 1.0;
 
     fn renderer() -> (Producer<Command>, Renderer) {
         let (producer, consumer) = RingBuffer::new(VOICE_COUNT + 8);
@@ -132,7 +133,7 @@ mod tests {
     }
 
     fn mono(data: Vec<Pcm>) -> Arc<AudioBuffer> {
-        Arc::new(AudioBuffer::new(1, data).unwrap())
+        Arc::new(audio(1, &data))
     }
 
     fn play(p: &mut Producer<Command>, id: u64, audio: &Arc<AudioBuffer>) {

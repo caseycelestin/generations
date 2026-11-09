@@ -4,7 +4,7 @@
 //! myproject/
 //!   project.json      the manifest: format version, id counter, lineage
 //!   samples/
-//!     0.wav           one 48 kHz 16-bit WAV per sample, named by id
+//!     0.wav           one 48 kHz 32-bit float WAV per sample, named by id
 //!     1.wav
 //! ```
 //!
@@ -21,10 +21,16 @@
 //! manifest or the new one, never half of either. The directory is
 //! engine-owned; renaming a WAV by hand breaks the sample, and
 //! [`FileStorage::open`] checks the whole project before opening on it.
+//!
+//! The WAV holds the engine's sample type as it is, so a read is a copy
+//! from disk into a block and nothing converts. A 16-bit project written
+//! by `storage` is refused as the wrong format; the format version does
+//! not move because nothing written at version 1 is meant to be kept.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
@@ -32,9 +38,12 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::{MAX_CHANNELS, Pcm, SAMPLE_RATE};
-use crate::ledger::Reservation;
+use crate::memory::Ledger;
 use crate::project::{Sample, SampleId};
 use crate::storage::{Storage, StorageError};
+
+/// Bits in one stored sample, as the WAV header counts them.
+const BITS_PER_SAMPLE: u16 = (size_of::<Pcm>() * 8) as u16;
 
 const MANIFEST: &str = "project.json";
 const SAMPLES_DIR: &str = "samples";
@@ -200,17 +209,15 @@ impl FileStorage {
         let spec = WavSpec {
             channels: audio.channels(),
             sample_rate: SAMPLE_RATE,
-            bits_per_sample: Pcm::BITS as u16,
-            sample_format: SampleFormat::Int,
+            bits_per_sample: BITS_PER_SAMPLE,
+            sample_format: SampleFormat::Float,
         };
         let mut file = File::create(&path).map_err(|e| at(&path, e))?;
         {
             let mut writer = WavWriter::new(&mut file, spec).map_err(|e| at(&path, e))?;
-            let mut w = writer.get_i16_writer(audio.samples().len() as u32);
             for &s in audio.samples() {
-                w.write_sample(s);
+                writer.write_sample(s).map_err(|e| at(&path, e))?;
             }
-            w.flush().map_err(|e| at(&path, e))?;
             writer.finalize().map_err(|e| at(&path, e))?;
         }
         file.sync_all().map_err(|e| at(&path, e))?;
@@ -225,42 +232,28 @@ impl FileStorage {
         Ok(reader)
     }
 
-    fn read_wav(
-        &self,
-        id: SampleId,
-        reservation: &Reservation,
-    ) -> Result<AudioBuffer, StorageError> {
+    /// Reads a sample's WAV into a block of exactly its sample count,
+    /// allocated from `ledger` after the header is checked and before any
+    /// audio is read.
+    fn read_wav(&self, id: SampleId, ledger: &Arc<Ledger>) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
-        let spec = reader.spec();
-        let frames = reader.duration() as usize;
-        let bytes = AudioBuffer::bytes_for(spec.channels, frames).ok_or_else(|| {
-            StorageError::BadAudioFormat {
-                id,
-                detail: format!(
-                    "{frames} frames of {} channels are too large to hold",
-                    spec.channels
-                ),
-            }
-        })?;
-        reservation
-            .can_hold(bytes)
-            .map_err(|source| StorageError::ShortReservation { id, source })?;
-        // Exactly the capacity reserved: collecting through a `Result`
-        // loses the size hint and grows by doubling.
-        let mut data = Vec::with_capacity(reader.len() as usize);
+        let channels = reader.spec().channels;
+        let mut data = ledger
+            .alloc(reader.len() as usize)
+            .map_err(|source| StorageError::OverBudget { id, source })?;
         for sample in reader.samples::<Pcm>() {
             data.push(sample.map_err(|e| at(&path, e))?);
         }
-        AudioBuffer::new(spec.channels, data).map_err(|e| at(&path, e))
+        AudioBuffer::new(channels, data).map_err(|(e, _)| at(&path, e))
     }
 }
 
 /// Refuses a WAV header that is not the engine's one fixed format.
 fn check_spec(id: SampleId, spec: WavSpec) -> Result<(), StorageError> {
     let expected = spec.sample_rate == SAMPLE_RATE
-        && spec.bits_per_sample == Pcm::BITS as u16
-        && spec.sample_format == SampleFormat::Int
+        && spec.bits_per_sample == BITS_PER_SAMPLE
+        && spec.sample_format == SampleFormat::Float
         && (1..=MAX_CHANNELS).contains(&spec.channels);
     if expected {
         Ok(())
@@ -298,35 +291,22 @@ impl Storage for FileStorage {
         let Some(entry) = manifest.samples.get(&id.0) else {
             return Ok(None);
         };
-        // The WAV header is the one record of the audio's shape; the
-        // manifest does not repeat it, so the two cannot disagree.
-        let reader = self.open_wav(id)?;
         Ok(Some(Sample {
             id,
             parent: entry.parent.map(SampleId),
             loaded: entry.loaded,
-            channels: reader.spec().channels,
-            frames: reader.duration() as usize,
         }))
     }
 
     fn audio(
         &self,
         id: SampleId,
-        reservation: &Reservation,
+        ledger: &Arc<Ledger>,
     ) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
         }
-        self.read_wav(id, reservation).map(Some)
-    }
-
-    fn has_children(&self, id: SampleId) -> Result<bool, StorageError> {
-        Ok(self
-            .read_manifest()?
-            .samples
-            .values()
-            .any(|e| e.parent == Some(id.0)))
+        self.read_wav(id, ledger).map(Some)
     }
 
     fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError> {
@@ -337,20 +317,6 @@ impl Storage for FileStorage {
             .filter(|(_, e)| e.loaded)
             .map(|(&id, _)| SampleId(id))
             .collect())
-    }
-
-    fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError> {
-        let mut manifest = self.read_manifest()?;
-        if manifest.samples.remove(&id.0).is_none() {
-            return Ok(());
-        }
-        self.write_manifest(&manifest)?;
-        let path = self.wav_path(id);
-        match fs::remove_file(&path) {
-            Ok(()) => sync_dir(&self.samples_dir()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(at(&path, e)),
-        }
     }
 
     fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
@@ -389,33 +355,44 @@ impl Storage for FileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::{Ledger, ShortReservation};
-    use crate::testing::paid;
+    use crate::testing::unlimited;
 
     #[test]
-    fn a_short_reservation_is_refused_before_reading() {
+    fn a_read_is_paid_for_exactly_and_returned_on_drop() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let id = s.add_sample(None, &ramp(2, 3)).unwrap();
-        let needed = ramp(2, 3).bytes();
-        let ledger = Ledger::new(usize::MAX);
-        assert!(
-            s.audio(id, &ledger.reserve(needed).unwrap())
-                .unwrap()
-                .is_some()
-        );
-        assert!(matches!(
-            s.audio(id, &ledger.reserve(needed - 1).unwrap()).unwrap_err(),
-            StorageError::ShortReservation { id: i, source: ShortReservation { needed: n, reserved: r } }
-                if i == id && n == needed && r == needed - 1
-        ));
+        let bytes = 6 * size_of::<Pcm>();
+        let ledger = Ledger::new(bytes);
+        let audio = s.audio(id, &ledger).unwrap().unwrap();
+        assert_eq!(ledger.in_use(), bytes);
+        drop(audio);
+        assert_eq!(ledger.in_use(), 0);
     }
 
-    fn ramp(channels: u16, frames: i16) -> AudioBuffer {
-        let data: Vec<i16> = (0..frames * channels as i16)
-            .map(|i| i * 101 - 700)
-            .collect();
-        AudioBuffer::new(channels, data).unwrap()
+    #[test]
+    fn over_budget_is_refused_with_nothing_allocated() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let id = s.add_sample(None, &ramp(2, 3)).unwrap();
+        let bytes = 6 * size_of::<Pcm>();
+        let ledger = Ledger::new(bytes - 1);
+        assert!(matches!(
+            s.audio(id, &ledger).unwrap_err(),
+            StorageError::OverBudget { id: i, source } if i == id && source.requested == bytes
+        ));
+        assert_eq!(ledger.in_use(), 0);
+    }
+
+    fn ramp(channels: u16, frames: usize) -> AudioBuffer {
+        let mut block = unlimited().alloc(frames * usize::from(channels)).unwrap();
+        block.extend((0..block.capacity()).map(|i| i as Pcm * 0.101 - 0.7));
+        AudioBuffer::new(channels, block).unwrap()
+    }
+
+    fn assert_same(a: &AudioBuffer, b: &AudioBuffer) {
+        assert_eq!(a.channels(), b.channels());
+        assert_eq!(a.samples(), b.samples());
     }
 
     fn created(dir: &Path) -> FileStorage {
@@ -468,9 +445,9 @@ mod tests {
         let s = reopen(dir.path()).unwrap();
         assert_eq!(s.sample(rev).unwrap().unwrap().parent, Some(root));
         assert_eq!(s.sample(back).unwrap().unwrap().parent, Some(rev));
-        assert_eq!(s.audio(root, &paid()).unwrap().unwrap(), ramp(2, 16));
-        assert_eq!(s.audio(rev, &paid()).unwrap().unwrap(), ramp(2, 8));
-        assert_eq!(s.audio(back, &paid()).unwrap().unwrap(), ramp(2, 16));
+        assert_same(&s.audio(root, &unlimited()).unwrap().unwrap(), &ramp(2, 16));
+        assert_same(&s.audio(rev, &unlimited()).unwrap().unwrap(), &ramp(2, 8));
+        assert_same(&s.audio(back, &unlimited()).unwrap().unwrap(), &ramp(2, 16));
     }
 
     #[test]
@@ -478,62 +455,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = created(dir.path());
         assert!(s.sample(SampleId(9)).unwrap().is_none());
-        assert!(s.audio(SampleId(9), &paid()).unwrap().is_none());
+        assert!(s.audio(SampleId(9), &unlimited()).unwrap().is_none());
     }
 
     #[test]
-    fn ids_are_not_reused_across_remove_and_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        let a = s.add_sample(None, &ramp(1, 1)).unwrap();
-        s.remove_sample(a).unwrap();
-        drop(s);
-        let mut s = reopen(dir.path()).unwrap();
-        let b = s.add_sample(None, &ramp(1, 1)).unwrap();
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn remove_deletes_the_wav_and_has_children_sees_the_tree() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(1, 1)).unwrap();
-        let child = s.add_sample(Some(root), &ramp(1, 1)).unwrap();
-        assert!(s.has_children(root).unwrap());
-        assert!(!s.has_children(child).unwrap());
-
-        s.remove_sample(child).unwrap();
-        assert!(!s.has_children(root).unwrap());
-        assert!(!s.wav_path(child).exists());
-        assert!(s.wav_path(root).exists());
-        // Removing again is not an error.
-        s.remove_sample(child).unwrap();
-    }
-
-    #[test]
-    fn renamed_wav_is_an_error_for_the_record_and_the_audio() {
+    fn renamed_wav_is_an_error_for_the_audio_only() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         let id = s.add_sample(None, &ramp(1, 4)).unwrap();
         fs::rename(s.wav_path(id), dir.path().join("samples/kick.wav")).unwrap();
-        // The record takes the audio's shape from the WAV header, so it
-        // cannot be read either; existence can, from the manifest.
-        assert!(matches!(s.sample(id), Err(StorageError::Backend(_))));
+        // The record and existence come from the manifest; only the audio
+        // needs the file.
+        assert!(s.sample(id).unwrap().is_some());
         assert!(matches!(
-            s.audio(id, &paid()),
+            s.audio(id, &unlimited()),
             Err(StorageError::Backend(_))
         ));
         assert!(s.has_sample(id).unwrap());
-    }
-
-    #[test]
-    fn the_record_carries_the_audios_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(2, 3)).unwrap();
-        let sample = s.sample(id).unwrap().unwrap();
-        assert_eq!(sample.channels, 2);
-        assert_eq!(sample.frames, 3);
     }
 
     #[test]
@@ -544,14 +482,14 @@ mod tests {
         let spec = WavSpec {
             channels: 1,
             sample_rate: 44_100,
-            bits_per_sample: 16,
-            sample_format: SampleFormat::Int,
+            bits_per_sample: BITS_PER_SAMPLE,
+            sample_format: SampleFormat::Float,
         };
         let mut w = WavWriter::create(s.wav_path(id), spec).unwrap();
-        w.write_sample(0i16).unwrap();
+        w.write_sample(0.0 as Pcm).unwrap();
         w.finalize().unwrap();
         assert!(matches!(
-            s.audio(id, &paid()),
+            s.audio(id, &unlimited()),
             Err(StorageError::BadAudioFormat { id: i, .. }) if i == id
         ));
     }
@@ -658,6 +596,26 @@ mod tests {
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
         assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
+    }
+
+    #[test]
+    fn a_16_bit_wav_is_the_wrong_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = created(dir.path());
+        let id = s.add_sample(None, &ramp(1, 4)).unwrap();
+        let spec = WavSpec {
+            channels: 1,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: 16,
+            sample_format: SampleFormat::Int,
+        };
+        let mut w = WavWriter::create(s.wav_path(id), spec).unwrap();
+        w.write_sample(0i16).unwrap();
+        w.finalize().unwrap();
+        assert!(matches!(
+            s.audio(id, &unlimited()),
+            Err(StorageError::BadAudioFormat { id: i, .. }) if i == id
+        ));
     }
 
     #[test]
