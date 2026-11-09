@@ -203,8 +203,14 @@ impl Engine {
         };
         let stored = copy.and_then(|copy| {
             let id = self.project.add_sample(None, &audio)?;
-            if let Some((audio, reservation)) = copy {
-                self.admit(id, audio, reservation)?;
+            if let Some(entry) = copy {
+                // As `load` does: the audio is in RAM before the flag says
+                // so, and comes back out if the flag cannot be written.
+                self.loaded.insert(id, entry);
+                if let Err(e) = self.project.set_loaded(id, true) {
+                    self.loaded.remove(&id);
+                    return Err(e.into());
+                }
             }
             Ok(id)
         });
@@ -263,29 +269,15 @@ impl Engine {
             )?;
             let reservation = self.ledger.reserve(bytes)?;
             let audio = self.project.audio(id, &reservation)?;
-            self.admit(id, Arc::new(audio), reservation)?;
+            // The audio is in RAM before the flag says so, and comes back
+            // out if the flag cannot be written, so the two agree.
+            self.loaded.insert(id, (Arc::new(audio), reservation));
+            if let Err(e) = self.project.set_loaded(id, true) {
+                self.loaded.remove(&id);
+                return Err(e.into());
+            }
         } else {
             self.project.set_loaded(id, true)?;
-        }
-        Ok(())
-    }
-
-    /// Makes `id` loaded: `audio`, paid for by `reservation`, goes into
-    /// the loaded map and then the flag is set, in that order, so the
-    /// flag is never true for a sample that is not in RAM. If the flag
-    /// cannot be written the audio comes back out, so the map and the
-    /// flag agree either way. The one place that says what loaded means;
-    /// `load` and `save_take` both come here.
-    fn admit(
-        &mut self,
-        id: SampleId,
-        audio: Arc<AudioBuffer>,
-        reservation: Reservation,
-    ) -> Result<(), EngineError> {
-        self.loaded.insert(id, (audio, reservation));
-        if let Err(e) = self.project.set_loaded(id, true) {
-            self.loaded.remove(&id);
-            return Err(e.into());
         }
         Ok(())
     }
