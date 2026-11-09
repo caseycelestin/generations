@@ -113,6 +113,7 @@ pub mod project;
 pub(crate) mod record;
 pub(crate) mod render;
 pub(crate) mod storage;
+pub(crate) mod storage_v2;
 #[cfg(test)]
 pub(crate) mod testing;
 
