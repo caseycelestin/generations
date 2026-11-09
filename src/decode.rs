@@ -1,7 +1,7 @@
 //! Reading audio files into samples, paid for against the ledger.
 //!
 //! One function, [`decode`], takes a path and returns a [`Decoded`]: the
-//! file's audio as interleaved [`PcmV2`] samples at the file's own rate
+//! file's audio as interleaved [`Pcm`] samples at the file's own rate
 //! and channel count, in a [`Block`] the decoder paid for itself. The one
 //! format read is WAV: RIFF/WAVE with integer PCM at 8 to 32 bits, or
 //! 32-bit float. A second format brings its own dispatch when it comes.
@@ -12,12 +12,6 @@
 //! notice is the rate. The decoder reads the sample count from the file's
 //! header and asks the ledger for exactly that before it reads any audio,
 //! so a file that does not fit is refused with nothing allocated.
-//!
-//! Replaces `decode`, which reports integers at their own width into a
-//! `Vec` paid for by a reservation beside it. Not yet wired to a caller;
-//! this file becomes `decode` when the last one ports.
-
-#![allow(dead_code)] // until the first caller is ported
 
 use std::io;
 use std::path::Path;
@@ -26,7 +20,7 @@ use std::sync::Arc;
 use hound::{SampleFormat, WavReader};
 use thiserror::Error;
 
-use crate::config::PcmV2;
+use crate::config::Pcm;
 use crate::memory::{Block, Ledger, OverBudget};
 
 /// Audio as a decoder found it: the engine's sample type at the file's
@@ -38,7 +32,7 @@ pub struct Decoded {
     /// Interleaved channel count of the source.
     pub channels: u16,
     /// Interleaved samples, `channels` per frame, paid for by the decoder.
-    pub samples: Block<PcmV2>,
+    pub samples: Block<Pcm>,
 }
 
 /// Reasons a file could not be read into samples.
@@ -121,7 +115,7 @@ fn check_width(path: &Path, spec: hound::WavSpec) -> Result<Width, DecodeError> 
 /// the block was sized from, so every sample fits.
 fn fill(
     path: &Path,
-    block: &mut Block<PcmV2>,
+    block: &mut Block<Pcm>,
     samples: impl Iterator<Item = hound::Result<f32>>,
 ) -> Result<(), DecodeError> {
     for sample in samples {
@@ -184,7 +178,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ten.wav");
         write(&path, spec(1, 48_000, 16, SampleFormat::Int), &[0i16; 10]);
-        let bytes = 10 * size_of::<PcmV2>();
+        let bytes = 10 * size_of::<Pcm>();
 
         let ledger = Ledger::new(bytes);
         let d = super::decode(&path, &ledger).unwrap();

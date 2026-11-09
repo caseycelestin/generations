@@ -7,19 +7,23 @@
 //! directory today, perhaps a database later) is the implementation's
 //! private business.
 //!
-//! [`files::FileStorage`] is the one backend so far.
+//! [`files::FileStorage`] is the one backend so far. A read is a
+//! [`Block`] from the ledger, and the WAV on disk holds the engine's
+//! sample type.
 //!
 //! [`Project`]: crate::project::Project
+//! [`Block`]: crate::memory::Block
 
 pub mod files;
 
 use std::error::Error;
 use std::path::Path;
+use std::sync::Arc;
 
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
-use crate::ledger::{Reservation, ShortReservation};
+use crate::memory::{Ledger, OverBudget};
 use crate::project::{Sample, SampleId};
 
 /// Reasons storage cannot do what was asked.
@@ -37,13 +41,13 @@ pub enum StorageError {
     /// Stored audio is not in the engine's one fixed format.
     #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
     BadAudioFormat { id: SampleId, detail: String },
-    /// The reservation offered does not pay for the sample's audio.
+    /// The sample's audio would put the engine's memory over its budget.
     /// Nothing was allocated.
-    #[error("reading sample {} {source}", .id.0)]
-    ShortReservation {
+    #[error("reading sample {}: {source}", .id.0)]
+    OverBudget {
         id: SampleId,
         #[source]
-        source: ShortReservation,
+        source: OverBudget,
     },
     /// Something failed underneath: the filesystem, a codec, a database.
     #[error(transparent)]
@@ -64,39 +68,29 @@ pub trait Storage {
     /// Everything stored about the sample with this id except its audio,
     /// or `None` if there is none.
     ///
-    /// `channels` and `frames` must describe exactly the bytes [`audio`]
-    /// will return for the same id: the engine reserves memory from them
-    /// before it reads. If the audio has grown in between, `audio` refuses
-    /// the reservation as short; if it has shrunk, it is read and the
-    /// reservation over-counts until it is dropped. A backend may need to
-    /// look at the audio to answer, so this can fail where the audio is
-    /// unreadable.
+    /// `channels` and `frames` describe the audio [`audio`] will return
+    /// for the same id, so a caller can tell what a read would cost
+    /// before making it. A backend may need to look at the audio to
+    /// answer, so this can fail where the audio is unreadable.
     ///
     /// [`audio`]: Storage::audio
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
 
-    /// The stored audio of the sample with this id, or `None` if there is
-    /// none.
+    /// The stored audio of the sample with this id in a block from
+    /// `ledger`, or `None` if there is none.
     ///
-    /// `reservation` must cover the audio's bytes, as the record's
-    /// `channels` and `frames` give them; a short one is refused before
-    /// anything is allocated. The caller keeps it for as long as the audio
-    /// lives.
+    /// The block is sized from what is stored before any audio is read,
+    /// so a sample that does not fit is refused with nothing allocated.
+    /// The caller holds the audio for as long as it wants the memory; the
+    /// bytes go back when the buffer drops.
     fn audio(
         &self,
         id: SampleId,
-        reservation: &Reservation,
+        ledger: &Arc<Ledger>,
     ) -> Result<Option<AudioBuffer>, StorageError>;
-
-    /// Whether any stored sample has this one as its parent.
-    fn has_children(&self, id: SampleId) -> Result<bool, StorageError>;
 
     /// The ids of every stored sample that is loaded, in id order.
     fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError>;
-
-    /// Removes the sample with this id and its audio. Removing an id that
-    /// is not stored is not an error. The counter does not move back.
-    fn remove_sample(&mut self, id: SampleId) -> Result<(), StorageError>;
 
     /// Records whether the sample with this id is loaded. Setting it on an
     /// id that is not stored is not an error; whether it exists is the

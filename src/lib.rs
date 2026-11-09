@@ -14,8 +14,8 @@
 //! engine     coordinates: what a UI or front panel calls. Also the control
 //!   │        side of sound: holds the audio in RAM and sends the commands
 //!   │
-//!   ├─ ledger    one memory budget; every buffer that scales with audio
-//!   │            is reserved here before it is allocated
+//!   ├─ memory    one memory budget; every buffer that scales with audio
+//!   │            is a block allocated from it, and repays it when dropped
 //!   │
 //!   ├─ decode    reads a file into plain samples, whatever format it is in
 //!   │   └─ convert   takes those to the project format: resample, quantise
@@ -36,14 +36,13 @@
 //! - **[`engine`]** is the only code that touches more than one role, and
 //!   the only way in from outside the crate: every other role is reachable
 //!   through it or not at all, so there is one path to each action. An
-//!   import is: reserve, decode, reserve, convert, add the result to the
-//!   project as a root. A load is: reserve, read the audio from the project
-//!   into RAM, mark the sample loaded. A play is: find the loaded audio,
-//!   send a command. The engine is the control
-//!   side of sound: it owns the ledger (one memory budget for everything it
-//!   holds in RAM), the loaded audio (each buffer with its reservation) and
-//!   the sending end of a lock-free command ring, and nothing it does can
-//!   block the other end.
+//!   import is: decode, convert, add the result to the project as a root.
+//!   A load is: read the audio from the project into RAM, mark the sample
+//!   loaded. A play is: find the loaded audio, send a command. The engine
+//!   is the control side of sound: it owns the ledger (one memory budget
+//!   for everything it holds in RAM, which every allocation along those
+//!   paths is a block of), the loaded audio and the sending end of a
+//!   lock-free command ring, and nothing it does can block the other end.
 //! - **`render`** is the other end of that ring. The renderer turns
 //!   commands and resident audio into frames and depends on nothing about
 //!   where it runs, so a device can drive it live and a bounce can drive it
@@ -62,18 +61,19 @@
 //! - **`storage`** is a trait so the medium can change (a directory today,
 //!   perhaps a database later) without the rules moving. A storage always
 //!   holds a whole, valid project; opening one creates or validates it.
-//! - **`ledger`** is the one memory budget. Decode, convert and the storage
-//!   read each take a reservation and refuse one that does not cover what
-//!   they will allocate, so nothing that scales with audio exists uncounted.
-//!   Audio never leaves the engine for the same reason.
+//! - **`memory`** is the one memory budget. Decode, convert and the storage
+//!   read each allocate their block from it and are refused what does not
+//!   fit, so nothing that scales with audio exists uncounted. Audio never
+//!   leaves the engine for the same reason.
 //! - **`decode`** and **`convert`** are the boundary between the world's
 //!   audio and the project's. A decoder reads one file format into a plain
-//!   value (rate, channels, interleaved `f32`); `convert` resamples and
-//!   quantises that into a buffer. Formats are added by writing a decoder;
+//!   value (rate, channels, interleaved samples); `convert` resamples that
+//!   into a buffer. Formats are added by writing a decoder;
 //!   nothing about the project format moves, and the caller never sees
 //!   either: it hands [`Engine::import`] a path.
-//! - **[`audio`]** and **[`config`]** hold the one fixed format every buffer
-//!   uses: 48 kHz, 16-bit PCM, 1 or 2 channels, with `f32` for processing.
+//! - **`audio`** and **[`config`]** hold the one fixed format every buffer
+//!   uses: 48 kHz, `f32`, 1 or 2 channels, on disk, in RAM and on the
+//!   render path alike.
 //!
 //! # Opening a project, and hearing it
 //!
@@ -100,20 +100,14 @@
 //! decisions behind it.
 
 pub mod audio;
-pub(crate) mod audio_v2;
 pub mod config;
 pub(crate) mod convert;
-pub(crate) mod convert_v2;
 pub(crate) mod decode;
-pub(crate) mod decode_v2;
 pub mod engine;
-pub(crate) mod ledger;
 pub(crate) mod memory;
 pub mod project;
-pub(crate) mod record;
 pub(crate) mod render;
 pub(crate) mod storage;
-pub(crate) mod storage_v2;
 #[cfg(test)]
 pub(crate) mod testing;
 
@@ -121,8 +115,7 @@ pub use audio::{AudioBuffer, AudioError};
 pub use convert::ConvertError;
 pub use decode::DecodeError;
 pub use engine::{Engine, EngineError};
-pub use ledger::OverBudget;
+pub use memory::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
-pub use record::{RecordError, Recorder, Take};
 pub use render::{Renderer, VoiceId};
 pub use storage::StorageError;
