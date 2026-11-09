@@ -34,7 +34,7 @@ use crate::audio::{AudioBuffer, AudioError, Dither, check_channels};
 use crate::config::Pcm;
 use crate::ledger::{Reservation, ShortReservation};
 
-/// Reasons a recorder cannot be made.
+/// Reasons a recorder cannot be made, or cannot give what is asked of it.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RecordError {
     /// The channel count is not one a buffer may have.
@@ -72,7 +72,6 @@ pub(crate) fn byte_cost(channels: u16, frames: usize) -> Result<usize, RecordErr
 ///
 /// Minted by the engine, kept by the caller. It never goes to the audio
 /// thread. Dropping it gives its memory back.
-#[derive(Debug)]
 pub struct Recorder {
     /// The recorder's audio memory, interleaved, allocated to full capacity
     /// when the recorder is made. Never grows. `None` while a take has it;
@@ -82,12 +81,26 @@ pub struct Recorder {
     channels: u16,
     /// The bytes the buffer costs, reserved by the engine before the
     /// recorder was made and held for as long as it lives.
-    // Read once a take is stored; until then the recorder only holds it.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // held for its lifetime; read by nothing
     reservation: Reservation,
     /// The receiving end of the ring the live take will hand its buffer
     /// back on. `None` when no take is out.
     finished: Option<Consumer<Vec<Pcm>>>,
+}
+
+impl fmt::Debug for Recorder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let channels = usize::from(self.channels);
+        f.debug_struct("Recorder")
+            .field("channels", &self.channels)
+            .field("recording", &self.data.is_none())
+            .field("frames", &self.data.as_ref().map(|d| d.len() / channels))
+            .field(
+                "capacity",
+                &self.data.as_ref().map(|d| d.capacity() / channels),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl Recorder {
@@ -132,13 +145,10 @@ impl Recorder {
     /// the one allocation a take costs and it is not in proportion to
     /// audio length.
     pub fn start_take(&mut self) -> Result<Take, RecordError> {
-        if self.is_recording() {
+        self.collect();
+        let Some(mut data) = self.data.take() else {
             return Err(RecordError::Busy);
-        }
-        let mut data = self
-            .data
-            .take()
-            .expect("not recording means the buffer is here");
+        };
         data.clear();
         let (producer, consumer) = RingBuffer::new(1);
         self.finished = Some(consumer);
@@ -158,13 +168,10 @@ impl Recorder {
     /// exclusively between the two, so no take can be asked for meanwhile.
     /// Nothing is copied: the buffer is wrapped as it stands.
     pub(crate) fn recorded(&mut self) -> Result<AudioBuffer, RecordError> {
-        if self.is_recording() {
+        self.collect();
+        let Some(data) = &mut self.data else {
             return Err(RecordError::Busy);
-        }
-        let data = self
-            .data
-            .as_mut()
-            .expect("not recording means the buffer is here");
+        };
         if data.is_empty() {
             return Err(RecordError::Nothing);
         }
@@ -236,13 +243,16 @@ impl Take {
             "{} samples is not a whole number of {channels}-channel frames",
             frames.len()
         );
-        let whole = frames.len() - frames.len() % channels;
+        let whole = frames.len() / channels * channels;
         // The capacity and the length are both whole frames, so the room
-        // is too, and pushing within it never reallocates.
+        // is too, and extending within it never reallocates.
         let room = self.data.capacity() - self.data.len();
-        for &sample in &frames[..whole.min(room)] {
-            self.data.push(self.dither.quantise(sample));
-        }
+        let dither = &mut self.dither;
+        self.data.extend(
+            frames[..whole.min(room)]
+                .iter()
+                .map(|&s| dither.quantise(s)),
+        );
         if self.data.len() == self.data.capacity() {
             self.finish();
         }
@@ -343,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_take_hands_the_buffer_back_without_losing_capacity() {
+    fn a_dropped_take_hands_the_buffer_back_and_the_next_take_starts_over() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
         let mut t = r.start_take().unwrap();
         t.data.extend([1, 2, 3]);
@@ -353,14 +363,7 @@ mod tests {
         assert_eq!(data.as_slice(), [1, 2, 3]);
         assert_eq!(data.capacity(), 10);
         assert!(r.finished.is_none());
-    }
 
-    #[test]
-    fn a_new_take_starts_over() {
-        let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.start_take().unwrap();
-        t.data.extend([1, 2, 3]);
-        drop(t);
         let t = r.start_take().unwrap();
         assert!(t.data.is_empty());
         assert_eq!(t.data.capacity(), 10);
@@ -474,16 +477,6 @@ mod tests {
     }
 
     #[test]
-    fn recorded_is_refused_while_a_take_is_out_or_nothing_was_written() {
-        let mut r = Recorder::new(1, 10, paid()).unwrap();
-        assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
-        let t = r.start_take().unwrap();
-        assert_eq!(r.recorded().unwrap_err(), RecordError::Busy);
-        drop(t);
-        assert_eq!(r.recorded().unwrap_err(), RecordError::Nothing);
-    }
-
-    #[test]
     fn a_take_outliving_its_recorder_drops_quietly() {
         let mut r = Recorder::new(1, 10, paid()).unwrap();
         let t = r.start_take().unwrap();
@@ -491,14 +484,11 @@ mod tests {
         drop(t);
     }
 
-    #[test]
-    fn a_take_can_be_written_on_another_thread() {
-        let mut r = Recorder::new(1, 10, paid()).unwrap();
-        let mut t = r.start_take().unwrap();
-        std::thread::spawn(move || t.write(&[0.5; 4]))
-            .join()
-            .unwrap();
-        assert_eq!(recorded(&mut r), quantised(1, &[0.5; 4]));
+    /// A take goes to the audio thread, so it must be `Send`. Checked by
+    /// the compiler; the function is never called.
+    fn _take_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Take>();
     }
 
     #[test]

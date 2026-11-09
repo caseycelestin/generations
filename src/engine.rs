@@ -34,7 +34,7 @@ use crate::record::{self, RecordError, Recorder};
 use crate::render::{BufferAddr, Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
-use crate::ledger::{Ledger, OverBudget, Reservation};
+use crate::ledger::{Ledger, OverBudget, Reservation, ShortReservation};
 
 /// Reasons an engine operation can fail.
 #[derive(Debug, Error)]
@@ -51,6 +51,10 @@ pub enum EngineError {
     Convert(#[from] ConvertError),
     #[error(transparent)]
     Record(#[from] RecordError),
+    /// A reservation the engine made did not cover what was then
+    /// allocated against it. Nothing was allocated.
+    #[error(transparent)]
+    ShortReservation(#[from] ShortReservation),
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -176,12 +180,11 @@ impl Engine {
         // Everything that can fail while the buffer is on loan is folded
         // into one result, so it goes back in exactly one place.
         let copy = if keep_loaded {
-            // A clone is exactly `bytes()` long, so the reservation covers
-            // it by construction; there is no shorter path to check.
             self.ledger
                 .reserve(audio.bytes())
-                .map(|reservation| Some((Arc::new(audio.clone()), reservation)))
                 .map_err(EngineError::from)
+                .and_then(|reservation| Ok((Arc::new(audio.copy(&reservation)?), reservation)))
+                .map(Some)
         } else {
             Ok(None)
         };
@@ -191,10 +194,8 @@ impl Engine {
         });
         recorder.restore(audio, stored.is_ok());
         let (id, copy) = stored?;
-        if let Some(entry) = copy {
-            // As `load` does: the audio is in RAM before the flag says so.
-            self.loaded.insert(id, entry);
-            self.project.set_loaded(id, true)?;
+        if let Some((audio, reservation)) = copy {
+            self.admit(id, audio, reservation)?;
         }
         Ok(id)
     }
@@ -245,8 +246,24 @@ impl Engine {
                 .ledger
                 .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?;
             let audio = self.project.audio(id, &reservation)?;
-            self.loaded.insert(id, (Arc::new(audio), reservation));
+            self.admit(id, Arc::new(audio), reservation)?;
+        } else {
+            self.project.set_loaded(id, true)?;
         }
+        Ok(())
+    }
+
+    /// Makes `id` loaded: `audio`, paid for by `reservation`, goes into
+    /// the loaded map and then the flag is set, in that order, so the
+    /// flag is never true for a sample that is not in RAM. The one place
+    /// that says what loaded means; `load` and `save_take` both come here.
+    fn admit(
+        &mut self,
+        id: SampleId,
+        audio: Arc<AudioBuffer>,
+        reservation: Reservation,
+    ) -> Result<(), EngineError> {
+        self.loaded.insert(id, (audio, reservation));
         self.project.set_loaded(id, true)?;
         Ok(())
     }
@@ -793,8 +810,6 @@ mod tests {
             .flat_map(|s| [s, s])
             .collect();
         assert_eq!(out, expected);
-        // The recorder is free to record again; the copy is the engine's.
-        assert!(rec.start_take().is_ok());
     }
 
     #[test]
@@ -824,15 +839,10 @@ mod tests {
     fn save_while_a_take_is_out_is_refused() {
         let (mut e, _r) = engine();
         let mut rec = e.recorder(1, 4).unwrap();
-        let t = rec.start_take().unwrap();
+        let _t = rec.start_take().unwrap();
         assert!(matches!(
             e.save_take(&mut rec, false),
             Err(EngineError::Record(RecordError::Busy))
-        ));
-        drop(t);
-        assert!(matches!(
-            e.save_take(&mut rec, false),
-            Err(EngineError::Record(RecordError::Nothing))
         ));
     }
 

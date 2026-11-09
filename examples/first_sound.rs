@@ -22,8 +22,6 @@ use std::time::Duration;
 
 use generations::Engine;
 
-// Shared by the examples; each one uses part of it.
-#[allow(dead_code)]
 mod device;
 use device::Device;
 

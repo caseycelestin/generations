@@ -505,14 +505,15 @@ thing the engine holds in RAM that the resident set cannot serve.
   back out when a second output or an eviction policy gives it work.
 - **A take in progress is an in-flight buffer, not a resident one.** It
   has no id, because storage mints ids and a sample does not exist until
-  stored; it grows, so it cannot be an immutable shared buffer; and it is
-  not playable. Fitting it in with the loaded audio would cost that map an
-  optional key, interior mutability and an unplayable flag. So the engine's
-  recording state owns it on the control side, holds one reservation and
-  asks to grow it as frames arrive, and the take ends when growth is
-  refused, the way a tape runs out. When it ends it goes through the same
-  crate-private add as import and print, and loading it afterwards is a
-  separate read from disk, as already decided for prints.
+  stored; it is being written, so it cannot be an immutable shared buffer;
+  and it is not playable. Fitting it in with the loaded audio would cost
+  that map an optional key, interior mutability and an unplayable flag. So
+  it lives outside that map, under its own reservation, and goes through
+  the same crate-private add as import when it is saved. This step
+  imagined the buffer growing as frames arrived and ending when growth was
+  refused; step 6 decided otherwise, a recorder sized and allocated once,
+  and how a saved take becomes loaded is decided there too. See
+  Recording.
 - **A fixed maximum record time is policy, not a RAM parameter.** Under
   one figure, how long a take can run depends on what is loaded. If a
   predictable limit matters as a product feature, it is the caller
@@ -650,8 +651,10 @@ and the first thing the audio thread hands back to the control side.
   `f32` in the callback, and the config picking shared with the output
   side. `first_take` records a few seconds into a take sized to fill at
   the end, drops the stream, saves the take loaded and plays it back. The
-  input stream starts late, so the example waits a little past the take's
-  length; a one-second sleep leaves a one-second take a few periods short.
+  input stream starts late, so a sleep as long as the take leaves it a few
+  periods short; the example waits on `is_recording` instead, which is
+  the signal the hand-back exists to give, with a bound so a silent device
+  cannot hang it.
 - **The caller is a patch bay; the engine is the mixer.** Which device,
   which channel, duplex or two streams, what format: the caller's, and
   thin, one line per destination with no decisions in it. What is heard,

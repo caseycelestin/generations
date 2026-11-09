@@ -7,9 +7,10 @@
 //! other; `device/` beside this file is the only code that knows `cpal`.
 //!
 //! The take is sized to the recording time, so it fills on its own at the
-//! end and hands itself back while the input stream is still running; the
-//! stream is then dropped and the take saved. Stopping early would be the
-//! same with the stream dropped sooner.
+//! end and hands itself back while the input stream is still running. The
+//! recorder says when that has happened; the stream is then dropped and
+//! the take saved. Stopping early would be the same with the stream
+//! dropped sooner.
 //!
 //! Usage: `cargo run --example first_take -- <project-dir> [seconds]`. The
 //! directory is created if it does not exist. Needs an input and an output
@@ -18,13 +19,11 @@
 use std::error::Error;
 use std::path::PathBuf;
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use generations::Engine;
 use generations::config::SAMPLE_RATE;
 
-// Shared by the examples; each one uses part of it.
-#[allow(dead_code)]
 mod device;
 use device::{Device, Input};
 
@@ -35,11 +34,11 @@ const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 /// How long to record when the command line does not say.
 const DEFAULT_SECONDS: u64 = 3;
 
-/// Slack past the recording time before the input stream is dropped. The
-/// device takes a moment to start delivering, so without it the take ends
-/// a few periods short of full. A short take is still a take; this only
-/// makes the common run fill.
-const START_SLACK: Duration = Duration::from_millis(300);
+/// How long past the recording time to keep waiting for the take to fill
+/// before giving up on the device and saving what there is. The device
+/// takes a moment to start delivering, so the take fills a little after
+/// its own length; a device that never delivers must not hang the example.
+const PATIENCE: Duration = Duration::from_secs(2);
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -65,10 +64,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("recording {seconds} s, {} channel(s)", input.channels());
     let mut capture = input.start(move |heard| take.write(heard))?;
-    sleep(Duration::from_secs(seconds) + START_SLACK);
-    // The take filled and handed itself back a moment ago, and the stream
-    // has been calling a finished take since. Dropping the stream drops
-    // the take; nothing more comes from it.
+    // The take hands itself back the moment it fills, while the stream is
+    // still running and calling a finished take; the recorder is where
+    // that shows. Dropping the stream drops the take; nothing more comes
+    // from it.
+    let give_up = Instant::now() + Duration::from_secs(seconds) + PATIENCE;
+    while recorder.is_recording() && Instant::now() < give_up {
+        sleep(Duration::from_millis(20));
+    }
+    if recorder.is_recording() {
+        eprintln!("the input delivered less than {seconds} s; saving what arrived");
+    }
     while let Some(e) = capture.error() {
         eprintln!("input stream error: {e}");
     }

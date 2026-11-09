@@ -13,6 +13,7 @@ use rand::{RngExt, SeedableRng};
 use thiserror::Error;
 
 use crate::config::{MAX_CHANNELS, Pcm};
+use crate::ledger::{Reservation, ShortReservation};
 
 /// Full-scale magnitude of the PCM type, as a float.
 const SCALE: f32 = 32_768.0;
@@ -32,10 +33,9 @@ pub enum AudioError {
 #[derive(Clone, PartialEq, Eq)]
 pub struct AudioBuffer {
     channels: u16,
-    /// A vector rather than a boxed slice so a buffer with spare capacity,
-    /// a recorder's, can be wrapped and unwrapped without a copy. The
-    /// length is the audio; the capacity is nobody's business but the
-    /// owner's.
+    /// A vector rather than a boxed slice so a buffer with spare capacity
+    /// can be wrapped and unwrapped without a copy. The length is the
+    /// audio; the capacity is nobody's business but the owner's.
     data: Vec<Pcm>,
 }
 
@@ -90,6 +90,15 @@ impl AudioBuffer {
     /// Number of frames, where one frame holds one sample per channel.
     pub fn frames(&self) -> usize {
         self.data.len() / usize::from(self.channels)
+    }
+
+    /// A copy of this audio, paid for by `reservation`, which must cover
+    /// [`AudioBuffer::bytes`]; a short one is refused before anything is
+    /// allocated. The caller keeps the reservation for as long as the copy
+    /// lives.
+    pub(crate) fn copy(&self, reservation: &Reservation) -> Result<Self, ShortReservation> {
+        reservation.can_hold(self.bytes())?;
+        Ok(self.clone())
     }
 
     /// The samples back, as they came in. Nothing is copied or freed.
