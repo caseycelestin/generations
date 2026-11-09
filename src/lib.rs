@@ -106,6 +106,7 @@ pub(crate) mod decode;
 pub mod engine;
 pub(crate) mod ledger;
 pub mod project;
+pub(crate) mod record;
 pub(crate) mod render;
 pub(crate) mod storage;
 #[cfg(test)]
@@ -117,5 +118,6 @@ pub use decode::DecodeError;
 pub use engine::{Engine, EngineError};
 pub use ledger::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
+pub use record::{RecordError, Recorder, Take};
 pub use render::{Renderer, VoiceId};
 pub use storage::StorageError;

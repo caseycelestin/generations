@@ -11,11 +11,14 @@
 //! returns a [`Stream`] that calls it once per period from the audio
 //! thread, for as long as the stream is held. The callback that makes
 //! sound moves an engine's output, its `Renderer`, in and renders from it.
+//! An [`Input`] is the same for the default input: [`Input::start`] calls
+//! its callback with each period of captured frames, and the callback that
+//! records moves a `Take` in and writes to it.
 //!
-//! The callback always renders `f32`. A device that wants 16- or 32-bit
-//! samples gets them converted in the callback, because `cpal` does no
-//! conversion of its own and a raw ALSA `hw:` device (an I2S DAC on the
-//! target) often offers nothing else. The rate is never converted: a
+//! The callbacks always see `f32`. A device that wants or gives 16- or
+//! 32-bit samples gets them converted in the callback, because `cpal` does
+//! no conversion of its own and a raw ALSA `hw:` device (an I2S codec on
+//! the target) often offers nothing else. The rate is never converted: a
 //! device that cannot run at the engine's rate is refused, as the roadmap
 //! says.
 //!
@@ -23,8 +26,14 @@
 //! PipeWire, JACK and the rest; a trait of our own waits for a second
 //! implementation.
 
+// Shared by the examples, and each one uses part of it: first_sound has no
+// input, first_take uses everything. The allow is module-wide, which also
+// hides anything here that stops being used by every example; the price of
+// keeping one copy. It goes when the device code moves to the binary crate.
+#![allow(dead_code)]
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
+use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
@@ -44,9 +53,12 @@ pub enum DeviceError {
     /// The system has no default output device.
     #[error("no output device")]
     NoOutputDevice,
-    /// The output device cannot run at the engine's rate and channel count
-    /// in any sample format this code converts to.
-    #[error("output device does not support {rate} Hz, {channels} channels, in f32, i16 or i32")]
+    /// The system has no default input device.
+    #[error("no input device")]
+    NoInputDevice,
+    /// The device cannot run at the engine's rate and the channel count
+    /// asked for in any sample format this code converts.
+    #[error("device does not support {rate} Hz, {channels} channels, in f32, i16 or i32")]
     UnsupportedFormat { rate: u32, channels: u16 },
     /// The audio backend refused; the message is its own.
     #[error("audio backend: {0}")]
@@ -78,17 +90,7 @@ impl Device {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or(DeviceError::NoOutputDevice)?;
-        let supported = device
-            .supported_output_configs()?
-            .filter(|c| c.channels() == channels)
-            .filter_map(|c| c.try_with_sample_rate(SAMPLE_RATE))
-            .filter_map(|c| preference(c.sample_format()).map(|rank| (rank, c)))
-            .min_by_key(|(rank, _)| *rank)
-            .map(|(_, c)| c)
-            .ok_or(DeviceError::UnsupportedFormat {
-                rate: SAMPLE_RATE,
-                channels,
-            })?;
+        let supported = pick(device.supported_output_configs()?, channels)?;
         Ok(Self {
             device,
             format: supported.sample_format(),
@@ -116,6 +118,24 @@ impl Device {
     }
 }
 
+/// The configuration to run at: the engine's rate, `channels` channels,
+/// and the most convenient of the sample formats this code converts.
+fn pick(
+    configs: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
+    channels: u16,
+) -> Result<SupportedStreamConfig, DeviceError> {
+    configs
+        .filter(|c| c.channels() == channels)
+        .filter_map(|c| c.try_with_sample_rate(SAMPLE_RATE))
+        .filter_map(|c| preference(c.sample_format()).map(|rank| (rank, c)))
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, c)| c)
+        .ok_or(DeviceError::UnsupportedFormat {
+            rate: SAMPLE_RATE,
+            channels,
+        })
+}
+
 /// Lower is better: no conversion first, then the cheaper conversion.
 fn preference(format: SampleFormat) -> Option<u8> {
     match format {
@@ -135,7 +155,7 @@ fn build<T: SizedSample + FromSample<f32>>(
     mut render: impl FnMut(&mut [f32]) + Send + 'static,
     mut errors: rtrb::Producer<cpal::Error>,
 ) -> Result<cpal::Stream, DeviceError> {
-    let mut scratch = vec![0.0f32; SCRATCH_FRAMES * OUTPUT_CHANNELS];
+    let mut scratch = vec![0.0f32; SCRATCH_FRAMES * usize::from(config.channels)];
     Ok(device.build_output_stream(
         *config,
         move |out: &mut [T], _| {
@@ -167,10 +187,94 @@ impl std::fmt::Debug for Device {
     }
 }
 
-/// A running output stream. Playing while held; dropping it stops it.
+/// An input device that can run at the engine's rate with the channel
+/// count asked for, not yet running.
+pub struct Input {
+    device: cpal::Device,
+    format: SampleFormat,
+    config: StreamConfig,
+}
+
+impl Input {
+    /// The system's default input device, at [`SAMPLE_RATE`], with
+    /// `channels` channels, refused if it cannot give them.
+    pub fn default_input(channels: u16) -> Result<Self, DeviceError> {
+        let device = cpal::default_host()
+            .default_input_device()
+            .ok_or(DeviceError::NoInputDevice)?;
+        let supported = pick(device.supported_input_configs()?, channels)?;
+        Ok(Self {
+            device,
+            format: supported.sample_format(),
+            config: supported.config(),
+        })
+    }
+
+    /// Starts the device. From now until the returned [`Stream`] is
+    /// dropped, the audio thread calls `capture` once per period with the
+    /// interleaved `f32` frames it heard.
+    pub fn start(
+        self,
+        capture: impl FnMut(&[f32]) + Send + 'static,
+    ) -> Result<Stream, DeviceError> {
+        let (errors_in, errors) = RingBuffer::new(ERROR_CAPACITY);
+        let inner = match self.format {
+            SampleFormat::F32 => build_input::<f32>(&self.device, &self.config, capture, errors_in),
+            SampleFormat::I16 => build_input::<i16>(&self.device, &self.config, capture, errors_in),
+            SampleFormat::I32 => build_input::<i32>(&self.device, &self.config, capture, errors_in),
+            _ => unreachable!("device format was chosen from the convertible set"),
+        }?;
+        inner.play()?;
+        Ok(Stream { inner, errors })
+    }
+}
+
+/// Builds the input stream for one device sample type. The device's frames
+/// are converted into a scratch buffer allocated here, on the control
+/// thread, and the callback is given that; for `f32` the conversion is a
+/// copy. A period larger than the scratch is delivered in pieces.
+fn build_input<T: SizedSample>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    mut capture: impl FnMut(&[f32]) + Send + 'static,
+    mut errors: rtrb::Producer<cpal::Error>,
+) -> Result<cpal::Stream, DeviceError>
+where
+    f32: FromSample<T>,
+{
+    let channels = usize::from(config.channels);
+    let mut scratch = vec![0.0f32; SCRATCH_FRAMES * channels];
+    Ok(device.build_input_stream(
+        *config,
+        move |input: &[T], _| {
+            for chunk in input.chunks(scratch.len()) {
+                let heard = &mut scratch[..chunk.len()];
+                for (h, &sample) in heard.iter_mut().zip(chunk.iter()) {
+                    *h = sample.to_sample::<f32>();
+                }
+                capture(heard);
+            }
+        },
+        move |e| {
+            let _ = errors.push(e);
+        },
+        None,
+    )?)
+}
+
+impl std::fmt::Debug for Input {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Input")
+            .field("format", &self.format)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A running stream, output or input. Running while held; dropping it
+/// stops it, and drops whatever the callback owned.
 pub struct Stream {
-    /// Kept so it keeps running. `cpal` stops it on drop.
-    #[allow(dead_code)] // held for its lifetime; read by nothing
+    /// Kept so it keeps running. `cpal` stops it on drop; nothing reads it.
     inner: cpal::Stream,
     /// Errors the audio thread reported, oldest first.
     errors: Consumer<cpal::Error>,

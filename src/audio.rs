@@ -13,6 +13,7 @@ use rand::{RngExt, SeedableRng};
 use thiserror::Error;
 
 use crate::config::{MAX_CHANNELS, Pcm};
+use crate::ledger::{Reservation, ShortReservation};
 
 /// Full-scale magnitude of the PCM type, as a float.
 const SCALE: f32 = 32_768.0;
@@ -32,12 +33,15 @@ pub enum AudioError {
 #[derive(Clone, PartialEq, Eq)]
 pub struct AudioBuffer {
     channels: u16,
-    data: Box<[Pcm]>,
+    /// A vector rather than a boxed slice so a buffer with spare capacity
+    /// can be wrapped and unwrapped without a copy. The length is the
+    /// audio; the capacity is nobody's business but the owner's.
+    data: Vec<Pcm>,
 }
 
 impl AudioBuffer {
     /// Wraps interleaved samples, checking the frame invariant.
-    pub fn new(channels: u16, data: impl Into<Box<[Pcm]>>) -> Result<Self, AudioError> {
+    pub fn new(channels: u16, data: impl Into<Vec<Pcm>>) -> Result<Self, AudioError> {
         let data = data.into();
         check_channels(channels)?;
         if data.len() % usize::from(channels) != 0 {
@@ -57,13 +61,7 @@ impl AudioBuffer {
     pub fn from_f32(channels: u16, samples: &[f32]) -> Result<Self, AudioError> {
         check_channels(channels)?;
         let mut dither = Dither::default();
-        let data: Vec<Pcm> = samples
-            .iter()
-            .map(|&s| {
-                let scaled = s.clamp(-1.0, 1.0) * SCALE + dither.next();
-                scaled.round().clamp(Pcm::MIN as f32, Pcm::MAX as f32) as Pcm
-            })
-            .collect();
+        let data: Vec<Pcm> = samples.iter().map(|&s| dither.quantise(s)).collect();
         Self::new(channels, data)
     }
 
@@ -94,6 +92,25 @@ impl AudioBuffer {
         self.data.len() / usize::from(self.channels)
     }
 
+    /// A copy of this audio, paid for by `reservation`, which must cover
+    /// [`AudioBuffer::bytes`]; a short one is refused before anything is
+    /// allocated. The caller keeps the reservation for as long as the copy
+    /// lives.
+    pub(crate) fn copy(&self, reservation: &Reservation) -> Result<Self, ShortReservation> {
+        reservation.can_hold(self.bytes())?;
+        // `to_vec` allocates exactly the length: the source's spare
+        // capacity, if it has any, is not copied and not paid for.
+        Ok(Self {
+            channels: self.channels,
+            data: self.data.to_vec(),
+        })
+    }
+
+    /// The samples back, as they came in. Nothing is copied or freed.
+    pub(crate) fn into_samples(self) -> Vec<Pcm> {
+        self.data
+    }
+
     /// All samples, interleaved.
     pub fn samples(&self) -> &[Pcm] {
         &self.data
@@ -106,9 +123,14 @@ impl AudioBuffer {
     }
 
     /// Bytes a buffer of `frames` frames of `channels` channels occupies,
-    /// for reserving the memory before the buffer exists.
-    pub(crate) fn bytes_for(channels: u16, frames: usize) -> usize {
-        frames * usize::from(channels) * std::mem::size_of::<Pcm>()
+    /// for reserving the memory before the buffer exists. `None` when the
+    /// count does not fit this machine's `usize`: a shape that large can
+    /// come in from a caller or a file header and must be refused, not
+    /// wrapped to a small number and reserved.
+    pub(crate) fn bytes_for(channels: u16, frames: usize) -> Option<usize> {
+        frames
+            .checked_mul(usize::from(channels))?
+            .checked_mul(std::mem::size_of::<Pcm>())
     }
 }
 
@@ -133,7 +155,7 @@ pub(crate) fn check_channels(channels: u16) -> Result<(), AudioError> {
 ///
 /// Backed by `rand`'s `SmallRng` with a fixed seed, so conversion is
 /// deterministic for a given input.
-struct Dither {
+pub(crate) struct Dither {
     rng: SmallRng,
 }
 
@@ -150,11 +172,50 @@ impl Dither {
     fn next(&mut self) -> f32 {
         self.rng.random::<f32>() + self.rng.random::<f32>() - 1.0
     }
+
+    /// One normalised sample to PCM: clamped to full scale, dithered,
+    /// rounded to the nearest value. The only quantiser in the crate;
+    /// whole buffers and single frames on the audio thread both come
+    /// through here, and it allocates nothing.
+    pub(crate) fn quantise(&mut self, sample: f32) -> Pcm {
+        let scaled = sample.clamp(-1.0, 1.0) * SCALE + self.next();
+        scaled.round().clamp(Pcm::MIN as f32, Pcm::MAX as f32) as Pcm
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ledger::Ledger;
+
+    #[test]
+    fn copy_allocates_the_length_and_pays_for_exactly_that() {
+        let mut data = Vec::with_capacity(100);
+        data.extend([1, 2, 3, 4]);
+        let source = AudioBuffer::new(2, data).unwrap();
+        let ledger = Ledger::new(usize::MAX);
+        let copy = source
+            .copy(&ledger.reserve(source.bytes()).unwrap())
+            .unwrap();
+        assert_eq!(copy, source);
+        assert_eq!(copy.data.capacity(), 4);
+        assert!(
+            source
+                .copy(&ledger.reserve(source.bytes() - 1).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bytes_for_refuses_a_shape_too_large_to_count() {
+        assert_eq!(bytes_for_ok(1, 10), 20);
+        assert_eq!(AudioBuffer::bytes_for(2, usize::MAX / 2 + 1), None);
+        assert_eq!(AudioBuffer::bytes_for(1, usize::MAX), None);
+    }
+
+    fn bytes_for_ok(channels: u16, frames: usize) -> usize {
+        AudioBuffer::bytes_for(channels, frames).unwrap()
+    }
 
     #[test]
     fn frames_f32_reads_a_range_of_frames() {

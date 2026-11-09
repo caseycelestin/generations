@@ -9,7 +9,9 @@
 //! so there is one path to every action and the rules hold on it.
 //!
 //! The engine is also the control side of sound. It owns the memory budget
-//! (`Ledger`), the loaded audio and the sending end of the command ring; the other end
+//! (`Ledger`), and every reservation against it is made here: whatever
+//! else holds memory was handed its reservation by the engine. It owns the
+//! loaded audio and the sending end of the command ring; the other end
 //! is the [`Renderer`] it mints as its output, which turns commands into
 //! frames wherever the caller drives it. Nothing the engine does can block that: every
 //! change to what is heard is a command pushed on the ring, never a call
@@ -28,6 +30,7 @@ use crate::config::COMMAND_CAPACITY;
 use crate::convert::{self, ConvertError};
 use crate::decode::{self, DecodeError};
 use crate::project::{Project, ProjectError, SampleId};
+use crate::record::{self, RecordError, Recorder};
 use crate::render::{BufferAddr, Command, Renderer, VoiceId};
 use crate::storage::{self, StorageError};
 
@@ -46,6 +49,16 @@ pub enum EngineError {
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Convert(#[from] ConvertError),
+    #[error(transparent)]
+    Record(#[from] RecordError),
+    /// The sample's stored shape is larger than this machine can count
+    /// bytes for, so it cannot be loaded here.
+    #[error("sample {} ({frames} frames of {channels} channels) is too large to load", id.0)]
+    TooLarge {
+        id: SampleId,
+        channels: u16,
+        frames: usize,
+    },
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -134,6 +147,77 @@ impl Engine {
         &self.project
     }
 
+    /// A recorder with room for `frames` frames of `channels` channels:
+    /// the control side of recording, which the caller keeps.
+    ///
+    /// The memory is reserved here, against the same figure as everything
+    /// else the engine holds, and the recorder allocates all of it as it
+    /// is made, so nothing recorded through it allocates later. It belongs
+    /// to the recorder until it is dropped. A recorder that does not fit
+    /// beside what is loaded, or whose shape no buffer can have, is
+    /// refused and nothing changes. The engine keeps no record of
+    /// recorders; it meets a recording again only when asked to store it.
+    pub fn recorder(&self, channels: u16, frames: usize) -> Result<Recorder, EngineError> {
+        let reservation = self.ledger.reserve(record::byte_cost(channels, frames)?)?;
+        Ok(Recorder::new(channels, frames, reservation)?)
+    }
+
+    /// Saves what `recorder` last recorded as a new root and returns its
+    /// id. With `keep_loaded`, the sample is also loaded, from the copy in
+    /// hand rather than back from disk.
+    ///
+    /// The recording is stored once: a second save finds nothing, and so
+    /// does a save before any take has been written. A save while a take
+    /// is still out is refused. The recorder keeps its buffer and its
+    /// memory throughout, so without `keep_loaded` nothing is allocated
+    /// and the budget does not move. With it, the loaded copy is reserved
+    /// and made before anything is stored, so a save that would not fit in
+    /// RAM is refused whole, with nothing on disk.
+    ///
+    /// The recording is cleared from the recorder only when everything
+    /// succeeded. If storage refuses the write, nothing is on disk and the
+    /// recording stays to be saved again. If the write succeeded and the
+    /// loaded flag then could not be written, the sample is on disk and
+    /// not loaded, the error says so, and the recording also stays: a
+    /// second save would store it a second time, so look at the project
+    /// before retrying. That case is a disk failing between two writes.
+    pub fn save_take(
+        &mut self,
+        recorder: &mut Recorder,
+        keep_loaded: bool,
+    ) -> Result<SampleId, EngineError> {
+        let audio = recorder.recorded()?;
+        // Everything that can fail while the buffer is on loan is folded
+        // into one result, so it goes back in exactly one place.
+        let copy = if keep_loaded {
+            self.ledger
+                .reserve(audio.bytes())
+                .map_err(EngineError::from)
+                .and_then(|reservation| {
+                    let copy = audio.copy(&reservation).map_err(RecordError::from)?;
+                    Ok((Arc::new(copy), reservation))
+                })
+                .map(Some)
+        } else {
+            Ok(None)
+        };
+        let stored = copy.and_then(|copy| {
+            let id = self.project.add_sample(None, &audio)?;
+            if let Some(entry) = copy {
+                // As `load` does: the audio is in RAM before the flag says
+                // so, and comes back out if the flag cannot be written.
+                self.loaded.insert(id, entry);
+                if let Err(e) = self.project.set_loaded(id, true) {
+                    self.loaded.remove(&id);
+                    return Err(e.into());
+                }
+            }
+            Ok(id)
+        });
+        recorder.restore(audio, stored.is_ok());
+        stored
+    }
+
     /// Imports an audio file as a new root.
     ///
     /// The file is read in whatever format it is in, converted to the
@@ -176,13 +260,25 @@ impl Engine {
     pub fn load(&mut self, id: SampleId) -> Result<(), EngineError> {
         if !self.loaded.contains_key(&id) {
             let sample = self.project.sample(id)?;
-            let reservation = self
-                .ledger
-                .reserve(AudioBuffer::bytes_for(sample.channels, sample.frames))?;
+            let bytes = AudioBuffer::bytes_for(sample.channels, sample.frames).ok_or(
+                EngineError::TooLarge {
+                    id,
+                    channels: sample.channels,
+                    frames: sample.frames,
+                },
+            )?;
+            let reservation = self.ledger.reserve(bytes)?;
             let audio = self.project.audio(id, &reservation)?;
+            // The audio is in RAM before the flag says so, and comes back
+            // out if the flag cannot be written, so the two agree.
             self.loaded.insert(id, (Arc::new(audio), reservation));
+            if let Err(e) = self.project.set_loaded(id, true) {
+                self.loaded.remove(&id);
+                return Err(e.into());
+            }
+        } else {
+            self.project.set_loaded(id, true)?;
         }
-        self.project.set_loaded(id, true)?;
         Ok(())
     }
 
@@ -669,5 +765,132 @@ mod tests {
 
         let result = Engine::open(dir.path(), ramp(4).bytes() - 1);
         assert!(matches!(result, Err(EngineError::OverBudget(_))));
+    }
+    #[test]
+    fn a_recorder_pays_for_its_memory_when_it_is_made() {
+        let cost = AudioBuffer::bytes_for(2, 1000).unwrap();
+        let e = Engine::on(memory_project(), cost).unwrap();
+        let r = e.recorder(2, 1000).unwrap();
+        assert_eq!(e.ledger.in_use(), cost);
+        assert!(matches!(e.recorder(1, 1), Err(EngineError::OverBudget(_))));
+        drop(r);
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn save_stores_the_last_take_as_a_root_once_and_loads_nothing() {
+        let (mut e, _r) = engine();
+        let mut rec = e.recorder(2, 4).unwrap();
+        let in_use = e.ledger.in_use();
+        let mut t = rec.start_take().unwrap();
+        t.write(&[0.5, -0.5, 0.25, -0.25]);
+        drop(t);
+
+        let id = e.save_take(&mut rec, false).unwrap();
+        let stored = audio(&e, id);
+        assert_eq!(
+            stored,
+            AudioBuffer::from_f32(2, &[0.5, -0.5, 0.25, -0.25]).unwrap()
+        );
+        let sample = e.project.sample(id).unwrap();
+        assert_eq!(sample.parent, None);
+        assert!(!sample.loaded);
+        assert!(matches!(e.play(id), Err(EngineError::NotLoaded(_))));
+        assert_eq!(e.ledger.in_use(), in_use);
+
+        assert!(matches!(
+            e.save_take(&mut rec, false),
+            Err(EngineError::Record(RecordError::Nothing))
+        ));
+    }
+
+    #[test]
+    fn save_keep_loaded_loads_the_copy_and_pays_for_it() {
+        let (mut e, mut o) = engine();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let in_use = e.ledger.in_use();
+        let mut t = rec.start_take().unwrap();
+        t.write(&[0.5, 0.5]);
+        drop(t);
+
+        let id = e.save_take(&mut rec, true).unwrap();
+        assert!(e.project.sample(id).unwrap().loaded);
+        assert_eq!(
+            e.ledger.in_use(),
+            in_use + AudioBuffer::bytes_for(1, 2).unwrap()
+        );
+        e.play(id).unwrap();
+        let out = period(&mut o, 2);
+        let expected: Vec<f32> = AudioBuffer::from_f32(1, &[0.5, 0.5])
+            .unwrap()
+            .frames_f32(0..2)
+            .flat_map(|s| [s, s])
+            .collect();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn save_keep_loaded_over_budget_is_refused_whole() {
+        let recorder_cost = AudioBuffer::bytes_for(1, 4).unwrap();
+        let (p, state) = project();
+        let mut e =
+            Engine::on(p, recorder_cost + AudioBuffer::bytes_for(1, 2).unwrap() - 1).unwrap();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let mut t = rec.start_take().unwrap();
+        t.write(&[0.5, 0.5]);
+        drop(t);
+
+        assert!(matches!(
+            e.save_take(&mut rec, true),
+            Err(EngineError::OverBudget(_))
+        ));
+        assert_eq!(state.borrow().audio_reads, 0);
+        assert_eq!(e.ledger.in_use(), recorder_cost);
+        // Nothing stored, and the recording is still there to save
+        // without keeping it.
+        assert!(e.project.loaded_samples().unwrap().is_empty());
+        let id = e.save_take(&mut rec, false).unwrap();
+        assert_eq!(audio(&e, id).frames(), 2);
+    }
+
+    #[test]
+    fn save_while_a_take_is_out_is_refused() {
+        let (mut e, _r) = engine();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let _t = rec.start_take().unwrap();
+        assert!(matches!(
+            e.save_take(&mut rec, false),
+            Err(EngineError::Record(RecordError::Busy))
+        ));
+    }
+
+    #[test]
+    fn a_recorder_records_again_after_a_save() {
+        let (mut e, _r) = engine();
+        let mut rec = e.recorder(1, 4).unwrap();
+        let mut t = rec.start_take().unwrap();
+        t.write(&[0.1, 0.2]);
+        drop(t);
+        let first = e.save_take(&mut rec, false).unwrap();
+        let mut t = rec.start_take().unwrap();
+        t.write(&[0.3, 0.4, 0.5, 0.6, 0.7]);
+        assert!(t.is_finished());
+        drop(t);
+        let second = e.save_take(&mut rec, false).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(audio(&e, first).frames(), 2);
+        assert_eq!(audio(&e, second).frames(), 4);
+    }
+
+    #[test]
+    fn a_recorder_of_a_shape_no_buffer_can_have_is_refused() {
+        let (e, _r) = engine();
+        assert!(matches!(e.recorder(3, 10), Err(EngineError::Record(_))));
+        assert!(matches!(e.recorder(1, 0), Err(EngineError::Record(_))));
+        assert!(matches!(
+            e.recorder(2, usize::MAX / 2 + 1),
+            Err(EngineError::Record(RecordError::TooLarge { .. }))
+        ));
+        assert_eq!(e.ledger.in_use(), 0);
     }
 }
