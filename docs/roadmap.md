@@ -11,9 +11,10 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM ledger: one figure for everything the engine holds in memory | done |
-| 6 | Recording: audio input as a new root | |
-| 7 | Sequencing and mixing: the real-time side | |
-| 8 | Arrangement and more effects | |
+| 6 | Recording: audio input as a new root | done |
+| 7 | Input monitoring: hear the input through the output | |
+| 8 | Sequencing and mixing: the real-time side | |
+| 9 | Arrangement and more effects | |
 
 ## Why this order
 
@@ -226,8 +227,8 @@ the code follows them.
   `render` turns commands into frames and gives the same frames live from
   a device callback or offline in a loop, so "realtime" was rejected as a
   name (the code must run offline) and "process" was rejected (it collides
-  with the OS process this roadmap talks about). Recording in step 6 gets
-  a sibling `capture` module, a ring the other way; the pair is the data
+  with the OS process this roadmap talks about). Recording in step 6 got
+  a sibling `record` module, a ring the other way; the pair is the data
   plane, named by direction, and the rules (no allocation, no lock, no
   disk, no error path, no clock) apply to both.
 - **The engine mints the renderer and hands it out as its output.** The
@@ -401,10 +402,10 @@ the code follows them.
   callback is bounded by it. On the Pi it should be chosen deliberately
   (`BufferSize::Fixed`) once the device is in hand; on desktop Linux the
   default is around ten milliseconds and good enough to hear.
-- **Recording will be a second stream.** `cpal` opens input and output as
-  separate streams with separate callbacks, so recording gets its own
-  input type in the caller's device code, a `capture` module beside
-  `render` with its own ring back to the engine, and the render side
+- **Recording is a second stream.** `cpal` opens input and output as
+  separate streams with separate callbacks, so recording got its own
+  input type in the caller's device code, a `record` module beside
+  `render` with its own ring back to the control side, and the render side
   never learns about it. Two streams have no guaranteed
   frame alignment between them; if a resample must land on the frame,
   that is the case for a duplex stream, and it is a change inside the two
@@ -560,6 +561,115 @@ thing the engine holds in RAM that the resident set cannot serve.
   allocation past the figure is the OOM killer ending the engine
   mid-performance rather than a refused call the panel can show.
 
+### Recording
+
+Step 6. The first audio to enter the project without coming from a file,
+and the first thing the audio thread hands back to the control side.
+
+- **The recorder is the control side and owns the memory.** The engine
+  mints a `Recorder` for so many frames of so many channels, reserving
+  the bytes against the one figure as it does, and the recorder allocates
+  the whole buffer once, empty, when it is made. Nothing recorded through
+  it allocates again. The caller keeps the recorder and drops it to give
+  the memory back; the engine keeps no record of recorders or takes and
+  meets a recording only when asked to store it. Reserving per take was
+  the earlier shape and was dropped: a recorder is the thing with a size,
+  and a take is one use of it.
+- **Every reservation is made by the engine.** Written as a rule here,
+  when the recorder became the second holder of audio memory after the
+  loaded map. A recorder holding its own handle on the ledger was tried
+  and removed: the ledger has one holder, and anything else that needs
+  memory is given a reservation the engine made, by reference if it only
+  uses the bytes and by value if it keeps them. One place to read to know
+  everything that can be promised, and nothing below the engine can grow
+  what the engine holds.
+- **The take is the audio side.** `start_take` moves the recorder's buffer
+  into a `Take`, which goes wherever the frames are, a device callback or
+  a loop, and is fed interleaved `f32` frames. Each sample is quantised to
+  the project format as it lands, whole frames only, never past the
+  capacity, so a write is a bounded copy and nothing allocates. The take
+  finishes when the buffer fills or when it is dropped, and either way
+  hands the buffer back over a one-slot ring. Unlike playback, nothing
+  travels from the control side to the take: it is given everything at
+  the start and has no state the engine wants to change, so there are no
+  commands, and the one crossing is the buffer coming home. A stop
+  command was considered and left out until a caller needs it; ending a
+  live take early is dropping the stream that holds it.
+- **Full is not an error.** A take that fills did exactly what it was asked.
+  It hands its buffer back at once, while the stream is still running, so
+  the recording can be saved without waiting for the stream to stop, and
+  frames offered after that are dropped without a word. There is no count
+  of dropped frames and no return value from `write`. A take ended early
+  keeps what it has; a short take is a take.
+- **One take at a time, and a new take starts over.** There is one buffer,
+  so `start_take` is refused with `Busy` while a take is out, checked
+  first and before anything changes, and `is_recording` says so without
+  asking. Once the take is back, the next one clears the buffer, keeping
+  its capacity, and what the last take recorded is gone unless it was
+  saved. That is the sampler's rule: record until you like one, then
+  save. A compile-time version, a take that borrows the recorder, was
+  rejected because a borrowed take cannot be moved into a device callback,
+  which must own what it holds.
+- **Saving goes through the engine, once.** `Engine::save_take(&mut
+  recorder, keep_loaded)` stores what the recorder last recorded as a new
+  root and returns the id. The recorder lends its buffer wrapped as an
+  `AudioBuffer`, which is backed by a `Vec` for exactly this so a buffer
+  with spare capacity wraps and unwraps without a copy, and takes it back
+  afterwards: cleared if the store succeeded, so a recording is saved once
+  and the next save finds `Nothing`; kept if storage refused, so it can be
+  saved again. A save while a take is out is refused. `recorder.save(&mut
+  engine)` reads better and was considered; it would make the record
+  module import the engine, bending the one-way arrow the data plane
+  keeps, for word order. The engine form matches `import`, the other way
+  audio enters the project.
+- **Keep-loaded pays before it stores.** The recorder keeps its buffer for
+  the next take, so a saved take that stays loaded is a copy, reserved and
+  made before anything is written to disk. A save that would not fit in
+  RAM is refused whole with nothing stored and the recording still in the
+  recorder, to be saved without keeping it. It costs what `load` would,
+  minus the disk read. The copy is inserted and the flag set in the order
+  `load` uses: audio in RAM before the flag says so.
+- **There is one quantiser.** `Dither::quantise` turns one normalised
+  sample into PCM, clamped, dithered and rounded, without allocating.
+  `AudioBuffer::from_f32` and `Take::write` both call it, so a recording
+  and a converted import are quantised the same way, and a test checks a
+  take against `from_f32` on the same input.
+- **The take has no error path, and needs none.** Everything that can go
+  wrong happens where the engine is: a shape no buffer can have or a
+  budget that will not hold it at `recorder`, a take still out at
+  `start_take` or `save_take`, nothing recorded at `save_take`, storage
+  refusing. A device failing, an xrun or the input vanishing, is the
+  device's to report, and the device code already queues those for the
+  control side; the take just has fewer frames. A take whose recorder was
+  dropped first pushes to a ring with no receiver and frees its buffer
+  where it is dropped, which on the audio thread is the deferred free the
+  renderer already has.
+- **The device input lives in the examples, like the output.** `Input`
+  mirrors `Device`: the default input, picked once for the engine's rate
+  and a requested channel count, with 16- and 32-bit frames converted to
+  `f32` in the callback, and the config picking shared with the output
+  side. `first_take` records a few seconds into a take sized to fill at
+  the end, drops the stream, saves the take loaded and plays it back. The
+  input stream starts late, so the example waits a little past the take's
+  length; a one-second sleep leaves a one-second take a few periods short.
+- **The caller is a patch bay; the engine is the mixer.** Which device,
+  which channel, duplex or two streams, what format: the caller's, and
+  thin, one line per destination with no decisions in it. What is heard,
+  at what level, into which bus, whether a monitor mutes when a take is
+  armed: the engine's, made through engine calls and arriving on the
+  render side as commands. The test for the line being in the right place
+  is that the caller's device code never contains an `if` about what the
+  user wants to hear. Input monitoring is the first thing that needs the
+  input and output callbacks to meet, and it goes hand in hand with
+  recording, so it is step 7; the shape is sketched under Deferred ideas
+  until that step writes it down.
+- **Named `record`, not `capture`.** The step is recording, the type is the
+  recorder, the engine call is `recorder`, the module is `record`: the
+  same verb-and-agent shape as `render` and `Renderer`. `capture` is the
+  device-side word (ALSA's playback and capture) and makes an awkward
+  agent noun; this roadmap used it before the module existed and was
+  corrected when it did.
+
 ### Process
 
 - **The public surface is kept minimal.** Convenience methods are added
@@ -579,9 +689,9 @@ thing the engine holds in RAM that the resident set cannot serve.
   removed in step 3 when it stopped fitting. New steps are designed from
   the decision, then existing code is changed to fit, not the other way
   round.
-- **The demo lives in `examples/`, and so does the device code.** The
+- **The demos live in `examples/`, and so does the device code.** The
   crate is a library; there is no binary until there is a device to run
-  one on. When there is, the device code and the sound example move into
+  one on. When there is, the device code and the sound examples move into
   that binary's crate, and the library's CI stops needing audio headers.
 
 ## Storage tiers on the device
@@ -624,8 +734,25 @@ changes to it.
   evicts, that is every unload of a sample mid-play, at the eviction
   rather than at the voice's end. Fix: unload keeps the removed `Arc`,
   and the engine keeps a retiring list it sweeps on the control side for
-  entries whose count has dropped to one. Not an audible problem today;
-  a rule to keep before the device is the target.
+  entries whose count has dropped to one. A take whose recorder was
+  dropped first has the same problem in the other direction. Not an
+  audible problem today; a rule to keep before the device is the target.
+- Input monitoring: hearing the input through the output while recording,
+  or before it. The engine mints a feed handle with a ring of a few
+  periods into the renderer, where the input is a voice with a level; the
+  caller feeds it beside the take in the input callback, since monitoring
+  happens before and without recording and a take ending must not silence
+  the input. Two streams means two clocks and a ring that drifts, so the
+  render side drops or repeats by frame count; one duplex stream on the
+  target's codec has one clock and needs no ring. Check first whether that
+  codec monitors in hardware, with no latency, and makes the software
+  path unnecessary. This is step 7, next; the entry moves up when it is
+  decided.
+- A level meter on a take: a peak or running power the take keeps as it
+  quantises, in an atomic the recorder reads, so a panel can show input
+  level while recording. Small; arrives with the panel.
+- Several inputs: a recorder and a feed per source, each a voice in the
+  renderer with its own level. The renderer's voice count bounds them.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the
   control side through `Stream::error`; the example prints them at the
