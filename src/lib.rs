@@ -103,6 +103,7 @@ pub mod audio;
 pub(crate) mod audio_v2;
 pub mod config;
 pub(crate) mod convert;
+pub(crate) mod convert_v2;
 pub(crate) mod decode;
 pub(crate) mod decode_v2;
 pub mod engine;
