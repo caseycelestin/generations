@@ -1,6 +1,7 @@
-//! Rendering: commands and resident audio in, frames of output out.
+//! Audio processing: commands and resident audio in, frames of output out.
 //!
-//! This is the half of the engine that runs where the frames are needed.
+//! This is the half of the engine that runs where the frames are needed,
+//! on a thread the engine does not own.
 //! Live, that is the audio thread, called once per period from a device
 //! callback with a hard deadline. Offline, it is a bounce looping on the
 //! control thread as fast as the CPU goes. Both get the same frames,

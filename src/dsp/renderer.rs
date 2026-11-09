@@ -21,8 +21,8 @@ use rtrb::Consumer;
 
 use crate::audio::AudioBuffer;
 use crate::config::VOICE_COUNT;
-use crate::render::command::{BufferAddr, Command, VoiceId};
-use crate::render::voice::Voice;
+use crate::dsp::command::{BufferAddr, Command, VoiceId};
+use crate::dsp::voice::Voice;
 
 /// The render side of an engine: turns commands and resident audio into
 /// periods of output.
