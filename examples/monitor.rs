@@ -4,21 +4,23 @@
 //! The engine does not know there is a microphone or a speaker. This file
 //! opens both devices, adds an input to the engine and takes its output,
 //! and hands each to its stream; `device/` beside this file is the only
-//! code that knows `cpal`. Which capture channels the input is, and
-//! whether it is heard, is the engine's business: named here once, on
-//! `Engine::input`, and switched with `monitor`, and both arrive on the
-//! render side as commands.
+//! code that knows `cpal`. The input is laid out like the device: the
+//! layout says what each of the device's channels means, a stereo pair or
+//! a mono source, and each source is a sound the engine can monitor on its
+//! own. The frames go from the device to the engine as delivered.
 //!
-//! Usage: `cargo run --example monitor -- [channel ...]`. One channel
-//! index is heard on both sides, two are heard left and right; the
-//! default is channel 0. Needs an input and an output device. Keep the
-//! speaker away from the microphone.
+//! Usage: `cargo run --example monitor -- [mono|stereo ...]`. The words
+//! are the layout, in device channel order; the default is one `mono`,
+//! the device's first channel heard on both sides. The device must have
+//! at least as many channels as the layout adds up to; any beyond are not
+//! fed. Needs an output device and a capture device. Keep the speaker
+//! away from the microphone.
 
 use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::Engine;
+use generations::{Channels, Engine};
 
 mod device;
 use device::{Capture, Device};
@@ -30,34 +32,51 @@ const SAMPLE_RAM_BUDGET: usize = 64 * 1024 * 1024;
 const LISTEN: Duration = Duration::from_secs(10);
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let channels = std::env::args()
+    let layout = std::env::args()
         .skip(1)
-        .map(|a| a.parse::<usize>())
+        .map(|word| match word.as_str() {
+            "mono" => Ok(Channels::Mono),
+            "stereo" => Ok(Channels::Stereo),
+            other => Err(format!("{other}: expected mono or stereo")),
+        })
         .collect::<Result<Vec<_>, _>>()?;
-    let channels = if channels.is_empty() {
-        vec![0]
+    let layout = if layout.is_empty() {
+        vec![Channels::Mono]
     } else {
-        channels
+        layout
     };
 
     let project = tempfile::tempdir()?;
     let mut engine = Engine::open(project.path(), SAMPLE_RAM_BUDGET)?;
     let mut output = engine.output().ok_or("output already taken")?;
-    let mut input = engine.input(&channels)?;
-    let sound = input.sound();
+    // The capture device is opened first so the engine can be told how
+    // many frames it delivers at a time.
+    let capture = Capture::default_input()?;
+    let have = capture.channels();
+    let mut input = engine.input(&layout, capture.period())?;
+    let id = input.id();
+    let sounds = input.sounds().to_vec();
     // Declared after `engine`, so they are dropped first: both audio
     // threads stop before the engine goes.
     let mut playback = Device::default_output()?.start(move |out| output.render(out))?;
-    let mut capture = Capture::default_input()?.start(move |frames| input.feed(frames))?;
+    // The first channels of the device, as many as the layout is wide.
+    let take = (0..input.channels()).collect();
+    let mut capture = capture.start(take, move |frames| input.feed(frames))?;
 
-    println!("input channel(s) {channels:?} added; silent for 2s, then heard for {LISTEN:?}");
+    println!(
+        "input {layout:?} added over a {have}-channel device; silent for 2s, then heard for {LISTEN:?}"
+    );
     sleep(Duration::from_secs(2));
-    engine.monitor(sound)?;
+    for &sound in &sounds {
+        engine.monitor(sound)?;
+    }
     sleep(LISTEN);
     // Stop hearing it, then remove it before the capture stream, and its
     // `Input`, go.
-    engine.unmonitor(sound)?;
-    engine.remove_input(sound)?;
+    for &sound in &sounds {
+        engine.unmonitor(sound)?;
+    }
+    engine.remove_input(id)?;
 
     while let Some(e) = capture.error() {
         eprintln!("capture stream error: {e}");
