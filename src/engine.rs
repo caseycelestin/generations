@@ -3,38 +3,46 @@
 //! Every role in the crate knows one thing. The engine is where an action
 //! that needs two of them is written: an import decodes a file and adds
 //! the result to the project, a load reads the project and brings the
-//! audio into RAM, a play looks for it there and, on failure, asks the
-//! project why. Nothing
-//! below the engine is reachable from outside the crate except read-only,
-//! so there is one path to every action and the rules hold on it.
+//! audio into RAM, an input mints ids and allocates rings. Nothing below
+//! the engine is reachable from outside the crate except read-only, so
+//! there is one path to each of those and the rules hold on it.
+//!
+//! What the engine makes, it hands out as a handle, and the verbs on that
+//! thing are on the handle: a [`LoadedSample`] plays, a [`Sound`] stops. Each
+//! handle carries its own `RendererHandle`, the ring's sending end, so
+//! it needs the engine for nothing more. Holding the handle is what it
+//! means for the thing to exist: a sample is loaded while its `LoadedSample`
+//! is held, and dropping the handle unloads it. The engine keeps no list
+//! of what is in RAM; the ledger's total is the only figure.
 //!
 //! The engine is also the control side of sound. It owns the memory budget
 //! (`Ledger`), and every block allocated against it is allocated by code
 //! the engine handed the ledger to: whatever else holds memory was given
-//! the right to by the engine. It owns the
-//! loaded audio and the sending end of the command ring; the other end
-//! is the [`Renderer`] it mints as its output, which turns commands into
-//! frames wherever the caller drives it. Nothing the engine does can block that: every
-//! change to what is heard is a command pushed on the ring, never a call
-//! into the render side. The engine never touches a device; whoever has
-//! one hands it the output.
+//! the right to by the engine. It mints the [`Renderer`] as its output,
+//! which turns commands into frames wherever the caller drives it, and
+//! nothing on the control side can block it: every change to what is
+//! heard is a command pushed on the ring, never a call into the render
+//! side. The engine never touches a device; whoever has one hands it the
+//! output.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use rtrb::{Producer, RingBuffer};
+use rtrb::RingBuffer;
 use thiserror::Error;
 
-use crate::audio::AudioBuffer;
 use crate::config::{COMMAND_CAPACITY, MAX_INPUT_CHANNELS, MAX_INPUT_SOUNDS, MAX_PERIOD_FRAMES};
-use crate::dsp::{BufferAddr, SoundId};
+use crate::dsp::SoundId;
 use crate::import::{self as import, ImportError};
 use crate::input::{self, Channels, Input, InputId};
+use crate::loaded_sample::LoadedSample;
 use crate::memory::Ledger;
 use crate::project::{Project, ProjectError, SampleId};
 use crate::renderer::Renderer;
-use crate::renderer::command::{Command, InputCommand, SampleCommand};
+use crate::renderer_handle::RendererHandle;
+#[cfg(doc)]
+use crate::sound::Sound;
 use crate::storage::{self as storage, StorageError};
 
 /// Reasons an engine operation can fail.
@@ -46,10 +54,6 @@ pub enum EngineError {
     Project(#[from] ProjectError),
     #[error(transparent)]
     Import(#[from] ImportError),
-    /// The sample exists but is not loaded, so there is nothing in RAM
-    /// to play. Load it first.
-    #[error("sample {} is not loaded", .0.0)]
-    NotLoaded(SampleId),
     /// The command ring was full; the command was dropped.
     #[error("the output has not taken the last {COMMAND_CAPACITY} commands")]
     CommandsFull,
@@ -81,21 +85,16 @@ pub struct Engine {
     /// The memory budget; every buffer the engine holds in RAM is a block
     /// allocated from it, and repays it when dropped.
     ledger: Arc<Ledger>,
-    /// The loaded samples: their audio in RAM. This is the engine's cache
-    /// in front of storage and the control side's answer to "which samples
-    /// are in RAM". Every entry is immutable behind an `Arc` so a sound
-    /// can hold it while it plays; the render side only ever sees the
-    /// clones it was handed. The memory itself is ordinary heap
-    /// allocation: the guarantee that the budget's worth of RAM exists is
-    /// the operating system's job (a reservation for the engine's process
-    /// on the device), not the engine's.
-    loaded: HashMap<SampleId, Arc<AudioBuffer>>,
-    /// The sending end of the command ring; the renderer has the other.
-    commands: Producer<Command>,
-    /// The next sound id to mint. Only goes up, and this is the one
-    /// sender, so an id is never reused.
-    next_sound: u64,
-    /// The next input id to mint; the same rule.
+    /// The control side's handle on the renderer: the sending end of the
+    /// command ring and the sound id counter. Shared: every
+    /// [`LoadedSample`] and [`Sound`] the engine hands out holds a clone
+    /// and acts through it. The memory the loaded audio takes is ordinary
+    /// heap allocation: the guarantee that the budget's worth of RAM
+    /// exists is the operating system's job (a reservation for the
+    /// engine's process on the device), not the engine's.
+    renderer: RendererHandle,
+    /// The next input id to mint. Only goes up, and this is the one
+    /// minter, so an id is never reused.
     next_input: u64,
     /// The inputs added and not yet removed, with the sounds of their
     /// sources. The control side's answer to "is this an input", "is this
@@ -118,32 +117,26 @@ impl Engine {
     /// No audio device is involved: the engine works the same on a machine
     /// without one. To hear it, take [`Engine::output`] and drive it.
     ///
-    /// Every sample the project marks loaded is brought into RAM before
-    /// this returns, so the sampler comes back ready. If they no longer fit
-    /// the budget (it shrank, or the project moved to a smaller machine)
-    /// the open fails rather than deciding which ones to leave out.
+    /// Nothing is loaded here. Loaded audio is owned by the
+    /// [`LoadedSample`] handles `load` returns, and the engine has no one
+    /// to give them to; the project remembers which samples were loaded
+    /// when it was last open, [`Project::loaded_samples`], so the caller
+    /// can bring them back and hold them.
     pub fn open(dir: &Path, budget: usize) -> Result<Self, EngineError> {
         Self::on(Project::new(storage::open(dir)?), budget)
     }
 
-    /// An engine on an already open project with `budget` bytes of RAM,
-    /// loading what the project marks loaded.
+    /// An engine on an already open project with `budget` bytes of RAM.
     pub(crate) fn on(project: Project, budget: usize) -> Result<Self, EngineError> {
         let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
-        let mut engine = Self {
+        Ok(Self {
             project,
             ledger: Ledger::new(budget),
-            loaded: HashMap::new(),
-            commands: producer,
-            next_sound: 0,
+            renderer: RendererHandle::new(producer),
             next_input: 0,
             inputs: HashMap::new(),
             output: Some(Renderer::new(consumer)),
-        };
-        for id in engine.project.loaded_samples()? {
-            engine.load(id)?;
-        }
-        Ok(engine)
+        })
     }
 
     /// The engine's output: its render side, to be driven by whoever owns
@@ -199,24 +192,21 @@ impl Engine {
         if held + layout.len() > MAX_INPUT_SOUNDS {
             return Err(EngineError::InputsFull);
         }
-        // One command per source; all of them go or none does.
-        if self.commands.slots() < layout.len() {
-            return Err(EngineError::CommandsFull);
-        }
-        // An id for the input and a sound per source.
+        // An id for the input and a sound per source. The capture callback
+        // writes frames in through the `Input`, the renderer reads them
+        // out through the readers on the audio thread. One command per
+        // source; all of them go or none does, and the sound ids are
+        // minted only if they do.
         let id = InputId(self.next_input);
+        let first = self.renderer.mint(layout.len());
         let sounds: Vec<SoundId> = (0..layout.len() as u64)
-            .map(|n| SoundId(self.next_sound + n))
+            .map(|n| SoundId(first.0 + n))
             .collect();
-        // The capture callback writes frames in through the `Input`, the
-        // renderer reads them out through the readers on the audio thread.
         let (input, readers) = Input::open(layout, period, id, &sounds);
-        for (&id, reader) in sounds.iter().zip(readers) {
-            self.send(InputCommand::Add { id, reader })?;
-        }
-        // Minted only once the commands are in; a refused add burns no id.
+        self.renderer.add_input(&sounds, readers)?;
+        // The input id is taken only once the commands are in; the sound
+        // ids a refused add minted are burnt, and nothing minds.
         self.next_input += 1;
-        self.next_sound += layout.len() as u64;
         self.inputs.insert(id, sounds);
         Ok(input)
     }
@@ -226,7 +216,7 @@ impl Engine {
     /// sound that is not one.
     pub fn monitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
         self.source_held(sound)?;
-        self.send(InputCommand::Monitor(sound))
+        self.renderer.monitor(sound, true)
     }
 
     /// Stops hearing the input source `sound`. Its input stays and keeps
@@ -234,7 +224,7 @@ impl Engine {
     /// `NotAnInputSource` for a sound that is not one.
     pub fn unmonitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
         self.source_held(sound)?;
-        self.send(InputCommand::Unmonitor(sound))
+        self.renderer.monitor(sound, false)
     }
 
     /// Removes the input `id`, from [`Input::id`], with every source of it.
@@ -249,14 +239,7 @@ impl Engine {
             return Err(EngineError::NoSuchInput(id));
         };
         // One command per source; all of them go or none does.
-        if self.commands.slots() < sounds.len() {
-            return Err(EngineError::CommandsFull);
-        }
-        for &sound in sounds {
-            self.commands
-                .push(InputCommand::Remove(sound).into())
-                .map_err(|_| EngineError::CommandsFull)?;
-        }
+        self.renderer.remove_input(sounds)?;
         self.inputs.remove(&id);
         Ok(())
     }
@@ -293,100 +276,61 @@ impl Engine {
         Ok(self.project.add_sample(None, &audio)?)
     }
 
-    /// Loads `id`: brings its audio into RAM and marks it loaded, so it
-    /// stays loaded across a reopen.
+    /// Loads `id`: brings its audio into RAM and returns it as a
+    /// [`LoadedSample`], whose holder owns it. Playing is on the handle;
+    /// drop it and the sample is unloaded, its block repaying the budget
+    /// once the last sound playing it has let go. Also marks the sample
+    /// loaded in the project, so a reopen knows to bring it back.
     ///
     /// The audio goes into RAM first and the flag is set only if that
-    /// succeeded, so the flag is never true for a sample that is not in
-    /// RAM. Storage allocates the block from the budget before it reads
-    /// the audio, from the size it stores, so a refused load reads
+    /// succeeded, so a sample is never marked loaded without having been
+    /// loadable. Storage allocates the block from the budget before it
+    /// reads the audio, from the size it stores, so a refused load reads
     /// nothing. A sample that does not fit the budget is refused and
-    /// nothing changes. Loading a loaded sample changes nothing: the audio
-    /// is already here and storage leaves a flag that already has its
-    /// value alone, so `on` calls this for every sample the project marks
-    /// loaded without writing anything.
-    pub fn load(&mut self, id: SampleId) -> Result<(), EngineError> {
-        if !self.loaded.contains_key(&id) {
-            let audio = self.project.audio(id, &self.ledger)?;
-            // The audio is in RAM before the flag says so, and comes back
-            // out if the flag cannot be written, so the two agree.
-            self.loaded.insert(id, Arc::new(audio));
-            if let Err(e) = self.project.set_loaded(id, true) {
-                self.loaded.remove(&id);
-                return Err(e.into());
-            }
-        } else {
-            self.project.set_loaded(id, true)?;
-        }
-        Ok(())
-    }
-
-    /// Unloads `id`: stops every sound playing it, clears the flag and
-    /// drops its audio from RAM, which repays the budget as soon as the
-    /// last sound playing it has let go.
+    /// nothing changes.
     ///
-    /// Unloaded means gone from RAM, so sound from the sample stops too,
-    /// hard, at the output's next render, as `stop` does. Either the whole
-    /// unload happens or none of it: a full ring refuses it with
-    /// `CommandsFull` before the flag is touched, and a flag that cannot
-    /// be written refuses it before the eviction is sent, so a failed
-    /// unload never cuts a sound. The eviction goes out before the engine
-    /// lets go of the buffer, which is what makes the address a safe key;
-    /// see `BufferAddr`. Unloading an unloaded sample changes nothing.
-    pub fn unload(&mut self, id: SampleId) -> Result<(), EngineError> {
-        let Some(audio) = self.loaded.get(&id) else {
-            return Ok(self.project.set_loaded(id, false)?);
-        };
-        // Room is checked first and the push comes last, so the push
-        // cannot fail: this is the ring's only producer.
-        if self.commands.is_full() {
-            return Err(EngineError::CommandsFull);
-        }
-        let addr = BufferAddr::of(audio);
-        self.project.set_loaded(id, false)?;
-        self.send(SampleCommand::Evict(addr))?;
-        self.loaded.remove(&id);
-        Ok(())
+    /// Each load is its own copy: the engine keeps no list of what is in
+    /// RAM, so loading a sample twice costs its memory twice. Hold one
+    /// handle per sample.
+    pub fn load(&mut self, id: SampleId) -> Result<LoadedSample, EngineError> {
+        let audio = self.project.audio(id, &self.ledger)?;
+        // If the flag cannot be written the block is dropped here and
+        // repays the budget, so nothing changed.
+        self.project.set_loaded(id, true)?;
+        Ok(LoadedSample::new(id, audio, self.renderer.clone()))
     }
 
-    /// Starts playing `id` from its first frame and returns the sound, so
-    /// it can be stopped.
+    /// Unloads `loaded`: stops every sound playing it, clears the sample's
+    /// loaded flag in the project, and drops the audio, which repays the
+    /// budget as soon as the last sound playing it has let go.
     ///
-    /// The sample must be loaded; nothing is read from disk here, so a
-    /// press costs the same every time. Sound starts at the output's next
-    /// render. A play never fails for want of a free slot: the renderer
-    /// steals the oldest.
-    pub fn play(&mut self, id: SampleId) -> Result<SoundId, EngineError> {
-        let Some(audio) = self.loaded.get(&id) else {
-            // Unknown and unloaded are different mistakes; say which.
-            self.project.sample(id)?;
-            return Err(EngineError::NotLoaded(id));
-        };
-        let sound = SoundId(self.next_sound);
-        let audio = Arc::clone(audio);
-        self.send(SampleCommand::Play { id: sound, audio })?;
-        // Minted only once the command is in; a refused press burns no id.
-        self.next_sound += 1;
-        Ok(sound)
-    }
-
-    /// Stops the sample `sound` if it is still playing. One that has
-    /// finished or been stolen is left alone. Inputs are untouched: see
-    /// [`Engine::unmonitor`] and [`Engine::remove_input`].
-    pub fn stop(&mut self, sound: SoundId) -> Result<(), EngineError> {
-        self.send(SampleCommand::Stop(sound))
+    /// Dropping the handle unloads too; this is the drop that also cuts
+    /// the sounds, hard, at the output's next render, and tells the
+    /// project not to bring the sample back on reopen. A refused unload
+    /// hands the handle back with the error, and changes nothing: a full
+    /// ring is `CommandsFull` before the flag is touched, and a flag that
+    /// cannot be written is refused before the eviction is sent. Room on
+    /// the ring is checked, not held, so a sound stopped from another
+    /// thread in the same instant can take it; the sounds then play out
+    /// instead of being cut, and the unload is otherwise complete.
+    ///
+    /// The eviction goes out before the audio is let go, which is what
+    /// makes the address a safe key; see `BufferAddr`.
+    pub fn unload(&mut self, loaded: LoadedSample) -> Result<(), (LoadedSample, EngineError)> {
+        if self.renderer.is_full() {
+            return Err((loaded, EngineError::CommandsFull));
+        }
+        if let Err(e) = self.project.set_loaded(loaded.id(), false) {
+            return Err((loaded, e.into()));
+        }
+        let _ = self.renderer.evict(loaded.addr());
+        drop(loaded);
+        Ok(())
     }
 
     /// Stops every sample. Inputs keep being heard.
     pub fn stop_all(&mut self) -> Result<(), EngineError> {
-        self.send(SampleCommand::StopAll)
-    }
-
-    /// Pushes `command` to the output. A full ring drops it and says so.
-    fn send(&mut self, command: impl Into<Command>) -> Result<(), EngineError> {
-        self.commands
-            .push(command.into())
-            .map_err(|_| EngineError::CommandsFull)
+        self.renderer.stop_all()
     }
 }
 
@@ -395,6 +339,7 @@ mod tests {
     use std::mem::size_of;
 
     use super::*;
+    use crate::audio::AudioBuffer;
     use crate::config::Pcm;
     use crate::import::DecodeError;
     use crate::project::tests::memory_project;
@@ -442,8 +387,8 @@ mod tests {
     fn commands_sent_before_the_output_is_taken_wait_for_it() {
         let mut e = Engine::on(memory_project(), usize::MAX).unwrap();
         let id = e.project.add_sample(None, &ramp(2)).unwrap();
-        e.load(id).unwrap();
-        e.play(id).unwrap();
+        let loaded = e.load(id).unwrap();
+        loaded.play().unwrap();
 
         let mut o = e.output().unwrap();
         let out = period(&mut o, 2);
@@ -527,7 +472,7 @@ mod tests {
         // Room for the loaded ramp and nothing else.
         let mut e = Engine::on(memory_project(), ramp_bytes(4)).unwrap();
         let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.load(root).unwrap();
+        let _held = e.load(root).unwrap();
 
         assert!(matches!(
             e.import(&path),
@@ -552,38 +497,57 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
-        assert!(!e.loaded.contains_key(&id));
+        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
-    fn load_brings_audio_into_ram_and_sets_the_flag() {
+    fn load_returns_the_audio_and_sets_the_flag() {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
 
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
+        assert_eq!(loaded.id(), id);
         assert!(e.project().sample(id).unwrap().loaded);
-        assert_eq!(e.loaded[&id].samples(), ramp(4).samples());
+        assert_eq!(loaded.audio().samples(), ramp(4).samples());
         assert_eq!(e.ledger.in_use(), ramp_bytes(4));
+    }
 
-        // Loading again changes nothing.
-        e.load(id).unwrap();
+    #[test]
+    fn dropping_the_handle_unloads_but_leaves_the_flag() {
+        let (mut e, _r) = engine();
+        let id = e.project.add_sample(None, &ramp(4)).unwrap();
+        let loaded = e.load(id).unwrap();
+
+        drop(loaded);
+        assert_eq!(e.ledger.in_use(), 0, "the audio is gone");
+        assert!(
+            e.project().sample(id).unwrap().loaded,
+            "but the project still says to load it on reopen"
+        );
+    }
+
+    #[test]
+    fn each_load_is_its_own_copy() {
+        let (mut e, _r) = engine();
+        let id = e.project.add_sample(None, &ramp(4)).unwrap();
+        let a = e.load(id).unwrap();
+        let b = e.load(id).unwrap();
+        assert_eq!(e.ledger.in_use(), 2 * ramp_bytes(4));
+        drop(a);
         assert_eq!(e.ledger.in_use(), ramp_bytes(4));
+        drop(b);
+        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
     fn unload_clears_the_flag_and_drops_the_audio() {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
 
-        e.unload(id).unwrap();
+        e.unload(loaded).unwrap();
         assert!(!e.project().sample(id).unwrap().loaded);
-        assert!(!e.loaded.contains_key(&id));
         assert_eq!(e.ledger.in_use(), 0);
-
-        // Unloading again changes nothing.
-        e.unload(id).unwrap();
-        assert!(!e.project().sample(id).unwrap().loaded);
     }
 
     #[test]
@@ -591,7 +555,7 @@ mod tests {
         let mut e = Engine::on(memory_project(), ramp_bytes(4)).unwrap();
         let a = e.project.add_sample(None, &ramp(4)).unwrap();
         let b = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.load(a).unwrap();
+        let _held = e.load(a).unwrap();
 
         assert!(matches!(
             e.load(b),
@@ -600,7 +564,6 @@ mod tests {
             )))
         ));
         assert!(!e.project().sample(b).unwrap().loaded);
-        assert!(!e.loaded.contains_key(&b));
         assert!(e.project().sample(a).unwrap().loaded);
         // Refused at the allocation: nothing was brought in and let go.
         assert_eq!(e.ledger.in_use(), ramp_bytes(4));
@@ -611,13 +574,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
         std::fs::remove_file(dir.path().join("samples").join(format!("{}.wav", id.0))).unwrap();
 
         // The record comes from the manifest, so the unload goes through
         // and the audio is not stuck in RAM.
-        e.unload(id).unwrap();
-        assert!(!e.loaded.contains_key(&id));
+        e.unload(loaded).unwrap();
+        assert!(!e.project().sample(id).unwrap().loaded);
         assert_eq!(e.ledger.in_use(), 0);
     }
 
@@ -630,23 +593,19 @@ mod tests {
             e.load(bogus),
             Err(EngineError::Project(ProjectError::UnknownSample(id))) if id == bogus
         ));
-        assert!(matches!(
-            e.unload(bogus),
-            Err(EngineError::Project(ProjectError::UnknownSample(id))) if id == bogus
-        ));
-        assert!(!e.loaded.contains_key(&bogus));
+        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
     fn play_is_heard_from_the_renderers_next_period() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(2)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
 
-        let play = e.play(id).unwrap();
+        let play = loaded.play().unwrap();
         let out = period(&mut r, 2);
         // Two frames fit in one two-frame period, so the sound is done.
-        assert!(!r.is_playing(play));
+        assert!(!r.is_playing(play.id()));
         let expected: Vec<f32> = ramp(2).samples().iter().flat_map(|&s| [s, s]).collect();
         assert_eq!(out, expected);
     }
@@ -655,18 +614,19 @@ mod tests {
     fn each_play_is_its_own_sound() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
 
-        let a = e.play(id).unwrap();
-        let b = e.play(id).unwrap();
-        assert_ne!(a, b);
+        let a = loaded.play().unwrap();
+        let b = loaded.play().unwrap();
+        assert_ne!(a.id(), b.id());
         period(&mut r, 4);
         assert_eq!(r.playing(), 2);
 
-        e.stop(a).unwrap();
+        // The verb is on the sound, not the engine.
+        a.stop().unwrap();
         period(&mut r, 4);
-        assert!(!r.is_playing(a));
-        assert!(r.is_playing(b));
+        assert!(!r.is_playing(a.id()));
+        assert!(r.is_playing(b.id()));
 
         e.stop_all().unwrap();
         period(&mut r, 4);
@@ -674,22 +634,23 @@ mod tests {
     }
 
     #[test]
-    fn a_full_ring_refuses_the_command_and_burns_no_play_id() {
+    fn a_full_ring_refuses_the_command_and_the_next_play_is_a_new_sound() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
         let mut last = None;
         for _ in 0..COMMAND_CAPACITY {
-            last = Some(e.play(id).unwrap());
+            last = Some(loaded.play().unwrap());
         }
-        assert!(matches!(e.play(id), Err(EngineError::CommandsFull)));
+        assert!(matches!(loaded.play(), Err(EngineError::CommandsFull)));
         assert!(matches!(e.stop_all(), Err(EngineError::CommandsFull)));
 
-        // Once the renderer has drained the ring, the next sound id is the
-        // one after the last accepted play, not after the refused ones.
+        // Once the renderer has drained the ring, plays go again. The
+        // refused press burnt an id, which nothing minds; the next sound
+        // is simply a later one.
         period(&mut r, 4);
-        let next = e.play(id).unwrap();
-        assert_eq!(next.0, last.unwrap().0 + 1);
+        let next = loaded.play().unwrap();
+        assert!(next.id() > last.unwrap().id());
     }
 
     #[test]
@@ -709,7 +670,7 @@ mod tests {
             ));
         }
         assert!(e.inputs.is_empty(), "a refused input holds no slot");
-        assert_eq!((e.next_sound, e.next_input), (0, 0), "and burns no id");
+        assert_eq!(e.next_input, 0, "and burns no input id");
     }
 
     #[test]
@@ -794,34 +755,35 @@ mod tests {
     fn a_sample_is_not_an_input_source() {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(id).unwrap();
-        let play = e.play(id).unwrap();
-        for result in [e.monitor(play), e.unmonitor(play)] {
-            assert!(matches!(result, Err(EngineError::NotAnInputSource(s)) if s == play));
+        let loaded = e.load(id).unwrap();
+        let play = loaded.play().unwrap();
+        for result in [e.monitor(play.id()), e.unmonitor(play.id())] {
+            assert!(matches!(result, Err(EngineError::NotAnInputSource(s)) if s == play.id()));
         }
     }
 
     #[test]
-    fn a_full_ring_refuses_an_input_and_holds_no_slot_and_burns_no_id() {
+    fn a_full_ring_refuses_an_input_and_holds_no_slot() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
         for _ in 0..COMMAND_CAPACITY {
-            e.play(id).unwrap();
+            loaded.play().unwrap();
         }
-        let before = e.next_sound;
         assert!(matches!(
             e.input(&[Channels::Stereo], 64),
             Err(EngineError::CommandsFull)
         ));
         assert!(e.inputs.is_empty());
-        assert_eq!((e.next_sound, e.next_input), (before, 0));
+        assert_eq!(e.next_input, 0, "no input id was burnt");
 
+        // With room again the input is added, its sources consecutive.
         period(&mut r, 4);
+        let before = e.renderer.next_sound();
         let input = e.input(&[Channels::Stereo, Channels::Mono], 64).unwrap();
         assert_eq!(input.id(), InputId(0));
         assert_eq!(input.sounds(), [SoundId(before), SoundId(before + 1)]);
-        assert_eq!((e.next_sound, e.next_input), (before + 2, 1));
+        assert_eq!((e.renderer.next_sound(), e.next_input), (before + 2, 1));
         assert_eq!(e.inputs[&input.id()], input.sounds());
     }
 
@@ -830,30 +792,51 @@ mod tests {
         let (mut e, mut r) = engine();
         let gone = e.project.add_sample(None, &ramp(100)).unwrap();
         let kept = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(gone).unwrap();
-        e.load(kept).unwrap();
-        let a = e.play(gone).unwrap();
-        let b = e.play(kept).unwrap();
+        let gone = e.load(gone).unwrap();
+        let kept = e.load(kept).unwrap();
+        let a = gone.play().unwrap();
+        let b = kept.play().unwrap();
         period(&mut r, 4);
 
         e.unload(gone).unwrap();
         // Gone from the output at its next render, and only that sample.
         period(&mut r, 4);
-        assert!(!r.is_playing(a));
-        assert!(r.is_playing(b));
+        assert!(!r.is_playing(a.id()));
+        assert!(r.is_playing(b.id()));
     }
 
     #[test]
-    fn unload_on_a_full_ring_is_refused_and_leaves_the_sample_loaded() {
+    fn a_dropped_handle_lets_its_sounds_play_out() {
+        let (mut e, mut r) = engine();
+        let id = e.project.add_sample(None, &ramp(100)).unwrap();
+        let loaded = e.load(id).unwrap();
+        let play = loaded.play().unwrap();
+        period(&mut r, 4);
+
+        drop(loaded);
+        // Nothing was sent: the sound keeps the audio alive and plays on.
+        period(&mut r, 4);
+        assert!(r.is_playing(play.id()));
+        assert_eq!(e.ledger.in_use(), ramp_bytes(100));
+        // The audio is let go when the sound is.
+        e.stop_all().unwrap();
+        period(&mut r, 4);
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn unload_on_a_full_ring_is_refused_and_hands_the_handle_back() {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(id).unwrap();
+        let loaded = e.load(id).unwrap();
         for _ in 0..COMMAND_CAPACITY {
-            e.play(id).unwrap();
+            loaded.play().unwrap();
         }
 
-        assert!(matches!(e.unload(id), Err(EngineError::CommandsFull)));
-        assert!(e.loaded.contains_key(&id));
+        let Err((loaded, EngineError::CommandsFull)) = e.unload(loaded) else {
+            panic!("refused with the handle");
+        };
+        assert_eq!(loaded.id(), id);
         assert!(e.project().sample(id).unwrap().loaded);
         assert_eq!(e.ledger.in_use(), ramp_bytes(100));
     }
@@ -867,97 +850,44 @@ mod tests {
         let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let mut r = e.output().unwrap();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.load(id).unwrap();
-        let play = e.play(id).unwrap();
+        let loaded = e.load(id).unwrap();
+        let play = loaded.play().unwrap();
         period(&mut r, 4);
         // A read-only directory: the manifest cannot be rewritten.
         let perms = |mode| {
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap()
         };
         perms(0o555);
-        let result = e.unload(id);
+        let result = e.unload(loaded);
         perms(0o755);
 
-        assert!(matches!(
-            result,
-            Err(EngineError::Project(ProjectError::Storage(_)))
-        ));
+        let Err((loaded, EngineError::Project(ProjectError::Storage(_)))) = result else {
+            panic!("refused with the handle");
+        };
         // The sample is still in RAM and the sound was not cut.
-        assert!(e.loaded.contains_key(&id));
+        assert_eq!(loaded.id(), id);
         assert!(e.project().sample(id).unwrap().loaded);
         period(&mut r, 4);
-        assert!(r.is_playing(play));
+        assert!(r.is_playing(play.id()));
     }
 
     #[test]
-    fn unload_of_a_sample_not_in_ram_sends_nothing() {
-        let (mut e, _r) = engine();
-        let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        e.unload(id).unwrap();
-        // The ring still has every sound: nothing was pushed.
-        let mut free = 0;
-        while e.stop_all().is_ok() {
-            free += 1;
-        }
-        assert_eq!(free, COMMAND_CAPACITY);
-        // And with the ring full, the same unload needs no room on it.
-        e.unload(id).unwrap();
-    }
-
-    #[test]
-    fn play_of_an_unloaded_sample_is_refused() {
-        let (mut e, mut r) = engine();
-        let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        assert!(matches!(
-            e.play(id),
-            Err(EngineError::NotLoaded(s)) if s == id
-        ));
-        period(&mut r, 4);
-        assert_eq!(r.playing(), 0);
-    }
-
-    #[test]
-    fn play_of_an_unknown_sample_is_refused_as_unknown() {
-        let (mut e, _r) = engine();
-        let root = e.project.add_sample(None, &ramp(4)).unwrap();
-        let bogus = SampleId(root.0 + 1);
-        assert!(matches!(
-            e.play(bogus),
-            Err(EngineError::Project(ProjectError::UnknownSample(s))) if s == bogus
-        ));
-    }
-
-    #[test]
-    fn open_brings_loaded_samples_back_into_ram() {
+    fn open_loads_nothing_and_the_project_says_what_to_load() {
         let dir = tempfile::tempdir().unwrap();
         let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
         let kept = e.project.add_sample(None, &ramp(4)).unwrap();
+        let unloaded = e.project.add_sample(None, &ramp(8)).unwrap();
         let dropped = e.project.add_sample(None, &ramp(8)).unwrap();
-        e.load(kept).unwrap();
-        e.load(dropped).unwrap();
-        e.unload(dropped).unwrap();
+        let _kept = e.load(kept).unwrap();
+        let unloaded = e.load(unloaded).unwrap();
+        e.unload(unloaded).unwrap();
+        drop(e.load(dropped).unwrap());
         drop(e);
 
         let e = Engine::open(dir.path(), usize::MAX).unwrap();
-        assert!(e.loaded.contains_key(&kept));
-        assert!(!e.loaded.contains_key(&dropped));
-        assert_eq!(e.ledger.in_use(), ramp_bytes(4));
-    }
-
-    #[test]
-    fn open_fails_when_loaded_samples_no_longer_fit() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
-        let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        e.load(id).unwrap();
-        drop(e);
-
-        let result = Engine::open(dir.path(), ramp_bytes(4) - 1);
-        assert!(matches!(
-            result,
-            Err(EngineError::Project(ProjectError::Storage(
-                StorageError::OverBudget { .. }
-            )))
-        ));
+        assert_eq!(e.ledger.in_use(), 0, "nothing is in RAM");
+        // The held one and the dropped one were loaded last the caller
+        // said; the unloaded one was not.
+        assert_eq!(e.project().loaded_samples().unwrap(), [kept, dropped]);
     }
 }

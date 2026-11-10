@@ -43,15 +43,23 @@
 //! ```
 //!
 //! - **[`engine`]** is the only code that touches more than one role, and
-//!   the only way in from outside the crate: every other role is reachable
-//!   through it or not at all, so there is one path to each action. An
-//!   import is: decode, convert, add the result to the project as a root.
-//!   A load is: read the audio from the project into RAM, mark the sample
-//!   loaded. A play is: find the loaded audio, send a command. The engine
-//!   is the control side of sound: it owns the ledger (one memory budget
-//!   for everything it holds in RAM, which every allocation along those
-//!   paths is a block of), the loaded audio and the sending end of a
-//!   lock-free command ring, and nothing it does can block the other end.
+//!   where everything comes from: every other role is reachable through
+//!   it or not at all. An import is: decode, convert, add the result to
+//!   the project as a root. A load is: read the audio from the project
+//!   into RAM, mark the sample loaded, hand the audio out. An input is:
+//!   mint ids, allocate rings, send the adds. The engine owns the ledger
+//!   (one memory budget for everything in RAM, which every allocation
+//!   along those paths is a block of) and makes the renderer and the
+//!   lock-free command ring to it; nothing on the control side can block
+//!   the other end.
+//! - **Handles** are where things are done. What the engine makes it
+//!   hands out as a handle, and the verbs on that thing are on the handle:
+//!   a [`LoadedSample`] owns its audio and plays, a [`Sound`] names one
+//!   play and stops it. Holding the handle is what it means for the thing
+//!   to exist; drop the `LoadedSample` and the sample is unloaded. Each
+//!   handle carries a `RendererHandle`, the control side's clone of the
+//!   ring's sending end, so it needs the engine for nothing more. The
+//!   engine keeps no list of what is loaded or playing.
 //! - **`renderer`** is the other end of that ring, and the one role that
 //!   runs on a thread the engine does not. It is this engine's pipeline:
 //!   which pieces run, in what order, and what the control side may ask
@@ -128,9 +136,12 @@ pub(crate) mod dsp;
 pub mod engine;
 pub(crate) mod import;
 pub(crate) mod input;
+pub(crate) mod loaded_sample;
 pub(crate) mod memory;
 pub mod project;
 pub(crate) mod renderer;
+pub(crate) mod renderer_handle;
+pub(crate) mod sound;
 pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -140,7 +151,9 @@ pub use dsp::SoundId;
 pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
 pub use input::{Channels, Input, InputId};
+pub use loaded_sample::LoadedSample;
 pub use memory::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use renderer::Renderer;
+pub use sound::Sound;
 pub use storage::StorageError;

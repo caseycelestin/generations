@@ -64,13 +64,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let scratch = tempfile::tempdir()?;
     let pluck = engine.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
-    engine.load(pluck)?;
+    let pluck = engine.load(pluck)?;
 
     println!("pluck");
-    engine.play(pluck)?;
+    pluck.play()?;
     sleep(Duration::from_millis(600));
     println!("pluck again, over the first one's tail");
-    engine.play(pluck)?;
+    pluck.play()?;
     sleep(Duration::from_millis(1200));
 
     // The audio thread queues its complaints; this is where they are read.
