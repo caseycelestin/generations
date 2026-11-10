@@ -328,22 +328,54 @@ the code follows them.
   failing, which is how the SP-404 behaves and what a player relies on.
   Per-voice cost grows once pads can be pitched, and the cap earns its
   keep then.
-- **The render side is two types: `Voice` and `Renderer`.** A voice is
-  how one sample is heard: today the whole buffer from first frame to
-  last at its own speed. Start and end points, looping, gain and fades
-  are fields and lines on the voice when they come. The renderer is
-  real-time safe, not real-time only: it owns the playing voices and the
-  consuming end of the command ring, and each call applies the commands
-  that arrived, zeroes the slice it is given, lets every voice add itself,
-  drops the voices that finished, and clips the sum once. A device drives
-  it live from its callback; a bounce drives it offline in a loop. There
-  is no separate mixer: a list of voices with a sum is a method, not a
-  concept. The pattern is JUCE's `Synthesiser` and Kira's `Renderer`; the
-  name is Kira's, and "controller" was rejected because the engine gives
-  the orders and this side carries them out. The loaded audio and the
-  voices do not overlap: one says which samples are in RAM, keyed by
-  sample; the other says what is sounding now and where in it, keyed by
-  voice. They share only an `Arc` to the same bytes.
+- **The render side is a renderer wiring three pieces: `Voices`,
+  `Playhead` and `hard_clip`.** Rebuilt 2026-11-09 (PR #43) after the
+  first shape, a `Voice` type the renderer kept in a deque, stopped
+  fitting the taps and busses coming next. A `Playhead` is a read
+  position in a loaded sample: `play` adds its next period into the
+  output and moves on, `finished` says when it has reached the end. Start
+  and end points, looping and speed are fields on it when they come.
+  `Voices` is the fixed array of `VOICE_COUNT` voices, each a `VoiceId`
+  and a playhead, and its methods are the whole polyphony policy: `start`
+  takes a free voice or steals the oldest, `stop` by id, `stop_all`,
+  `evict` by buffer address, and `play_all`, which sums every voice and
+  frees the finished ones. `hard_clip` is a free function. The renderer
+  is real-time safe, not real-time only: it owns the consuming end of the
+  command ring and the voices, and each call applies the commands that
+  arrived, zeroes the slice it is given, has the voices play into it,
+  and clips the sum once. A device drives it live from its callback; a
+  bounce drives it offline in a loop. There is no separate mixer: a set
+  of voices with a sum is a method, not a concept. The name is Kira's;
+  "controller" was rejected because the engine gives the orders and this
+  side carries them out. The loaded audio and the voices do not overlap:
+  one says which samples are in RAM, keyed by sample; the other says what
+  is sounding now and where in it, keyed by voice. They share only an
+  `Arc` to the same bytes.
+- **A piece of DSP is a struct with the work as a method, or a free
+  function if it has no state.** The convention is in the `dsp` module
+  doc. A piece works in place on one period of interleaved stereo
+  frames: a producer adds, a transformer overwrites, an observer leaves
+  the slice alone. A piece with state owns it, is built whole by a
+  constructor and keeps its fields private, so an invariant has one
+  place to hold; it may say it is finished so whatever holds it can let
+  it go. State is built on the control side, where it may allocate, and
+  moved to where it runs. The pipeline is hard-coded in the renderer and
+  will stay so: no runtime graph. Two other shapes were built and
+  removed on the way. A `Processor` trait with boxed chains added a name
+  for something every piece could already be without it, and a plain-data
+  struct with free functions over it lost the constructor that keeps a
+  value from being half made. Rust supports both; it is built around
+  values that guard their own state, so the method shape is the one that
+  reads as Rust.
+- **The engine mints the `VoiceId`.** The ring is one way and
+  `Engine::play` must return something to stop by, so the control side
+  names the voice before it sends `Play`, and `Stop` carries the same id.
+  Ids come from a counter that only goes up and is bumped only once the
+  push succeeds, so a refused press burns nothing, an id is never reused,
+  and the lowest id among the voices is the oldest, which is what
+  stealing needs. A stop for a voice that finished or was stolen names
+  nothing and does nothing. The render side chooses the voice; the engine
+  never learns which.
 - **Voices add into the caller's buffer, voice-major.** Whoever drives
   the renderer owns the period buffer and hands it in; the renderer never
   allocates one.
@@ -364,12 +396,17 @@ the code follows them.
   ring once at the start of each period, so a press lands within one
   period, a few milliseconds. Sample-accurate placement within a period
   is what sequencing adds, as a frame offset on the command.
-- **Playing voices are a fixed-capacity FIFO.** `heapless::Deque<Voice,
-  VOICE_COUNT>`, stored inline in the renderer: oldest first, so stealing
-  is pop the front and push the back, and the type cannot allocate. An
-  array of `Option<Voice>` tracked free and in-use slots by scanning for a
-  sentinel and relied on ids being minted in order to know the oldest;
-  the deque says FIFO in the type and needs neither.
+- **Voices are a fixed array of `Option<Voice>`, scanned.** Every
+  method is one pass over `VOICE_COUNT` entries: find a free one, find
+  the lowest id, drop the ones on a buffer. With the count a small
+  compile-time constant that is a fixed cost, smaller than the audio each
+  period reads, and it needs no second structure kept in sync. A
+  `heapless::Deque` FIFO was the first shape, stealing by pop and push;
+  it stopped fitting once `stop` and `evict` had to remove from the
+  middle, and the ids it was meant to avoid are needed anyway so a press
+  can be stopped. If the count ever grew to where the scans showed in a
+  profile, the fix is an id-to-index table on the control side, not a map
+  on the audio thread.
 - **The ring is `rtrb`.** Single producer, single consumer, lock-free,
   fixed capacity, written for audio. Popping on the audio thread is a few
   atomic loads and never blocks. A full ring drops the push on the control
@@ -756,8 +793,10 @@ changes to it.
   audible problem today; a rule to keep before the device is the target.
 - Input monitoring: hearing the input through the output while recording,
   or before it. The engine mints a feed handle with a ring of a few
-  periods into the renderer, where the input is a voice with a level; the
-  caller feeds it beside the take in the input callback, since monitoring
+  periods into the renderer, where the input is a producer piece beside
+  `Voices`, pulling from the ring and adding into the period with a
+  level; the caller feeds it beside the take in the input callback, since
+  monitoring
   happens before and without recording and a take ending must not silence
   the input. Two streams means two clocks and a ring that drifts, so the
   render side drops or repeats by frame count; one duplex stream on the
@@ -768,8 +807,20 @@ changes to it.
 - A level meter on a take: a peak or running power the take keeps as it
   quantises, in an atomic the recorder reads, so a panel can show input
   level while recording. Small; arrives with the panel.
-- Several inputs: a recorder and a feed per source, each a voice in the
-  renderer with its own level. The renderer's voice count bounds them.
+- Several inputs: a recorder and a feed per source, each an input piece
+  in the renderer with its own level. A fixed count of them, like the
+  voices, bounds the work per period.
+- Taps and busses on the hard-coded path. A tap is an observer piece
+  that copies the slice at its point into a ring for the control side,
+  armed or not, dropping on full; the main out and a monitor pre- or
+  post-effect are the same piece at different points. A bus is a second
+  slice the renderer owns, played into and then added to the main out; an
+  effect with a tail lives on a bus. Both are pieces in the renderer's
+  order, not a graph.
+- Finished and retire events from the render side to the engine, a ring
+  the other way, so the engine learns a voice ended and can drop the last
+  `Arc` on the control side; see the entry above on where the free
+  happens today.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the
   control side through `Stream::error`; the example prints them at the
