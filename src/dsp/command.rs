@@ -8,11 +8,13 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 
-/// Identity of one started sound, minted by the engine.
+/// Identity of one sound playing, minted by the engine when it is
+/// started.
 ///
-/// Never reused, so a stop that arrives after its voice was stolen or
-/// finished names nothing and does nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Never reused, so a stop that arrives after its sound was stolen or
+/// finished names nothing and does nothing. Minted in order, so the
+/// lowest id among the voices is the oldest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VoiceId(pub u64);
 
 /// Where a resident buffer lives, as a number.
@@ -35,20 +37,20 @@ impl BufferAddr {
 
 /// What the engine can ask of the renderer.
 ///
-/// Each command is keyed a different way: `Play` and `Stop` by voice,
+/// Each command is keyed a different way: `Play` and `Stop` by voice id,
 /// `StopAll` by nothing, `Evict` by buffer.
 #[derive(Debug)]
 pub enum Command {
-    /// Start `audio` from its first frame as voice `id`.
+    /// Start `audio` from its first frame as the sound `id`.
     Play {
         id: VoiceId,
         audio: Arc<AudioBuffer>,
     },
-    /// Stop voice `id` if it is still playing.
+    /// Stop the sound `id` if it is still playing.
     Stop(VoiceId),
-    /// Stop every voice.
+    /// Stop every sound.
     StopAll,
-    /// Stop every voice playing the buffer at `addr`, so the engine can
+    /// Stop every sound playing the buffer at `addr`, so the engine can
     /// let go of the last reference to it.
     Evict(BufferAddr),
 }

@@ -176,9 +176,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Unloads `id`: stops every voice playing it, clears the flag and
+    /// Unloads `id`: stops every sound playing it, clears the flag and
     /// drops its audio from RAM, which repays the budget as soon as the
-    /// last voice playing it has let go.
+    /// last sound playing it has let go.
     ///
     /// Unloaded means gone from RAM, so sound from the sample stops too,
     /// hard, at the output's next render, as `stop` does. Either the whole
@@ -225,13 +225,13 @@ impl Engine {
         Ok(voice)
     }
 
-    /// Stops `voice` if it is still playing. A voice that has finished or
+    /// Stops `voice` if it is still playing. A sound that has finished or
     /// been stolen is left alone.
     pub fn stop(&mut self, voice: VoiceId) -> Result<(), EngineError> {
         self.send(Command::Stop(voice))
     }
 
-    /// Stops every voice.
+    /// Stops every sound.
     pub fn stop_all(&mut self) -> Result<(), EngineError> {
         self.send(Command::StopAll)
     }
@@ -497,16 +497,16 @@ mod tests {
         let id = e.project.add_sample(None, &ramp(2)).unwrap();
         e.load(id).unwrap();
 
-        let voice = e.play(id).unwrap();
+        let play = e.play(id).unwrap();
         let out = period(&mut r, 2);
-        // Two frames fit in one two-frame period, so the voice is done.
-        assert!(!r.is_playing(voice));
+        // Two frames fit in one two-frame period, so the sound is done.
+        assert!(!r.is_playing(play));
         let expected: Vec<f32> = ramp(2).samples().iter().flat_map(|&s| [s, s]).collect();
         assert_eq!(out, expected);
     }
 
     #[test]
-    fn each_play_is_its_own_voice() {
+    fn each_play_is_its_own_sound() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.load(id).unwrap();
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_ring_refuses_the_command_and_burns_no_voice_id() {
+    fn a_full_ring_refuses_the_command_and_burns_no_play_id() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.load(id).unwrap();
@@ -547,7 +547,7 @@ mod tests {
     }
 
     #[test]
-    fn unload_stops_the_voices_playing_the_sample() {
+    fn unload_stops_the_sounds_playing_the_sample() {
         let (mut e, mut r) = engine();
         let gone = e.project.add_sample(None, &ramp(100)).unwrap();
         let kept = e.project.add_sample(None, &ramp(100)).unwrap();
@@ -589,7 +589,7 @@ mod tests {
         let mut r = e.output().unwrap();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.load(id).unwrap();
-        let voice = e.play(id).unwrap();
+        let play = e.play(id).unwrap();
         period(&mut r, 4);
         // A read-only directory: the manifest cannot be rewritten.
         let perms = |mode| {
@@ -607,7 +607,7 @@ mod tests {
         assert!(e.loaded.contains_key(&id));
         assert!(e.project().sample(id).unwrap().loaded);
         period(&mut r, 4);
-        assert!(r.is_playing(voice));
+        assert!(r.is_playing(play));
     }
 
     #[test]
@@ -615,7 +615,7 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.unload(id).unwrap();
-        // The ring still has every slot: nothing was pushed.
+        // The ring still has every voice: nothing was pushed.
         let mut free = 0;
         while e.stop_all().is_ok() {
             free += 1;
