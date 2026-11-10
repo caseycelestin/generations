@@ -2,10 +2,13 @@
 //!
 //! [`Ledger`] holds one figure, the budget, and hands out [`Block`]s
 //! against it. A block is a fixed-capacity buffer of samples that was paid
-//! for when it was made and pays itself back when it is dropped. There is
-//! no other way in the crate to get a buffer whose size scales with audio
-//! length, so every such byte is checked against the budget before it
-//! exists, and release cannot be forgotten or counted twice.
+//! for when it was made and pays itself back when it is dropped. For
+//! memory a library allocates on the crate's behalf, an input's ring, the
+//! ledger hands out a [`Reservation`] instead: the same payment and the
+//! same repayment on drop, held beside the buffer it is for. There is no
+//! other way in the crate to get a buffer whose size scales with audio,
+//! so every such byte is checked against the budget before it exists, and
+//! release cannot be forgotten or counted twice.
 //!
 //! Who may allocate is decided by who holds a `&Arc<Ledger>`. The control
 //! side does: decode, convert, storage reads, the engine.
@@ -61,22 +64,46 @@ impl Ledger {
     ///
     /// The block comes back empty, with exactly the capacity asked for.
     pub fn alloc<T>(self: &Arc<Self>, samples: usize) -> Result<Block<T>, OverBudget> {
-        let over = |requested, in_use| OverBudget {
-            requested,
-            in_use,
-            budget: self.budget,
-        };
         let bytes = samples
             .checked_mul(size_of::<T>())
-            .ok_or_else(|| over(usize::MAX, self.in_use.load(Ordering::Relaxed)))?;
+            .ok_or_else(|| OverBudget {
+                requested: usize::MAX,
+                in_use: self.in_use.load(Ordering::Relaxed),
+                budget: self.budget,
+            })?;
+        self.charge(bytes)?;
+        Ok(Block::new(Vec::with_capacity(samples), Arc::clone(self)))
+    }
+
+    /// Pays for `bytes` that something else will allocate, and hands back
+    /// the receipt: a [`Reservation`] that repays them when dropped. For
+    /// memory the crate does not allocate itself, such as a ring a
+    /// library makes. Refused, with nothing changed, if the bytes would
+    /// put the ledger over its budget; reaching exactly the budget is
+    /// allowed.
+    pub fn reserve(self: &Arc<Self>, bytes: usize) -> Result<Reservation, OverBudget> {
+        self.charge(bytes)?;
+        Ok(Reservation {
+            bytes,
+            ledger: Arc::clone(self),
+        })
+    }
+
+    /// Adds `bytes` to what is in use, or refuses if that would pass the
+    /// budget.
+    fn charge(&self, bytes: usize) -> Result<(), OverBudget> {
         self.in_use
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |in_use| {
                 in_use
                     .checked_add(bytes)
                     .filter(|&total| total <= self.budget)
             })
-            .map_err(|in_use| over(bytes, in_use))?;
-        Ok(Block::new(Vec::with_capacity(samples), Arc::clone(self)))
+            .map_err(|in_use| OverBudget {
+                requested: bytes,
+                in_use,
+                budget: self.budget,
+            })?;
+        Ok(())
     }
 
     /// Bytes held by live blocks right now.
@@ -85,10 +112,24 @@ impl Ledger {
         self.in_use.load(Ordering::Relaxed)
     }
 
-    /// Gives `bytes` back. Called by a block as it drops; nothing else
-    /// has a reason to.
+    /// Gives `bytes` back. Called by a block or a reservation as it drops;
+    /// nothing else has a reason to.
     fn release(&self, bytes: usize) {
         self.in_use.fetch_sub(bytes, Ordering::Relaxed);
+    }
+}
+
+/// Bytes paid for on a ledger for memory allocated elsewhere; repaid when
+/// dropped. Held beside the buffer it is for, so the two have one life.
+#[derive(Debug)]
+pub struct Reservation {
+    bytes: usize,
+    ledger: Arc<Ledger>,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        self.ledger.release(self.bytes);
     }
 }
 
@@ -135,6 +176,27 @@ mod tests {
         assert_eq!(ledger.in_use(), 20);
         drop(b);
         assert_eq!(ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn a_reservation_counts_until_it_is_dropped_and_is_refused_over_budget() {
+        let ledger = Ledger::new(100);
+        let r = ledger.reserve(60).unwrap();
+        assert_eq!(ledger.in_use(), 60);
+        let refused = ledger.reserve(41).err().unwrap();
+        assert_eq!(
+            refused,
+            OverBudget {
+                requested: 41,
+                in_use: 60,
+                budget: 100
+            }
+        );
+        assert_eq!(ledger.in_use(), 60, "a refusal changes nothing");
+        let _b: Block<u8> = ledger.alloc(40).unwrap();
+        assert_eq!(ledger.in_use(), 100);
+        drop(r);
+        assert_eq!(ledger.in_use(), 40);
     }
 
     #[test]
