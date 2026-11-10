@@ -20,14 +20,14 @@ pub const MAX_CHANNELS: u16 = 2;
 /// is heard on both.
 pub const OUTPUT_CHANNELS: usize = 2;
 
-/// Number of sounds that can play at once.
+/// Number of sounds that can play at once: the voices.
 ///
 /// A fixed count bounds the work in one audio callback. When every voice
-/// is busy, starting another steals one rather than failing. Set
-/// generously for now; the cost per voice grows as voices gain pitch and
-/// processing.
+/// is taken, starting another sound steals the oldest rather than
+/// failing. Set generously for now; the cost per voice grows as sounds
+/// gain pitch and processing.
 pub const VOICE_COUNT: usize = 64;
-const _: () = assert!(VOICE_COUNT > 0, "the voice table cannot be empty");
+const _: () = assert!(VOICE_COUNT > 0, "there must be a voice to play");
 
 /// Commands the engine can send the renderer before the renderer has had
 /// a period to take them. A press that finds the ring full is dropped,

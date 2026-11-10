@@ -2,7 +2,7 @@
 //! play it twice through the default audio device.
 //!
 //! The tone decays, so it sounds like a pluck. The second press lands while
-//! the first is still ringing, which is two voices summed by the renderer.
+//! the first is still ringing, which is two sounds summed by the renderer.
 //! The WAV is written at 44.1 kHz, so the import resamples it on the way
 //! in.
 //!
