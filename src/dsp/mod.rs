@@ -29,7 +29,7 @@
 //! it leaves there is what the next function sees, and nothing is copied
 //! between them. That covers both ends of a path with one shape. A
 //! function that transforms, a gain or a clip, reads what is there and
-//! writes over it. A function that produces, [`Playhead::play`], reads
+//! writes over it. A function that produces, a [`Playhead`]'s `add`, reads
 //! nothing and adds its next frames to what is there, so several sum by
 //! adding into one slice and one into a zeroed slice is a plain write. A
 //! function that only looks, a meter or a tap, leaves the slice alone.
@@ -60,6 +60,15 @@ pub mod math;
 mod mixer;
 mod playhead;
 
-pub use input::{Input, InputReader};
-pub use mixer::{BufferAddr, Mixer, SoundId, Source};
-pub use playhead::Playhead;
+pub use input::InputReader;
+pub use mixer::{Mixer, Source, WhenFull};
+pub use playhead::{BufferAddr, Playhead};
+
+/// Identity of one sound: one instance of something heard, a sample
+/// played once or one source of an input. Minted by the engine, in order,
+/// so the lowest id among the sounds is the oldest.
+///
+/// Never reused, so a stop that arrives after its sound was stolen or
+/// finished names nothing and does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SoundId(pub u64);

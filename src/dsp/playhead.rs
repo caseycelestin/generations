@@ -15,6 +15,24 @@ use crate::config::{OUTPUT_CHANNELS, Pcm};
 use crate::dsp::Source;
 use crate::dsp::math::{add, sides_for, stereo};
 
+/// Where a resident buffer lives, as a number.
+///
+/// The render side never learns a sample id, and a raw pointer cannot
+/// cross to another thread, so a buffer is named to the renderer by its
+/// address. Two live `Arc<AudioBuffer>`s never share one, and the engine
+/// sends an eviction before it lets go of the buffer, so the address is
+/// still that buffer's when the command is applied: any later buffer at
+/// the same address is started by a play that is behind it on the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferAddr(usize);
+
+impl BufferAddr {
+    /// The address of the buffer `audio` points at.
+    pub fn of(audio: &Arc<AudioBuffer>) -> Self {
+        Self(Arc::as_ptr(audio) as usize)
+    }
+}
+
 /// A read position in a loaded sample, moving from its first frame to
 /// its last at its own speed.
 ///

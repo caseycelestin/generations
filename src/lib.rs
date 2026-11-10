@@ -8,22 +8,30 @@
 //!
 //! # Architecture
 //!
-//! Five roles, each its own module, with one rule about who talks to whom:
+//! Seven roles, each its own module, with one rule about who talks to whom:
 //!
 //! ```text
 //! engine     coordinates: what a UI or front panel calls. Also the control
 //!   │        side of sound: holds the audio in RAM and sends the commands
 //!   │
 //!   ├─ memory    one memory budget; every buffer that scales with audio
-//!   │            is a block allocated from it, and repays it when dropped
+//!   │            is a block allocated from it, or a reservation held beside
+//!   │            it, and repays it when dropped
 //!   │
 //!   ├─ import    the world's audio into the project's
 //!   │   ├─ decode    reads a file into plain samples, whatever format it is in
 //!   │   └─ convert   takes those to the project format: resample, quantise
 //!   │
-//!   ├─ dsp       the other side of sound, on another thread: turns commands
-//!   │            into frames, wherever the caller drives it. One public
-//!   │            type: Renderer
+//!   ├─ input     the capture side of an input: the handle a device callback
+//!   │            feeds, which splits the device's frames into one ring per
+//!   │            mono or stereo source for the render side to hear
+//!   │
+//!   ├─ renderer  the other side of sound, on another thread: this engine's
+//!   │   │        pipeline, commands in and a period of frames out, wherever
+//!   │   │        the caller drives it. One public type: Renderer
+//!   │   └─ dsp   the pieces it is wired from: a mixer of sources, a playhead,
+//!   │            an input reader, the arithmetic they share. Generic; knows
+//!   │            no command and no pipeline
 //!   │
 //!   └─ project   the rules: what a project holds and what is allowed
 //!        │
@@ -45,13 +53,26 @@
 //!   for everything it holds in RAM, which every allocation along those
 //!   paths is a block of), the loaded audio and the sending end of a
 //!   lock-free command ring, and nothing it does can block the other end.
-//! - **`dsp`** is the other end of that ring, and the one role that runs
-//!   on a thread the engine does not. The renderer turns
-//!   commands and resident audio into frames and depends on nothing about
-//!   where it runs, so a device can drive it live and a bounce can drive it
-//!   offline. Nothing in it knows what a project or a device is. Outside
-//!   the crate it is one type, [`Renderer`], minted once per engine as its
-//!   output, with one method that fills a frame.
+//! - **`renderer`** is the other end of that ring, and the one role that
+//!   runs on a thread the engine does not. It is this engine's pipeline:
+//!   which pieces run, in what order, and what the control side may ask
+//!   of them, the commands. It turns commands and resident audio into
+//!   frames and depends on nothing about where it runs, so a device can
+//!   drive it live and a bounce can drive it offline. Nothing in it knows
+//!   what a project or a device is. Outside the crate it is one type,
+//!   [`Renderer`], minted once per engine as its output, with one method
+//!   that fills a period.
+//! - **`dsp`** is the pieces the pipeline is wired from, and nothing more:
+//!   a mixer of sources, a playhead over a loaded sample, the reading end
+//!   of an input ring, and the arithmetic they share. Each is a function
+//!   over one period of frames and its own state, generic enough that a
+//!   second pipeline would wire the same pieces differently. No piece
+//!   knows a command exists.
+//! - **`input`** is the control side of an input, as `engine` is the
+//!   control side of sound: it allocates the rings when an input is added
+//!   and knows what a device's frames look like, and hands the render side
+//!   nothing but mono and stereo rings to read. Its one hot method,
+//!   `feed`, is the fixed loop a capture callback runs.
 //! - **The device is not a role of this crate.** The caller, which knows
 //!   what machine it is on, opens an audio device and moves the engine's
 //!   output into its callback; `examples/device/` is one such caller's
@@ -107,6 +128,7 @@ pub mod config;
 pub(crate) mod dsp;
 pub mod engine;
 pub(crate) mod import;
+pub(crate) mod input;
 pub(crate) mod memory;
 pub mod project;
 pub(crate) mod renderer;
@@ -115,9 +137,10 @@ pub(crate) mod storage;
 pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use dsp::{Input, SoundId};
+pub use dsp::SoundId;
 pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
+pub use input::{Channels, Input, InputId};
 pub use memory::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use renderer::Renderer;

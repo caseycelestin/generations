@@ -7,8 +7,10 @@
 //! engine named by a [`SoundId`]. Its methods are the whole policy:
 //! start a source, stop one by id, stop all, mute and unmute one, and
 //! add every slot into a period, freeing the ones that finish. As many
-//! sources can be heard at once as there are slots, and a start that
-//! finds them all taken steals the oldest. A muted slot runs on in
+//! sources can be heard at once as there are slots; what a start that
+//! finds them all taken does is the mixer's [`WhenFull`], chosen when it
+//! is built: steal the oldest, right for pads, or reject the newcomer,
+//! right for inputs. A muted slot runs on in
 //! silence: its source skips the period instead of adding it, so a muted
 //! sample still ends and a muted input still keeps up with its ring.
 //!
@@ -20,38 +22,8 @@
 //! Real-time safe: the array is inline and fixed, and each method is one
 //! pass over at most `N` slots. Nothing here allocates, locks or fails.
 
-use std::sync::Arc;
-
-use crate::audio::AudioBuffer;
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::Playhead;
-
-/// Identity of one sound: one instance of something in a mixer, a sample
-/// played once or an input while it is added. Minted by whoever starts
-/// it, in order, so the lowest id among the sounds is the oldest.
-///
-/// Never reused, so a stop that arrives after its sound was stolen or
-/// finished names nothing and does nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SoundId(pub u64);
-
-/// Where a resident buffer lives, as a number.
-///
-/// The render side never learns a sample id, and a raw pointer cannot
-/// cross to another thread, so a buffer is named to the renderer by its
-/// address. Two live `Arc<AudioBuffer>`s never share one, and the engine
-/// sends an eviction before it lets go of the buffer, so the address is
-/// still that buffer's when the command is applied: any later buffer at
-/// the same address is started by a play that is behind it on the ring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferAddr(usize);
-
-impl BufferAddr {
-    /// The address of the buffer `audio` points at.
-    pub fn of(audio: &Arc<AudioBuffer>) -> Self {
-        Self(Arc::as_ptr(audio) as usize)
-    }
-}
+use crate::dsp::{BufferAddr, Playhead, SoundId};
 
 /// Something a mixer slot can hold: it adds its next period into the
 /// output, and says when it never will again.
@@ -76,25 +48,45 @@ struct Slot<S> {
     muted: bool,
 }
 
+/// What a start does when every slot is taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenFull {
+    /// The newcomer takes the oldest slot. Ids only go up, so the oldest
+    /// is the lowest. A pad press always sounds.
+    StealOldest,
+    /// The newcomer is dropped and nothing heard changes. An input
+    /// already heard is never cut by another being added.
+    Reject,
+}
+
 /// `N` slots for sources of one kind; a free one holds nothing.
 #[derive(Debug)]
-pub struct Mixer<S, const N: usize>([Option<Slot<S>>; N]);
+pub struct Mixer<S, const N: usize> {
+    slots: [Option<Slot<S>>; N],
+    when_full: WhenFull,
+}
 
 impl<S: Source, const N: usize> Mixer<S, N> {
-    /// Nothing heard.
-    pub fn empty() -> Self {
+    /// Nothing heard, and `when_full` for every start that finds no free
+    /// slot.
+    pub fn empty(when_full: WhenFull) -> Self {
         const { assert!(N > 0, "a mixer needs a slot") };
-        Self(std::array::from_fn(|_| None))
+        Self {
+            slots: std::array::from_fn(|_| None),
+            when_full,
+        }
     }
 
-    /// Starts `source` as `id`, heard unless `muted`, in a free slot or,
-    /// if there is none, in place of the oldest. Ids only go up, so the
-    /// oldest is the lowest.
+    /// Starts `source` as `id`, heard unless `muted`, in a free slot. If
+    /// there is none, the mixer's [`WhenFull`] decides: the oldest slot
+    /// is taken, or `source` is dropped here and nothing changes.
     pub fn start(&mut self, id: SoundId, source: S, muted: bool) {
-        let slot = match self.0.iter_mut().find(|s| s.is_none()) {
-            Some(empty) => empty,
-            None => self
-                .0
+        let free = self.slots.iter_mut().find(|s| s.is_none());
+        let slot = match (free, self.when_full) {
+            (Some(free), _) => free,
+            (None, WhenFull::Reject) => return,
+            (None, WhenFull::StealOldest) => self
+                .slots
                 .iter_mut()
                 .min_by_key(|s| s.as_ref().map(|slot| slot.id))
                 .expect("N is above zero"),
@@ -104,9 +96,9 @@ impl<S: Source, const N: usize> Mixer<S, N> {
 
     /// Mutes or unmutes `id`, if it is in the mixer. A muted source runs
     /// on in silence and is heard again from the period after it is
-    /// unmuted.
+    /// unmuted. This is the monitor switch of an input's sound.
     pub fn set_muted(&mut self, id: SoundId, muted: bool) {
-        for slot in self.0.iter_mut().flatten() {
+        for slot in self.slots.iter_mut().flatten() {
             if slot.id == id {
                 slot.muted = muted;
             }
@@ -116,7 +108,7 @@ impl<S: Source, const N: usize> Mixer<S, N> {
     /// Stops `id`, if it is still heard. One that has finished or been
     /// stolen is left gone.
     pub fn stop(&mut self, id: SoundId) {
-        for slot in self.0.iter_mut() {
+        for slot in self.slots.iter_mut() {
             if slot.as_ref().is_some_and(|s| s.id == id) {
                 *slot = None;
             }
@@ -125,7 +117,7 @@ impl<S: Source, const N: usize> Mixer<S, N> {
 
     /// Stops every source.
     pub fn stop_all(&mut self) {
-        self.0.fill_with(|| None);
+        self.slots.fill_with(|| None);
     }
 
     /// Adds every unmuted source's next period into `out`, summing them,
@@ -133,7 +125,7 @@ impl<S: Source, const N: usize> Mixer<S, N> {
     /// finished. Nothing is clipped here.
     pub fn add(&mut self, out: &mut [Pcm]) {
         let frames = out.len() / OUTPUT_CHANNELS;
-        for slot in self.0.iter_mut() {
+        for slot in self.slots.iter_mut() {
             if let Some(s) = slot {
                 if s.muted {
                     s.source.skip(frames);
@@ -151,19 +143,19 @@ impl<S: Source, const N: usize> Mixer<S, N> {
     /// want this; until then only tests ask.
     #[cfg(test)]
     pub(crate) fn is_playing(&self, id: SoundId) -> bool {
-        self.0.iter().flatten().any(|s| s.id == id)
+        self.slots.iter().flatten().any(|s| s.id == id)
     }
 
     /// Whether `id` is in the mixer and muted.
     #[cfg(test)]
     pub(crate) fn is_muted(&self, id: SoundId) -> bool {
-        self.0.iter().flatten().any(|s| s.id == id && s.muted)
+        self.slots.iter().flatten().any(|s| s.id == id && s.muted)
     }
 
     /// How many sources are heard.
     #[cfg(test)]
     pub(crate) fn playing(&self) -> usize {
-        self.0.iter().flatten().count()
+        self.slots.iter().flatten().count()
     }
 }
 
@@ -173,7 +165,7 @@ impl<const N: usize> Mixer<Playhead, N> {
     /// changes nothing. Only a sample has a buffer, so only this mixer
     /// can be asked.
     pub fn evict(&mut self, addr: BufferAddr) {
-        for slot in self.0.iter_mut() {
+        for slot in self.slots.iter_mut() {
             if slot
                 .as_ref()
                 .is_some_and(|s| BufferAddr::of(s.source.audio()) == addr)
@@ -186,7 +178,10 @@ impl<const N: usize> Mixer<Playhead, N> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
+    use crate::audio::AudioBuffer;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
@@ -198,13 +193,17 @@ mod tests {
         Arc::new(audio(1, &data))
     }
 
+    fn stealing() -> Samples {
+        Samples::empty(WhenFull::StealOldest)
+    }
+
     fn start(m: &mut Samples, id: u64, audio: &Arc<AudioBuffer>) {
         m.start(SoundId(id), Playhead::new(audio.clone()), false);
     }
 
     #[test]
     fn a_started_sound_is_heard_and_a_finished_one_leaves() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 3]));
         let mut out = vec![0.0; 4];
         m.add(&mut out);
@@ -220,7 +219,7 @@ mod tests {
 
     #[test]
     fn sources_sum() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 2]));
         start(&mut m, 2, &mono(vec![HALF; 2]));
         let mut out = vec![0.0; 4];
@@ -230,7 +229,7 @@ mod tests {
 
     #[test]
     fn stop_silences_one_and_stop_all_silences_every_one() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         let long = mono(vec![HALF; 100]);
         for id in 1..=3 {
             start(&mut m, id, &long);
@@ -247,7 +246,7 @@ mod tests {
 
     #[test]
     fn stopping_one_that_is_gone_does_nothing() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 100]));
         m.stop(SoundId(99));
         assert_eq!(m.playing(), 1);
@@ -255,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_start_with_every_slot_taken_steals_the_oldest() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         let long = mono(vec![HALF; 100]);
         for id in 0..SLOTS as u64 {
             start(&mut m, id, &long);
@@ -275,8 +274,28 @@ mod tests {
     }
 
     #[test]
+    fn a_start_with_every_slot_taken_is_rejected_when_told_to() {
+        let mut m = Samples::empty(WhenFull::Reject);
+        let long = mono(vec![HALF; 100]);
+        for id in 0..SLOTS as u64 {
+            start(&mut m, id, &long);
+        }
+        start(&mut m, 1000, &long);
+        assert_eq!(m.playing(), SLOTS);
+        assert!(m.is_playing(SoundId(0)), "the oldest is kept");
+        assert!(!m.is_playing(SoundId(1000)), "the newcomer is dropped");
+        // The rejected source let go of its audio at once.
+        assert_eq!(Arc::strong_count(&long), 1 + SLOTS);
+
+        // A freed slot takes the next start as usual.
+        m.stop(SoundId(0));
+        start(&mut m, 1001, &long);
+        assert!(m.is_playing(SoundId(1001)));
+    }
+
+    #[test]
     fn a_freed_slot_is_reused_before_anything_is_stolen() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         let long = mono(vec![HALF; 100]);
         for id in 0..SLOTS as u64 {
             start(&mut m, id, &long);
@@ -290,7 +309,7 @@ mod tests {
 
     #[test]
     fn a_muted_source_runs_on_in_silence_and_is_heard_when_unmuted() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 6]));
         m.set_muted(SoundId(1), true);
         assert!(m.is_muted(SoundId(1)));
@@ -311,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_muted_source_still_finishes() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 2]));
         m.set_muted(SoundId(1), true);
         let mut out = vec![0.0; 4];
@@ -321,14 +340,14 @@ mod tests {
 
     #[test]
     fn muting_one_that_is_gone_does_nothing() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         m.set_muted(SoundId(7), true);
         assert!(!m.is_muted(SoundId(7)));
     }
 
     #[test]
     fn evict_stops_every_sound_on_that_buffer_and_no_other() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         let gone = mono(vec![HALF; 100]);
         let kept = mono(vec![HALF; 100]);
         start(&mut m, 1, &gone);
@@ -346,7 +365,7 @@ mod tests {
 
     #[test]
     fn evicting_a_buffer_nothing_plays_does_nothing() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 100]));
         let other = mono(vec![HALF; 2]);
         m.evict(BufferAddr::of(&other));
@@ -355,7 +374,7 @@ mod tests {
 
     #[test]
     fn a_stopped_sound_lets_go_of_its_audio() {
-        let mut m = Samples::empty();
+        let mut m = stealing();
         let audio = mono(vec![HALF; 100]);
         start(&mut m, 1, &audio);
         assert_eq!(Arc::strong_count(&audio), 2);

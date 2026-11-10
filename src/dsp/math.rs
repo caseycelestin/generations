@@ -14,7 +14,7 @@ pub type Frame = [Pcm; OUTPUT_CHANNELS];
 
 /// Which sample of a source frame each output side hears, as an index
 /// into the frame. A mono source is `[0, 0]`; a stereo one as stored is
-/// `[0, 1]`; an input may be any two of its channels.
+/// `[0, 1]`; a source with more channels could pick any two.
 pub type Sides = [usize; OUTPUT_CHANNELS];
 
 /// The sides for a sample of `channels` channels, heard as stored: mono

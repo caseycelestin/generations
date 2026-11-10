@@ -7,21 +7,23 @@
 //! The renderer holds one mixer per kind of source, and a command is for
 //! exactly one of them, so the enum says which first and what second: a
 //! [`SampleCommand`] goes to the sample mixer, an [`InputCommand`] to the
-//! input mixer. A [`SoundId`] names a sound in one mixer or the other,
-//! never both, so a command meant for one cannot land on the other.
+//! input mixer. A [`SoundId`] names one sound in one mixer or the other,
+//! a sample playing or one source of an input, never both, so a command
+//! meant for one side cannot land on the other.
 
 use std::sync::Arc;
 
-use rtrb::Consumer;
-
 use crate::audio::AudioBuffer;
-use crate::config::Pcm;
-use crate::dsp::math::Sides;
-use crate::dsp::{BufferAddr, SoundId};
+use crate::dsp::{BufferAddr, InputReader, SoundId};
 
 /// What the engine can ask of the renderer: a command for one of its
 /// mixers.
+///
+/// An `Add` carries a whole `InputReader`, which is wide; every command
+/// is a slot of that size on a ring allocated once at open, so the size
+/// is paid there and nowhere else.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     /// For the sample mixer.
     Sample(SampleCommand),
@@ -60,20 +62,16 @@ pub enum SampleCommand {
 
 /// What can be asked of the input mixer.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum InputCommand {
-    /// Add the input whose ring `reader` is the end of, as `id`, with
-    /// the capture channels `sides` on the output's sides, not yet heard.
-    /// The ring was made for this input and this is its reading end's
-    /// only crossing.
-    Add {
-        id: SoundId,
-        reader: Consumer<Pcm>,
-        sides: Sides,
-    },
-    /// Remove the input `id`, dropping its reader.
+    /// Add one source of an input, the sound `id`, whose ring `reader` is
+    /// the render side of, not yet heard. The ring was made for this source
+    /// and this is its reading end's only crossing.
+    Add { id: SoundId, reader: InputReader },
+    /// Remove the input sound `id`, dropping its reader.
     Remove(SoundId),
-    /// Hear the input `id` through the output.
+    /// Hear the input sound `id` through the output.
     Monitor(SoundId),
-    /// Stop hearing the input `id`; it stays an input.
+    /// Stop hearing the input sound `id`; it stays an input.
     Unmonitor(SoundId),
 }

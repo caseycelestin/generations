@@ -27,10 +27,11 @@ use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::config::{COMMAND_CAPACITY, INPUT_CAPACITY, INPUT_CHANNELS};
-use crate::dsp::{BufferAddr, Input, SoundId, input};
+use crate::config::{COMMAND_CAPACITY, MAX_INPUT_CHANNELS, MAX_INPUT_SOUNDS};
+use crate::dsp::{BufferAddr, SoundId};
 use crate::import::{self as import, ImportError};
-use crate::memory::Ledger;
+use crate::input::{self, Channels, Input, InputId};
+use crate::memory::{Ledger, OverBudget};
 use crate::project::{Project, ProjectError, SampleId};
 use crate::renderer::Renderer;
 use crate::renderer::command::{Command, InputCommand, SampleCommand};
@@ -45,6 +46,9 @@ pub enum EngineError {
     Project(#[from] ProjectError),
     #[error(transparent)]
     Import(#[from] ImportError),
+    /// The input's rings would put the engine's memory over its budget.
+    #[error(transparent)]
+    Memory(#[from] OverBudget),
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -52,10 +56,25 @@ pub enum EngineError {
     /// The command ring was full; the command was dropped.
     #[error("the output has not taken the last {COMMAND_CAPACITY} commands")]
     CommandsFull,
-    /// The channels asked of `Engine::input` are not one or two of the
-    /// device's `INPUT_CHANNELS`.
-    #[error("input channels {0:?} are not one or two of 0..{INPUT_CHANNELS}")]
-    BadInputChannels(Vec<usize>),
+    /// The layout asked of `Engine::input` adds up to no channels, or
+    /// more than the engine takes from one device.
+    #[error("an input is 1 to {MAX_INPUT_CHANNELS} channels wide, not {0}")]
+    BadInputWidth(usize),
+    /// The capture period given to `Engine::input` is zero.
+    #[error("a capture period is at least one frame")]
+    BadInputPeriod,
+    /// The input's sources would not all fit beside the input sounds the
+    /// engine already holds. Remove an input before adding another.
+    #[error("the engine holds {MAX_INPUT_SOUNDS} input sounds at most")]
+    InputsFull,
+    /// The sound is not a source of an input the engine holds: a sample,
+    /// a source of an input already removed, or one it never minted.
+    #[error("sound {} is not an input source", .0.0)]
+    NotAnInputSource(SoundId),
+    /// The input is not one the engine holds: already removed, or never
+    /// minted.
+    #[error("input {} is not held", .0.0)]
+    NoSuchInput(InputId),
 }
 
 /// The engine for one open project.
@@ -78,6 +97,13 @@ pub struct Engine {
     /// The next sound id to mint. Only goes up, and this is the one
     /// sender, so an id is never reused.
     next_sound: u64,
+    /// The next input id to mint; the same rule.
+    next_input: u64,
+    /// The inputs added and not yet removed, with the sounds of their
+    /// sources. The control side's answer to "is this an input", "is this
+    /// a source" and "is there room", so none of those is ever put to the
+    /// render side.
+    inputs: HashMap<InputId, Vec<SoundId>>,
     /// The render side, until the caller takes it with [`Engine::output`].
     output: Option<Renderer>,
 }
@@ -112,6 +138,8 @@ impl Engine {
             loaded: HashMap::new(),
             commands: producer,
             next_sound: 0,
+            next_input: 0,
+            inputs: HashMap::new(),
             output: Some(Renderer::new(consumer)),
         };
         for id in engine.project.loaded_samples()? {
@@ -137,46 +165,115 @@ impl Engine {
     /// device's input callback. Nothing is heard until
     /// [`Engine::monitor`].
     ///
-    /// `channels` says which of the device's `INPUT_CHANNELS` this input
-    /// is, in output order: one channel is heard on both sides, two left
-    /// and right. That is checked here, once, so nothing on either audio
-    /// thread has to. The input is a sound in the input mixer,
-    /// [`Input::sound`], which `monitor`, `unmonitor` and `remove_input`
-    /// take. Up to `INPUT_COUNT` inputs; adding another steals the oldest.
-    pub fn input(&mut self, channels: &[usize]) -> Result<Input, EngineError> {
-        let sides = input::sides(channels)
-            .ok_or_else(|| EngineError::BadInputChannels(channels.to_vec()))?;
+    /// An input is shaped like the device it comes from. `layout` says
+    /// what each channel of the device's interleaved frames means, in
+    /// order: a `Stereo` is the next two channels heard left and right, a
+    /// `Mono` is the next one heard on both sides. The frames fed are as
+    /// wide as the layout adds up to, 1 to `MAX_INPUT_CHANNELS`, exactly
+    /// as the device delivered them. Each source is a sound of its own,
+    /// [`Input::sounds`] in layout order, which `monitor` and `unmonitor`
+    /// take; the input as a whole is [`Input::id`], which `remove_input`
+    /// takes. The layout is fixed for the input's life: a device that is
+    /// to deliver other channels is closed and reopened, and so is its
+    /// input. Up to `MAX_INPUT_SOUNDS` sources at once across every input;
+    /// an input whose sources would not all fit is refused with
+    /// `InputsFull` until one is removed, so an input already heard is
+    /// never cut by another being added. Each source is its own ring, split
+    /// out of the device frames by [`Input::feed`], so the render side
+    /// sees mono and stereo sounds and nothing wider.
+    ///
+    /// `period` is how many frames the capture device delivers per
+    /// callback, which the caller knows from opening it and the engine
+    /// cannot: the rings are sized from it, a few periods deep, so the
+    /// capture and output clocks have room to disagree before a frame is
+    /// dropped. It is a size the engine must allocate for, like the RAM
+    /// budget at `open`, not a fact about the device's shape. The rings
+    /// come out of that budget and are refused with `OverBudget` if they
+    /// do not fit beside what is loaded; they are repaid when the `Input`
+    /// is dropped.
+    pub fn input(&mut self, layout: &[Channels], period: usize) -> Result<Input, EngineError> {
+        let width = input::width(layout);
+        if !(1..=MAX_INPUT_CHANNELS).contains(&width) {
+            return Err(EngineError::BadInputWidth(width));
+        }
+        if period == 0 {
+            return Err(EngineError::BadInputPeriod);
+        }
+        let held: usize = self.inputs.values().map(Vec::len).sum();
+        if held + layout.len() > MAX_INPUT_SOUNDS {
+            return Err(EngineError::InputsFull);
+        }
+        // One command per source; all of them go or none does.
+        if self.commands.slots() < layout.len() {
+            return Err(EngineError::CommandsFull);
+        }
+        // An id for the input and a sound per source.
+        let id = InputId(self.next_input);
+        let sounds: Vec<SoundId> = (0..layout.len() as u64)
+            .map(|n| SoundId(self.next_sound + n))
+            .collect();
         // The capture callback writes frames in through the `Input`, the
-        // renderer reads them out on the audio thread.
-        let (writer, reader) = RingBuffer::new(INPUT_CAPACITY);
-        let sound = SoundId(self.next_sound);
-        self.send(InputCommand::Add {
-            id: sound,
-            reader,
-            sides,
-        })?;
-        self.next_sound += 1;
-        Ok(Input::new(writer, sound))
+        // renderer reads them out through the readers on the audio thread.
+        // The rings are paid for on the ledger first; a refused input has
+        // allocated nothing and sent nothing.
+        let (input, readers) = Input::open(layout, period, id, &sounds, &self.ledger)?;
+        for (&id, reader) in sounds.iter().zip(readers) {
+            self.send(InputCommand::Add { id, reader })?;
+        }
+        // Minted only once the commands are in; a refused add burns no id.
+        self.next_input += 1;
+        self.next_sound += layout.len() as u64;
+        self.inputs.insert(id, sounds);
+        Ok(input)
     }
 
-    /// Hears the input `sound` through the output from the next period.
+    /// Hears the input source `sound`, from [`Input::sounds`], through the
+    /// output from the next period. Refused as `NotAnInputSource` for a
+    /// sound that is not one.
     pub fn monitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
+        self.source_held(sound)?;
         self.send(InputCommand::Monitor(sound))
     }
 
-    /// Stops hearing the input `sound`. It stays an input and keeps up
-    /// with the device; `monitor` hears it again.
+    /// Stops hearing the input source `sound`. Its input stays and keeps
+    /// up with the device; `monitor` hears the source again. Refused as
+    /// `NotAnInputSource` for a sound that is not one.
     pub fn unmonitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
+        self.source_held(sound)?;
         self.send(InputCommand::Unmonitor(sound))
     }
 
-    /// Removes the input `sound`, from [`Input::sound`]. Call this before
-    /// dropping the `Input`: the render side lets go of its end of the
-    /// ring here, and the ring is then freed when the `Input` is dropped,
-    /// on the caller's thread. Dropped the other way round, the render
-    /// side holds the last reference and frees it there.
-    pub fn remove_input(&mut self, sound: SoundId) -> Result<(), EngineError> {
-        self.send(InputCommand::Remove(sound))
+    /// Removes the input `id`, from [`Input::id`], with every source of it.
+    /// Call this before dropping the `Input`: the render side lets go of
+    /// its end of the ring here, and the ring is then freed when the
+    /// `Input` is dropped, on the caller's thread. Dropped the other way
+    /// round, the render side holds the last reference and frees it
+    /// there. Refused as `NoSuchInput` for an input not held; a refused
+    /// remove keeps the slot.
+    pub fn remove_input(&mut self, id: InputId) -> Result<(), EngineError> {
+        let Some(sounds) = self.inputs.get(&id) else {
+            return Err(EngineError::NoSuchInput(id));
+        };
+        // One command per source; all of them go or none does.
+        if self.commands.slots() < sounds.len() {
+            return Err(EngineError::CommandsFull);
+        }
+        for &sound in sounds {
+            self.commands
+                .push(InputCommand::Remove(sound).into())
+                .map_err(|_| EngineError::CommandsFull)?;
+        }
+        self.inputs.remove(&id);
+        Ok(())
+    }
+
+    /// `Ok` if `sound` is a source of an input the engine holds.
+    fn source_held(&self, sound: SoundId) -> Result<(), EngineError> {
+        self.inputs
+            .values()
+            .any(|sources| sources.contains(&sound))
+            .then_some(())
+            .ok_or(EngineError::NotAnInputSource(sound))
     }
 
     /// The project this engine operates on.
@@ -599,6 +696,160 @@ mod tests {
         period(&mut r, 4);
         let next = e.play(id).unwrap();
         assert_eq!(next.0, last.unwrap().0 + 1);
+    }
+
+    #[test]
+    fn an_input_is_one_to_max_channels_wide_and_has_a_period() {
+        let (mut e, _r) = engine();
+        let too_wide = [Channels::Mono; MAX_INPUT_CHANNELS + 1];
+        for bad in [&[][..], &too_wide[..]] {
+            assert!(matches!(
+                e.input(bad, 64),
+                Err(EngineError::BadInputWidth(w)) if w == bad.len()
+            ));
+        }
+        assert!(matches!(
+            e.input(&[Channels::Mono], 0),
+            Err(EngineError::BadInputPeriod)
+        ));
+        assert!(e.inputs.is_empty(), "a refused input holds no slot");
+        assert_eq!((e.next_sound, e.next_input), (0, 0), "and burns no id");
+    }
+
+    #[test]
+    fn an_input_pays_the_budget_for_its_rings_and_is_refused_over_it() {
+        // Room for one stereo input's rings and not a sample more.
+        let rings = 2 * 64 * 8 * size_of::<Pcm>();
+        let mut e = Engine::on(memory_project(), rings).unwrap();
+        let _r = e.output().unwrap();
+        assert!(matches!(
+            e.input(&[Channels::Stereo, Channels::Mono], 64),
+            Err(EngineError::Memory(_))
+        ));
+        assert!(e.inputs.is_empty(), "a refused input holds no slot");
+        assert_eq!(e.ledger.in_use(), 0, "and has allocated nothing");
+
+        let input = e.input(&[Channels::Stereo], 64).unwrap();
+        assert_eq!(e.ledger.in_use(), rings);
+        assert!(matches!(
+            e.input(&[Channels::Mono], 64),
+            Err(EngineError::Memory(_))
+        ));
+        drop(input);
+        assert_eq!(e.ledger.in_use(), 0, "repaid when the handle drops");
+    }
+
+    #[test]
+    fn each_source_of_an_input_is_heard_on_its_own_and_all_go_when_it_is_removed() {
+        let (mut e, mut r) = engine();
+        // A device of four channels: a stereo pair, then two microphones.
+        let mut input = e
+            .input(&[Channels::Stereo, Channels::Mono, Channels::Mono], 64)
+            .unwrap();
+        let &[pair, mic_a, mic_b] = input.sounds() else {
+            panic!("three sources");
+        };
+        assert_eq!(input.channels(), 4);
+        // One four-wide frame per feed, quiet enough that no sum clips.
+        let frame = [0.1, 0.2, 0.3, 0.4];
+
+        input.feed(&frame);
+        period(&mut r, 1);
+        assert!(
+            [pair, mic_a, mic_b].iter().all(|&s| r.is_playing(s)),
+            "an input's sounds are in the renderer at once"
+        );
+
+        e.monitor(pair).unwrap();
+        input.feed(&frame);
+        assert_eq!(period(&mut r, 1), vec![0.1, 0.2]);
+
+        e.monitor(mic_b).unwrap();
+        e.unmonitor(pair).unwrap();
+        input.feed(&frame);
+        assert_eq!(period(&mut r, 1), vec![0.4, 0.4]);
+
+        e.monitor(mic_a).unwrap();
+        input.feed(&frame);
+        assert_eq!(period(&mut r, 1), vec![0.3 + 0.4, 0.3 + 0.4]);
+
+        e.remove_input(input.id()).unwrap();
+        period(&mut r, 1);
+        assert_eq!(r.playing(), 0, "every source of the input is gone");
+        assert!(matches!(
+            e.remove_input(input.id()),
+            Err(EngineError::NoSuchInput(i)) if i == input.id()
+        ));
+        for gone in [pair, mic_a, mic_b] {
+            assert!(matches!(
+                e.monitor(gone),
+                Err(EngineError::NotAnInputSource(s)) if s == gone
+            ));
+        }
+    }
+
+    #[test]
+    fn more_input_sounds_than_slots_are_refused_until_an_input_is_removed() {
+        let (mut e, mut r) = engine();
+        // One stereo input, then mono inputs up to the slot count.
+        let first = e.input(&[Channels::Stereo, Channels::Mono], 64).unwrap();
+        let rest: Vec<_> = (2..MAX_INPUT_SOUNDS)
+            .map(|_| e.input(&[Channels::Mono], 64).unwrap())
+            .collect();
+        assert!(matches!(
+            e.input(&[Channels::Mono], 64),
+            Err(EngineError::InputsFull)
+        ));
+        period(&mut r, 2);
+        assert_eq!(r.playing(), MAX_INPUT_SOUNDS);
+
+        // Removing the two-source input makes room for two sources, not three.
+        e.remove_input(first.id()).unwrap();
+        assert!(matches!(
+            e.input(&[Channels::Mono, Channels::Mono, Channels::Mono], 64),
+            Err(EngineError::InputsFull)
+        ));
+        let next = e.input(&[Channels::Mono, Channels::Mono], 64).unwrap();
+        period(&mut r, 2);
+        assert_eq!(r.playing(), MAX_INPUT_SOUNDS);
+        assert!(first.sounds().iter().all(|&s| !r.is_playing(s)));
+        assert!(next.sounds().iter().all(|&s| r.is_playing(s)));
+        assert!(rest.iter().all(|i| r.is_playing(i.sounds()[0])));
+    }
+
+    #[test]
+    fn a_sample_is_not_an_input_source() {
+        let (mut e, _r) = engine();
+        let id = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.load(id).unwrap();
+        let play = e.play(id).unwrap();
+        for result in [e.monitor(play), e.unmonitor(play)] {
+            assert!(matches!(result, Err(EngineError::NotAnInputSource(s)) if s == play));
+        }
+    }
+
+    #[test]
+    fn a_full_ring_refuses_an_input_and_holds_no_slot_and_burns_no_id() {
+        let (mut e, mut r) = engine();
+        let id = e.project.add_sample(None, &ramp(100)).unwrap();
+        e.load(id).unwrap();
+        for _ in 0..COMMAND_CAPACITY {
+            e.play(id).unwrap();
+        }
+        let before = e.next_sound;
+        assert!(matches!(
+            e.input(&[Channels::Stereo], 64),
+            Err(EngineError::CommandsFull)
+        ));
+        assert!(e.inputs.is_empty());
+        assert_eq!((e.next_sound, e.next_input), (before, 0));
+
+        period(&mut r, 4);
+        let input = e.input(&[Channels::Stereo, Channels::Mono], 64).unwrap();
+        assert_eq!(input.id(), InputId(0));
+        assert_eq!(input.sounds(), [SoundId(before), SoundId(before + 1)]);
+        assert_eq!((e.next_sound, e.next_input), (before + 2, 1));
+        assert_eq!(e.inputs[&input.id()], input.sounds());
     }
 
     #[test]

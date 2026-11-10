@@ -20,15 +20,15 @@ pub const MAX_CHANNELS: u16 = 2;
 /// is heard on both.
 pub const OUTPUT_CHANNELS: usize = 2;
 
-/// Channels the capture device delivers, and the width of every frame on
-/// the input ring. The device is refused if it cannot run at this count,
-/// as the output is; which of them an input is, is chosen at `Engine::input`.
-pub const INPUT_CHANNELS: usize = 2;
+/// The widest input the engine takes: the most channels one capture
+/// device may deliver per frame.
+pub const MAX_INPUT_CHANNELS: usize = 8;
 
-/// Samples an input ring holds between the capture and output callbacks:
-/// a few periods, so the two clocks have room to disagree before a frame
-/// is dropped.
-pub const INPUT_CAPACITY: usize = INPUT_CHANNELS * 4096;
+/// Input sounds the engine holds at once, across every input: the slots
+/// in the renderer's input mixer, one per mono or stereo source. Unlike
+/// samples, an input sound is never stolen: `Engine::input` refuses an
+/// input whose sources would not all fit until one is removed.
+pub const MAX_INPUT_SOUNDS: usize = 8;
 
 /// Samples that can play at once: the slots in the renderer's sample
 /// mixer.
@@ -38,11 +38,6 @@ pub const INPUT_CAPACITY: usize = INPUT_CHANNELS * 4096;
 /// failing. Set generously for now; the cost per slot grows as playback
 /// gains pitch and processing.
 pub const SAMPLE_PLAYBACK_COUNT: usize = 64;
-
-/// Inputs that can be heard at once: the slots in the renderer's input
-/// mixer. Each is its own ring; starting another when every slot is
-/// taken steals the oldest, as with samples.
-pub const INPUT_COUNT: usize = 2;
 
 /// Commands the engine can send the renderer before the renderer has had
 /// a period to take them. A press that finds the ring full is dropped,
