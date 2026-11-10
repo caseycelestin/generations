@@ -28,7 +28,9 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::{COMMAND_CAPACITY, INPUT_CAPACITY, INPUT_CHANNELS};
-use crate::dsp::{BufferAddr, Command, Input, Renderer, SoundId, input};
+use crate::dsp::{
+    BufferAddr, Command, Input, InputCommand, Renderer, SampleCommand, SoundId, input,
+};
 use crate::import::{self as import, ImportError};
 use crate::memory::Ledger;
 use crate::project::{Project, ProjectError, SampleId};
@@ -148,7 +150,7 @@ impl Engine {
         // renderer reads them out on the audio thread.
         let (writer, reader) = RingBuffer::new(INPUT_CAPACITY);
         let sound = SoundId(self.next_sound);
-        self.send(Command::Input {
+        self.send(InputCommand::Add {
             id: sound,
             reader,
             sides,
@@ -159,13 +161,13 @@ impl Engine {
 
     /// Hears the input `sound` through the output from the next period.
     pub fn monitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
-        self.send(Command::Monitor(sound))
+        self.send(InputCommand::Monitor(sound))
     }
 
     /// Stops hearing the input `sound`. It stays an input and keeps up
     /// with the device; `monitor` hears it again.
     pub fn unmonitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
-        self.send(Command::Unmonitor(sound))
+        self.send(InputCommand::Unmonitor(sound))
     }
 
     /// Removes the input `sound`, from [`Input::sound`]. Call this before
@@ -174,7 +176,7 @@ impl Engine {
     /// on the caller's thread. Dropped the other way round, the render
     /// side holds the last reference and frees it there.
     pub fn remove_input(&mut self, sound: SoundId) -> Result<(), EngineError> {
-        self.send(Command::RemoveInput(sound))
+        self.send(InputCommand::Remove(sound))
     }
 
     /// The project this engine operates on.
@@ -251,7 +253,7 @@ impl Engine {
         }
         let addr = BufferAddr::of(audio);
         self.project.set_loaded(id, false)?;
-        self.send(Command::Evict(addr))?;
+        self.send(SampleCommand::Evict(addr))?;
         self.loaded.remove(&id);
         Ok(())
     }
@@ -271,7 +273,7 @@ impl Engine {
         };
         let sound = SoundId(self.next_sound);
         let audio = Arc::clone(audio);
-        self.send(Command::Play { id: sound, audio })?;
+        self.send(SampleCommand::Play { id: sound, audio })?;
         // Minted only once the command is in; a refused press burns no id.
         self.next_sound += 1;
         Ok(sound)
@@ -281,18 +283,18 @@ impl Engine {
     /// finished or been stolen is left alone. Inputs are untouched: see
     /// [`Engine::unmonitor`] and [`Engine::remove_input`].
     pub fn stop(&mut self, sound: SoundId) -> Result<(), EngineError> {
-        self.send(Command::Stop(sound))
+        self.send(SampleCommand::Stop(sound))
     }
 
     /// Stops every sample. Inputs keep being heard.
     pub fn stop_all(&mut self) -> Result<(), EngineError> {
-        self.send(Command::StopAll)
+        self.send(SampleCommand::StopAll)
     }
 
     /// Pushes `command` to the output. A full ring drops it and says so.
-    fn send(&mut self, command: Command) -> Result<(), EngineError> {
+    fn send(&mut self, command: impl Into<Command>) -> Result<(), EngineError> {
         self.commands
-            .push(command)
+            .push(command.into())
             .map_err(|_| EngineError::CommandsFull)
     }
 }

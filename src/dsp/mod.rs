@@ -79,7 +79,7 @@ mod mixer;
 mod playhead;
 pub mod renderer;
 
-pub use command::{BufferAddr, Command, SoundId};
+pub use command::{BufferAddr, Command, InputCommand, SampleCommand, SoundId};
 pub use input::{Input, InputReader};
 pub use mixer::{Mixer, Source};
 pub use playhead::Playhead;

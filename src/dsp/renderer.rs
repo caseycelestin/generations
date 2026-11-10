@@ -10,7 +10,7 @@
 //!
 //! The renderer is the wiring: it owns every piece of state the path
 //! needs, says which functions run over it and in what order, and maps
-//! each command onto the state it changes. See the `dsp` module doc for
+//! each command onto the mixer it is for. See the `dsp` module doc for
 //! the pieces and the convention they share. Today the path is: the
 //! samples heard add into the period, then the inputs heard, then a hard
 //! clip.
@@ -25,7 +25,7 @@ use rtrb::Consumer;
 use crate::config::{INPUT_COUNT, SAMPLE_PLAYBACK_COUNT};
 use crate::dsp::command::Command;
 #[cfg(test)]
-use crate::dsp::command::SoundId;
+use crate::dsp::command::{InputCommand, SampleCommand, SoundId};
 use crate::dsp::math::hard_clip;
 use crate::dsp::{InputReader, Mixer, Playhead};
 
@@ -76,22 +76,13 @@ impl Renderer {
         hard_clip(out);
     }
 
-    /// Applies every command that has arrived, each to the state it is
+    /// Applies every command that has arrived, each by the mixer it is
     /// for.
     fn apply_commands(&mut self) {
         while let Ok(command) = self.commands.pop() {
             match command {
-                Command::Play { id, audio } => self.samples.start(id, Playhead::new(audio)),
-                Command::Input { id, reader, sides } => {
-                    self.inputs.start(id, InputReader::new(reader, sides));
-                    self.inputs.set_muted(id, true);
-                }
-                Command::RemoveInput(id) => self.inputs.stop(id),
-                Command::Monitor(id) => self.inputs.set_muted(id, false),
-                Command::Unmonitor(id) => self.inputs.set_muted(id, true),
-                Command::Stop(id) => self.samples.stop(id),
-                Command::StopAll => self.samples.stop_all(),
-                Command::Evict(addr) => self.samples.evict(addr),
+                Command::Sample(command) => self.samples.apply(command),
+                Command::Input(command) => self.inputs.apply(command),
             }
         }
     }
@@ -134,10 +125,13 @@ mod tests {
     }
 
     fn play(p: &mut Producer<Command>, id: u64, audio: &Arc<AudioBuffer>) {
-        p.push(Command::Play {
-            id: SoundId(id),
-            audio: audio.clone(),
-        })
+        p.push(
+            SampleCommand::Play {
+                id: SoundId(id),
+                audio: audio.clone(),
+            }
+            .into(),
+        )
         .unwrap();
     }
 
@@ -182,11 +176,14 @@ mod tests {
         let (mut p, mut r) = renderer();
         play(&mut p, 1, &mono(vec![HALF; 100]));
         let (mut writer, reader) = RingBuffer::new(8 * INPUT_CHANNELS);
-        p.push(Command::Input {
-            id: SoundId(2),
-            reader,
-            sides: [0, 1],
-        })
+        p.push(
+            InputCommand::Add {
+                id: SoundId(2),
+                reader,
+                sides: [0, 1],
+            }
+            .into(),
+        )
         .unwrap();
         feed_two(&mut writer);
         let mut out = vec![0.0; 4];
@@ -199,25 +196,25 @@ mod tests {
             "but it keeps up with its ring"
         );
 
-        p.push(Command::Monitor(SoundId(2))).unwrap();
+        p.push(InputCommand::Monitor(SoundId(2)).into()).unwrap();
         feed_two(&mut writer);
         r.render(&mut out);
         assert_eq!(out, vec![0.75, 0.25, 0.75, 0.25]);
 
         // A sample stop and a stop-all leave the input alone.
-        p.push(Command::Stop(SoundId(2))).unwrap();
-        p.push(Command::StopAll).unwrap();
+        p.push(SampleCommand::Stop(SoundId(2)).into()).unwrap();
+        p.push(SampleCommand::StopAll.into()).unwrap();
         feed_two(&mut writer);
         r.render(&mut out);
         assert_eq!(out, vec![0.25, -0.25, 0.25, -0.25]);
 
-        p.push(Command::Unmonitor(SoundId(2))).unwrap();
+        p.push(InputCommand::Unmonitor(SoundId(2)).into()).unwrap();
         feed_two(&mut writer);
         r.render(&mut out);
         assert_eq!(out, vec![0.0; 4]);
         assert!(r.is_playing(SoundId(2)), "unmonitored, still an input");
 
-        p.push(Command::RemoveInput(SoundId(2))).unwrap();
+        p.push(InputCommand::Remove(SoundId(2)).into()).unwrap();
         r.render(&mut out);
         assert!(!r.is_playing(SoundId(2)));
         // The reader is gone, so the input's writer feeds nothing.
@@ -235,12 +232,13 @@ mod tests {
         r.render(&mut out);
         assert_eq!(r.playing(), 2);
 
-        p.push(Command::Stop(SoundId(1))).unwrap();
+        p.push(SampleCommand::Stop(SoundId(1)).into()).unwrap();
         r.render(&mut out);
         assert!(!r.is_playing(SoundId(1)));
         assert_eq!(out, vec![0.5; 4]);
 
-        p.push(Command::Evict(BufferAddr::of(&b))).unwrap();
+        p.push(SampleCommand::Evict(BufferAddr::of(&b)).into())
+            .unwrap();
         r.render(&mut out);
         assert_eq!(r.playing(), 0);
         assert_eq!(out, vec![0.0; 4]);

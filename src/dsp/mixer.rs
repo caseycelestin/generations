@@ -19,8 +19,8 @@
 //! pass over at most `N` slots. Nothing here allocates, locks or fails.
 
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::Playhead;
-use crate::dsp::command::{BufferAddr, SoundId};
+use crate::dsp::command::{BufferAddr, InputCommand, SampleCommand, SoundId};
+use crate::dsp::{InputReader, Playhead};
 
 /// Something a mixer slot can hold: it adds its next period into the
 /// output, and says when it never will again.
@@ -56,10 +56,10 @@ impl<S: Source, const N: usize> Mixer<S, N> {
         Self(std::array::from_fn(|_| None))
     }
 
-    /// Starts `source` as `id`, heard, in a free slot or, if there is
-    /// none, in place of the oldest. Ids only go up, so the oldest is the
-    /// lowest.
-    pub fn start(&mut self, id: SoundId, source: S) {
+    /// Starts `source` as `id`, heard unless `muted`, in a free slot or,
+    /// if there is none, in place of the oldest. Ids only go up, so the
+    /// oldest is the lowest.
+    pub fn start(&mut self, id: SoundId, source: S, muted: bool) {
         let slot = match self.0.iter_mut().find(|s| s.is_none()) {
             Some(empty) => empty,
             None => self
@@ -68,11 +68,7 @@ impl<S: Source, const N: usize> Mixer<S, N> {
                 .min_by_key(|s| s.as_ref().map(|slot| slot.id))
                 .expect("N is above zero"),
         };
-        *slot = Some(Slot {
-            id,
-            source,
-            muted: false,
-        });
+        *slot = Some(Slot { id, source, muted });
     }
 
     /// Mutes or unmutes `id`, if it is in the mixer. A muted source runs
@@ -141,6 +137,16 @@ impl<S: Source, const N: usize> Mixer<S, N> {
 }
 
 impl<const N: usize> Mixer<Playhead, N> {
+    /// Applies one command meant for the sample mixer.
+    pub fn apply(&mut self, command: SampleCommand) {
+        match command {
+            SampleCommand::Play { id, audio } => self.start(id, Playhead::new(audio), false),
+            SampleCommand::Stop(id) => self.stop(id),
+            SampleCommand::StopAll => self.stop_all(),
+            SampleCommand::Evict(addr) => self.evict(addr),
+        }
+    }
+
     /// Stops every sound playing the buffer at `addr`, dropping their
     /// references to it. A buffer nothing plays costs the pass and
     /// changes nothing. Only a sample has a buffer, so only this mixer
@@ -153,6 +159,22 @@ impl<const N: usize> Mixer<Playhead, N> {
             {
                 *slot = None;
             }
+        }
+    }
+}
+
+impl<const N: usize> Mixer<InputReader, N> {
+    /// Applies one command meant for the input mixer. An input is added
+    /// muted: it keeps up with its ring from the start and is heard once
+    /// monitored.
+    pub fn apply(&mut self, command: InputCommand) {
+        match command {
+            InputCommand::Add { id, reader, sides } => {
+                self.start(id, InputReader::new(reader, sides), true)
+            }
+            InputCommand::Remove(id) => self.stop(id),
+            InputCommand::Monitor(id) => self.set_muted(id, false),
+            InputCommand::Unmonitor(id) => self.set_muted(id, true),
         }
     }
 }
@@ -175,7 +197,7 @@ mod tests {
     }
 
     fn start(m: &mut Samples, id: u64, audio: &Arc<AudioBuffer>) {
-        m.start(SoundId(id), Playhead::new(audio.clone()));
+        m.start(SoundId(id), Playhead::new(audio.clone()), false);
     }
 
     #[test]

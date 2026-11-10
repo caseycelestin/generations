@@ -735,7 +735,7 @@ more about the render side than about input.
 - **An input is the ability to put audio into the renderer; monitoring is
   whether that audio is heard.** They are separate. `Engine::input(&[ch])`
   adds an input: it makes a lock-free ring of `INPUT_CAPACITY` samples,
-  sends its reading end to the render side on `Command::Input { id,
+  sends its reading end to the render side on `InputCommand::Add { id,
   reader, sides }`, and returns the writing end as an `Input` handle with
   the `SoundId` it sits in the input mixer as. The caller moves the handle
   into the capture callback and calls `feed(frames)` with each period the
@@ -796,15 +796,24 @@ more about the render side than about input.
   the surplus is skipped, oldest first, and the input catches up with a
   click. A full ring drops whole frames on the feed side, never a partial
   one, so the channels never swap.
-- **Samples and inputs have separate commands.** `Play`, `Stop`, `StopAll`
-  and `Evict` touch the sample mixer; `Input`, `RemoveInput`, `Monitor`
-  and `Unmonitor` the input mixer. A stop-all is a panic button for the
-  pads and must not mute the microphone, and a `SoundId` names a sound in
-  one table or the other, so a stop meant for one side cannot land on the
-  other. On the engine, `stop` and `stop_all` are for samples; `input`,
-  `monitor`, `unmonitor` and `remove_input` for inputs. The handle stays
-  `Input`, since it is the capture end of the input and not the hearing
-  of it.
+- **A command names its mixer first.** `Command` is two variants,
+  `Sample(SampleCommand)` and `Input(InputCommand)`, one per mixer the
+  renderer holds. `SampleCommand` is `Play`, `Stop`, `StopAll` and
+  `Evict`; `InputCommand` is `Add`, `Remove`, `Monitor` and `Unmonitor`.
+  The renderer's `apply_commands` only routes, two arms, and each mixer
+  has an `apply` for its own commands beside its own state, so adding a
+  command touches one mixer and not the renderer. The first version was
+  one flat enum of eight; it worked, but every command added an arm to
+  the renderer that knew what a stop or a mute was, and the doc comment
+  was already sorting the variants into two groups. A stop-all is a panic
+  button for the pads and must not mute the microphone, and a `SoundId`
+  names a sound in one table or the other, so a command meant for one
+  side cannot land on the other. On the engine, `stop` and `stop_all`
+  are for samples; `input`, `monitor`, `unmonitor` and `remove_input`
+  for inputs. `Engine::send` takes `impl Into<Command>`, so each call
+  builds the inner command and the grouping is spelled once. The handle
+  stays `Input`, since it is the capture end of the input and not the
+  hearing of it.
 - **`VoiceId` became `SoundId`, `VOICE_COUNT` became
   `SAMPLE_PLAYBACK_COUNT`.** The id names one instance of something in a
   mixer, a sample played once or an input while it is added, and "sound"
