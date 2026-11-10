@@ -964,10 +964,10 @@ more about the render side than about input.
   count of the sample mixer, beside `MAX_INPUT_SOUNDS` for the input mixer.
   The word "voice" is out of the code; it stays in the older entries of
   this document as what things were called when they were decided.
-- **The order to remove in.** Both ends of an input's ring hold it, and it
-  is freed when the second goes. `remove_input` first and drop the
-  `Input` second, and the free happens on the caller's thread. Dropped
-  the other way, the reader finishes and the mixer frees the ring on the
+- **The order to remove in.** Both ends of each source's ring hold it, and
+  it is freed when the second goes. `remove_input` first and drop the
+  `Input` second, and the frees happen on the caller's thread. Dropped
+  the other way, the readers finish and the mixer frees the rings on the
   audio thread: the same last-reference hazard as an unloaded buffer,
   listed under Deferred ideas with the same fix. The rule is documented
   on `Input` and `Engine::remove_input` and the `monitor` example follows
@@ -1045,8 +1045,8 @@ changes to it.
   rather than at the voice's end. Fix: unload keeps the removed `Arc`,
   and the engine keeps a retiring list it sweeps on the control side for
   entries whose count has dropped to one. An input whose `Input` handle
-  is dropped before `remove_input` has the same problem: its reader
-  finishes and the input mixer frees the ring. Not an audible problem
+  is dropped before `remove_input` has the same problem: its sources'
+  readers finish and the input mixer frees their rings. Not an audible problem
   today; a rule to keep before the device is the target.
 - A level meter on a take: a peak or running power the take keeps as it
   quantises, in an atomic the recorder reads, so a panel can show input
@@ -1071,7 +1071,7 @@ changes to it.
   order, not a graph.
 - Finished and retire events from the render side to the engine, a ring
   the other way, so the engine learns a sound ended and can drop the last
-  `Arc`, or an input's ring, on the control side; see the entry above on
+  `Arc`, or an input source's ring, on the control side; see the entry above on
   where the free happens today.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the

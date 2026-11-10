@@ -12,8 +12,9 @@
 //! thread, for as long as the stream is held. The callback that makes
 //! sound moves an engine's output, its `Renderer`, in and renders from it.
 //! A [`Capture`] is the same for the default input: it is told which of
-//! the device's channels to take, one or two, and its callback is given
-//! each period of just those, which it feeds to the engine's `Input`.
+//! the device's channels to take, in what order, and its callback is given
+//! each period of just those, which it feeds to the engine's `Input`,
+//! whose layout says what each of them means.
 //!
 //! The callbacks always see `f32`. A device that wants 16- or 32-bit
 //! samples gets them converted in the callback, because `cpal` does
@@ -238,8 +239,8 @@ impl Capture {
     /// Starts the device, taking the device channels `take` out of each
     /// frame it records. From now until the returned [`Stream`] is
     /// dropped, the capture thread calls `feed` once per period with
-    /// interleaved `f32` frames of just those channels, in that order: one
-    /// index makes a mono input, two a stereo one.
+    /// interleaved `f32` frames of just those channels, in that order, as
+    /// wide as the input's layout.
     pub fn start(
         self,
         take: Vec<usize>,

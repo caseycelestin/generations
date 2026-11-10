@@ -6,8 +6,8 @@
 //! (the engine)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
 //!                                         Mixer        the sources heard: start, stop, steal, add all
 //!                                           Playhead     a loaded sample, first frame to last
-//!                                           InputReader  the capture ring, a period at a time
-//!               ── Input ring(s) ─▶                     fed from the capture callback
+//!                                           InputReader  one source's ring, a period at a time
+//!               ── a ring per source ─▶                 fed from the capture callback
 //!                                         math         stereo, add, hard_clip: the arithmetic they share
 //! ```
 //!
@@ -17,8 +17,9 @@
 //! [`Command`]s it accepts and the engine imports them. Nothing here
 //! knows what a project, a device or resident audio is: audio arrives
 //! inside a command as an `Arc<AudioBuffer>`, and a playhead holds its
-//! clone until it finishes or is told to let go; an input arrives as the
-//! reading end of its ring the same way. The control side names a buffer
+//! clone until it finishes or is told to let go; each source of an input
+//! arrives as the reading end of its own ring the same way. The control
+//! side names a buffer
 //! to this side by its address, never by what it is.
 //!
 //! The [`Renderer`] is real-time safe, not real-time only. Each call to

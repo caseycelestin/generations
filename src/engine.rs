@@ -239,11 +239,11 @@ impl Engine {
 
     /// Removes the input `id`, from [`Input::id`], with every source of it.
     /// Call this before dropping the `Input`: the render side lets go of
-    /// its end of the ring here, and the ring is then freed when the
-    /// `Input` is dropped, on the caller's thread. Dropped the other way
-    /// round, the render side holds the last reference and frees it
-    /// there. Refused as `NoSuchInput` for an input not held; a refused
-    /// remove keeps the slot.
+    /// its end of each source's ring here, and the rings are then freed
+    /// when the `Input` is dropped, on the caller's thread. Dropped the
+    /// other way round, the render side holds the last reference to each
+    /// and frees them there. Refused as `NoSuchInput` for an input not
+    /// held; a refused remove keeps the slots.
     pub fn remove_input(&mut self, id: InputId) -> Result<(), EngineError> {
         let Some(sounds) = self.inputs.get(&id) else {
             return Err(EngineError::NoSuchInput(id));
