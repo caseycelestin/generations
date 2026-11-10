@@ -6,16 +6,21 @@
 
 use std::sync::Arc;
 
-use crate::audio::AudioBuffer;
+use rtrb::Consumer;
 
-/// Identity of one sound playing, minted by the engine when it is
-/// started.
+use crate::audio::AudioBuffer;
+use crate::config::Pcm;
+use crate::dsp::math::Sides;
+
+/// Identity of one sound: one instance of something heard, a sample
+/// played once or an input while it is monitored. Minted by the engine
+/// when it is started.
 ///
 /// Never reused, so a stop that arrives after its sound was stolen or
 /// finished names nothing and does nothing. Minted in order, so the
-/// lowest id among the voices is the oldest.
+/// lowest id among the sounds is the oldest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VoiceId(pub u64);
+pub struct SoundId(pub u64);
 
 /// Where a resident buffer lives, as a number.
 ///
@@ -37,20 +42,37 @@ impl BufferAddr {
 
 /// What the engine can ask of the renderer.
 ///
-/// Each command is keyed a different way: `Play` and `Stop` by voice id,
-/// `StopAll` by nothing, `Evict` by buffer.
+/// Samples and inputs have their own commands: `Play`, `Stop`, `StopAll`
+/// and `Evict` touch the sample mixer; `Input`, `RemoveInput`, `Monitor`
+/// and `Unmonitor` the input mixer. A sound id names one or the other,
+/// never both, so a stop meant for one side cannot land on the other.
 #[derive(Debug)]
 pub enum Command {
     /// Start `audio` from its first frame as the sound `id`.
     Play {
-        id: VoiceId,
+        id: SoundId,
         audio: Arc<AudioBuffer>,
     },
-    /// Stop the sound `id` if it is still playing.
-    Stop(VoiceId),
-    /// Stop every sound.
+    /// Stop the sample `id` if it is still playing.
+    Stop(SoundId),
+    /// Stop every sample. Inputs keep being heard.
     StopAll,
     /// Stop every sound playing the buffer at `addr`, so the engine can
     /// let go of the last reference to it.
     Evict(BufferAddr),
+    /// Add the input whose ring `reader` is the end of, as `id`, with
+    /// the capture channels `sides` on the output's sides, not yet heard.
+    /// The ring was made for this input and this is its reading end's
+    /// only crossing.
+    Input {
+        id: SoundId,
+        reader: Consumer<Pcm>,
+        sides: Sides,
+    },
+    /// Remove the input `id`, dropping its reader.
+    RemoveInput(SoundId),
+    /// Hear the input `id` through the output.
+    Monitor(SoundId),
+    /// Stop hearing the input `id`; it stays an input.
+    Unmonitor(SoundId),
 }

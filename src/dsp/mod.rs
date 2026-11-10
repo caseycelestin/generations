@@ -11,9 +11,11 @@
 //! ```text
 //! control side                          render side
 //! (the engine)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
-//!                                         Voices       the sounds playing: start, stop, play all
-//!                                           Playhead     one sample into the period
-//!                                         hard_clip    the last call
+//!                                         Mixer        the sources heard: start, stop, steal, add all
+//!                                           Playhead     a loaded sample, first frame to last
+//!                                           InputReader  the capture ring, a period at a time
+//!               ── Input ring(s) ─▶                     fed from the capture callback
+//!                                         math         stereo, add, hard_clip: the arithmetic they share
 //! ```
 //!
 //! # The pieces: functions over data
@@ -35,17 +37,20 @@
 //! function that only looks, a meter or a tap, leaves the slice alone.
 //!
 //! A piece with state is a struct that owns it and the function is a
-//! method on it, such as [`Playhead`], a buffer and a position with a
-//! `play` that advances it, or [`Voices`], every sound playing with a
-//! `play_all` that sums them. The struct is built whole by a constructor,
+//! method on it, such as [`Playhead`], a buffer and a position with an
+//! `add` that advances it, or [`Mixer`], every source heard with an
+//! `add` that sums them. The struct is built whole by a constructor,
 //! so the state cannot be half made, and its fields are private, so the
 //! method is the only thing that changes them and any invariant has one
-//! place to hold. It may also answer whether it is finished, meaning
-//! `play` will never change frames again, and whatever holds it may then
-//! let it go. A piece without state, [`hard_clip`], is a free function.
+//! place to hold. A piece that is heard is a [`Source`]: it adds its next
+//! period and answers whether it is finished, meaning `add` will never
+//! change frames again, so the mixer holding it may let it go. A piece
+//! without state is a free function; the arithmetic every source shares,
+//! stereo frames from any width, frames summed into the period, the clip
+//! at the end, is three of them in `math`.
 //! Parameters are plain values the control side sets, shared where
 //! sharing makes sense: one set of filter coefficients read by every
-//! voice, say.
+//! sample playing, say.
 //!
 //! Real-time safe once built: no piece allocates, locks or fails. State
 //! is built on the control side, where it may allocate what it will need
@@ -55,11 +60,12 @@
 //! # Boundaries
 //!
 //! The dependency points one way. This module defines the [`Command`]s it
-//! accepts and the [`VoiceId`]s that name the sounds playing; the control
+//! accepts and the [`SoundId`]s that name each sound heard; the control
 //! side imports them. Nothing here knows what a project, a device or
 //! resident audio is: audio arrives inside a command as an
-//! `Arc<AudioBuffer>`, and a voice holds its clone until it finishes or is
-//! told to let go. The control side names a buffer to this side by its
+//! `Arc<AudioBuffer>`, and a playhead holds its clone until it finishes
+//! or is told to let go; an input arrives as the reading end of its ring
+//! the same way. The control side names a buffer to this side by its
 //! address, never by what it is.
 //!
 //! Outside the crate, all of this is one type with one method: the
@@ -67,13 +73,14 @@
 //! drives with `render`. What it holds is the engine's business.
 
 pub mod command;
-mod hard_clip;
+pub mod input;
+pub mod math;
+mod mixer;
 mod playhead;
 pub mod renderer;
-mod voices;
 
-pub use command::{BufferAddr, Command, VoiceId};
-pub use hard_clip::hard_clip;
+pub use command::{BufferAddr, Command, SoundId};
+pub use input::{Input, InputReader};
+pub use mixer::{Mixer, Source};
 pub use playhead::Playhead;
 pub use renderer::Renderer;
-pub use voices::Voices;

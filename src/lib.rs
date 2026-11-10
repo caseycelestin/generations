@@ -114,7 +114,7 @@ pub(crate) mod storage;
 pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use dsp::{Renderer, VoiceId};
+pub use dsp::{Input, Renderer, SoundId};
 pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
 pub use memory::OverBudget;

@@ -1,24 +1,26 @@
 //! A position moving through a loaded sample, first frame to last.
 //!
-//! A [`Playhead`] holds which buffer and how far in. Its [`play`] adds the
+//! A [`Playhead`] holds which buffer and how far in. Its [`add`] adds the
 //! next period of that buffer into the output and moves on; [`finished`]
-//! says when it has reached the end. The wiring owns the value and calls
-//! it once a period.
+//! says when it has reached the end. It is a [`Source`], held in the
+//! renderer's sample mixer, which calls it once a period.
 //!
-//! [`play`]: Playhead::play
-//! [`finished`]: Playhead::finished
+//! [`add`]: Source::add
+//! [`finished`]: Source::finished
 
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::config::OUTPUT_CHANNELS;
+use crate::config::{OUTPUT_CHANNELS, Pcm};
+use crate::dsp::Source;
+use crate::dsp::math::{add, sides_for, stereo};
 
 /// A read position in a loaded sample, moving from its first frame to
 /// its last at its own speed.
 ///
 /// The position never passes the end of the buffer; that is the one
 /// thing this type guards. Start and end points, looping and speed are
-/// fields here, when they come; [`play`](Self::play) is where they would
+/// fields here, when they come; [`add`](Source::add) is where they would
 /// act.
 #[derive(Debug)]
 pub struct Playhead {
@@ -37,47 +39,37 @@ impl Playhead {
     pub fn audio(&self) -> &Arc<AudioBuffer> {
         &self.audio
     }
+}
 
-    /// Whether every frame has been played, so [`play`](Self::play) will
-    /// never add anything again.
-    pub fn finished(&self) -> bool {
-        self.position >= self.audio.frames()
-    }
-
+impl Source for Playhead {
     /// Adds the next period into `out`, an interleaved stereo slice, and
     /// advances past it. A mono sample is added to both channels. A
     /// sample with fewer frames left than `out` holds adds what it has
     /// and leaves the rest untouched. Nothing is clipped here.
-    ///
-    /// Adds rather than writes, so sounds sum by each being played into
-    /// the same slice.
-    pub fn play(&mut self, out: &mut [f32]) {
+    fn add(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % OUTPUT_CHANNELS, 0, "output is not whole frames");
         let frames = (out.len() / OUTPUT_CHANNELS).min(self.audio.frames() - self.position);
-        let range = self.position..self.position + frames;
-        match self.audio.channels() {
-            1 => {
-                let (frames, _) = out.as_chunks_mut::<OUTPUT_CHANNELS>();
-                for (frame, &s) in frames.iter_mut().zip(self.audio.frames_in(range)) {
-                    for o in frame {
-                        *o += s;
-                    }
-                }
-            }
-            _ => {
-                for (o, &s) in out.iter_mut().zip(self.audio.frames_in(range)) {
-                    *o += s;
-                }
-            }
-        }
+        let samples = self.audio.frames_in(self.position..self.position + frames);
+        let channels = self.audio.channels();
+        add(out, stereo(samples, channels.into(), sides_for(channels)));
         self.position += frames;
+    }
+
+    /// Moves past the next `frames` frames unheard, never past the end.
+    fn skip(&mut self, frames: usize) {
+        self.position = (self.position + frames).min(self.audio.frames());
+    }
+
+    /// Whether every frame has been played, so `add` will never add
+    /// anything again.
+    fn finished(&self) -> bool {
+        self.position >= self.audio.frames()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Pcm;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
@@ -91,7 +83,7 @@ mod tests {
     fn a_mono_sample_is_heard_on_both_channels() {
         let mut p = playhead(1, vec![HALF, -HALF]);
         let mut out = vec![0.0; 4];
-        p.play(&mut out);
+        p.add(&mut out);
         assert_eq!(out, vec![0.5, 0.5, -0.5, -0.5]);
         assert!(p.finished());
     }
@@ -100,7 +92,7 @@ mod tests {
     fn a_stereo_sample_is_heard_as_stored() {
         let mut p = playhead(2, vec![HALF, -HALF, ZERO, HALF]);
         let mut out = vec![0.0; 4];
-        p.play(&mut out);
+        p.add(&mut out);
         assert_eq!(out, vec![0.5, -0.5, 0.0, 0.5]);
     }
 
@@ -109,8 +101,8 @@ mod tests {
         let mut a = playhead(1, vec![HALF, HALF]);
         let mut b = playhead(2, vec![HALF, ZERO, -HALF, ZERO]);
         let mut out = vec![0.0; 4];
-        a.play(&mut out);
-        b.play(&mut out);
+        a.add(&mut out);
+        b.add(&mut out);
         assert_eq!(out, vec![1.0, 0.5, 0.0, 0.5]);
     }
 
@@ -118,16 +110,16 @@ mod tests {
     fn a_long_sample_plays_across_periods() {
         let mut p = playhead(1, vec![HALF; 5]);
         let mut out = vec![0.0; 4];
-        p.play(&mut out);
+        p.add(&mut out);
         assert_eq!(out, vec![0.5; 4]);
         assert!(!p.finished());
 
         let mut out = vec![0.0; 4];
-        p.play(&mut out);
+        p.add(&mut out);
         assert!(!p.finished());
 
         let mut out = vec![0.0; 4];
-        p.play(&mut out);
+        p.add(&mut out);
         // One frame left: the rest of the period is untouched.
         assert_eq!(out, vec![0.5, 0.5, 0.0, 0.0]);
         assert!(p.finished());
@@ -137,14 +129,26 @@ mod tests {
     fn a_finished_playhead_adds_nothing() {
         let mut p = playhead(1, vec![HALF]);
         let mut out = vec![0.0; 2];
-        p.play(&mut out);
+        p.add(&mut out);
         let mut out = vec![0.25; 2];
-        p.play(&mut out);
+        p.add(&mut out);
         assert_eq!(out, vec![0.25, 0.25]);
     }
 
     #[test]
+    fn a_skip_moves_on_unheard_and_stops_at_the_end() {
+        let mut p = playhead(1, vec![HALF, -HALF, HALF]);
+        p.skip(1);
+        let mut out = vec![0.0; 2];
+        p.add(&mut out);
+        assert_eq!(out, vec![-0.5, -0.5]);
+        p.skip(10);
+        assert!(p.finished());
+    }
+
+    #[test]
     fn an_empty_sample_is_finished_at_once() {
-        assert!(playhead(1, vec![]).finished());
+        let p = playhead(1, vec![]);
+        assert!(p.finished());
     }
 }

@@ -12,7 +12,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM ledger: one figure for everything the engine holds in memory | done |
 | 6 | Recording: audio input as a new root | done |
-| 7 | Input monitoring: hear the input through the output | |
+| 7 | Input monitoring: hear the input through the output | done |
 | 8 | Sequencing and mixing: the real-time side | |
 | 9 | Arrangement and more effects | |
 
@@ -328,29 +328,31 @@ the code follows them.
   failing, which is how the SP-404 behaves and what a player relies on.
   Per-voice cost grows once pads can be pitched, and the cap earns its
   keep then.
-- **The render side is a renderer wiring three pieces: `Voices`,
-  `Playhead` and `hard_clip`.** Rebuilt 2026-11-09 (PR #43) after the
-  first shape, a `Voice` type the renderer kept in a deque, stopped
-  fitting the taps and busses coming next. A `Playhead` is a read
-  position in a loaded sample: `play` adds its next period into the
-  output and moves on, `finished` says when it has reached the end. Start
-  and end points, looping and speed are fields on it when they come.
-  `Voices` is the fixed array of `VOICE_COUNT` voices, each a `VoiceId`
-  and a playhead, and its methods are the whole polyphony policy: `start`
-  takes a free voice or steals the oldest, `stop` by id, `stop_all`,
-  `evict` by buffer address, and `play_all`, which sums every voice and
-  frees the finished ones. `hard_clip` is a free function. The renderer
-  is real-time safe, not real-time only: it owns the consuming end of the
-  command ring and the voices, and each call applies the commands that
-  arrived, zeroes the slice it is given, has the voices play into it,
-  and clips the sum once. A device drives it live from its callback; a
-  bounce drives it offline in a loop. There is no separate mixer: a set
-  of voices with a sum is a method, not a concept. The name is Kira's;
+- **The render side is a renderer wiring two mixers over shared
+  arithmetic.** Rebuilt 2026-11-09 (PR #43) after the first shape, a
+  `Voice` type the renderer kept in a deque, stopped fitting the taps and
+  busses coming next; reshaped again the same day when step 7 brought a
+  second kind of source (see Monitoring). A `Playhead` is a read position
+  in a loaded sample: `add` puts its next period into the output and
+  moves on, `finished` says when it has reached the end. Start and end
+  points, looping and speed are fields on it when they come. A `Mixer<S,
+  N>` is `N` slots for one kind of `Source`, each the sound the engine
+  named by a `SoundId`, and its methods are the whole polyphony policy:
+  `start` takes a free slot or steals the oldest, `stop` by id,
+  `stop_all`, and `add`, which sums every slot and frees the finished
+  ones; `evict` by buffer address exists only on the playhead mixer. The
+  renderer owns a sample mixer of `SAMPLE_PLAYBACK_COUNT` and an input
+  mixer of `INPUT_COUNT`, applies the commands that arrived, zeroes the
+  slice it is given, has each mixer add into it, and clips the sum once.
+  It is real-time safe, not real-time only: a device drives it live from
+  its callback; a bounce drives it offline in a loop. The name is Kira's;
   "controller" was rejected because the engine gives the orders and this
-  side carries them out. The loaded audio and the voices do not overlap:
+  side carries them out. The loaded audio and the mixers do not overlap:
   one says which samples are in RAM, keyed by sample; the other says what
-  is sounding now and where in it, keyed by voice. They share only an
-  `Arc` to the same bytes.
+  is sounding now and where in it, keyed by sound. They share only an
+  `Arc` to the same bytes. Until step 7 the sample mixer was a type of its
+  own, `Voices`, and the roadmap entries above and below written before
+  then keep that word.
 - **A piece of DSP is a struct with the work as a method, or a free
   function if it has no state.** The convention is in the `dsp` module
   doc. A piece works in place on one period of interleaved stereo
@@ -367,9 +369,10 @@ the code follows them.
   value from being half made. Rust supports both; it is built around
   values that guard their own state, so the method shape is the one that
   reads as Rust.
-- **The engine mints the `VoiceId`.** The ring is one way and
+- **The engine mints the `SoundId`.** The ring is one way and
   `Engine::play` must return something to stop by, so the control side
   names the voice before it sends `Play`, and `Stop` carries the same id.
+  Named `VoiceId` until step 7; see Monitoring for the rename.
   Ids come from a counter that only goes up and is bumped only once the
   push succeeds, so a refused press burns nothing, an id is never reused,
   and the lowest id among the voices is the oldest, which is what
@@ -697,11 +700,11 @@ and the first thing the audio thread hands back to the control side.
   dropped first pushes to a ring with no receiver and frees its buffer
   where it is dropped, which on the audio thread is the deferred free the
   renderer already has.
-- **The device input lives in the examples, like the output.** `Input`
+- **The device input lives in the examples, like the output.** `Capture`
+  (first called `Input`, a name the engine's own handle took in step 7)
   mirrors `Device`: the default input, picked once for the engine's rate
-  and a requested channel count, with 16- and 32-bit frames converted to
-  `f32` in the callback, and the config picking shared with the output
-  side. `first_take` records a few seconds into a take sized to fill at
+  and `INPUT_CHANNELS`, with 16- and 32-bit frames converted to `f32` in
+  the callback, and the config picking shared with the output side. `first_take` records a few seconds into a take sized to fill at
   the end, drops the stream, saves the take loaded and plays it back. The
   input stream starts late, so the example sleeps a moment past the take's
   length. It is an example: it shows the path once on one machine, and is
@@ -714,15 +717,115 @@ and the first thing the audio thread hands back to the control side.
   render side as commands. The test for the line being in the right place
   is that the caller's device code never contains an `if` about what the
   user wants to hear. Input monitoring is the first thing that needs the
-  input and output callbacks to meet, and it goes hand in hand with
-  recording, so it is step 7; the shape is sketched under Deferred ideas
-  until that step writes it down.
+  input and output callbacks to meet, and step 7 wrote the shape down
+  under Monitoring.
 - **Named `record`, not `capture`.** The step is recording, the type is the
   recorder, the engine call is `recorder`, the module is `record`: the
   same verb-and-agent shape as `render` and `Renderer`. `capture` is the
   device-side word (ALSA's playback and capture) and makes an awkward
   agent noun; this roadmap used it before the module existed and was
   corrected when it did.
+
+### Monitoring
+
+Step 7, built 2026-11-09 and reshaped 2026-11-10. Hearing the input through
+the output needs the capture and output callbacks to meet, and it decided
+more about the render side than about input.
+
+- **An input is the ability to put audio into the renderer; monitoring is
+  whether that audio is heard.** They are separate. `Engine::input(&[ch])`
+  adds an input: it makes a lock-free ring of `INPUT_CAPACITY` samples,
+  sends its reading end to the render side on `Command::Input { id,
+  reader, sides }`, and returns the writing end as an `Input` handle with
+  the `SoundId` it sits in the input mixer as. The caller moves the handle
+  into the capture callback and calls `feed(frames)` with each period the
+  device delivered, whole frames `INPUT_CHANNELS` wide, no reshaping. The
+  input is silent until `Engine::monitor(id)`; `unmonitor(id)` silences
+  it again and it stays an input; `remove_input(id)` takes it out. The
+  first version tied the two together, one call that both added the input
+  and heard it and one that did both in reverse, and was split because an
+  input will also be recorded, and later fed to a bus, with monitoring
+  being one switch among those.
+- **The input mixer's mute is the monitor switch.** `Mixer` gained
+  `set_muted(id, bool)`, and a muted slot's source `skip`s the period
+  instead of `add`ing it, so a muted sample still ends and an unmonitored
+  input still keeps up with its ring (there is no backlog when it is
+  heard again). `Source` is `add`, `skip`, `finished`. Mute is generic, so
+  a pad mute later is the same method on the sample mixer. A ring per
+  input means nothing is parked when one is removed, and the reading end
+  crosses on a command the way a sample's `Arc` does. A single ring made
+  at `open` and handed out once was built first and replaced.
+- **The input is a source in a mixer, not a voice and not a monitor
+  type.** Three shapes were tried. A `Monitor` piece beside `Voices` with
+  its own level repeated the voices' loop and the playhead's channel
+  spreading. Putting the input into the one voices table as another kind
+  of voice needed an exemption from stealing (a sixty-fifth pad press
+  must not mute the microphone) and somewhere to park the ring's reading
+  end when the voice was stopped. The shape kept: `Voices` became
+  `Mixer<S, N>`, generic over a `Source`, and the renderer holds one mixer
+  of playheads and one of `InputReader`s with `INPUT_COUNT` slots.
+  Stealing stays inside a table, so adding an input past `INPUT_COUNT`
+  steals the oldest input and never a sample. An `InputReader` is the
+  ring's reading end plus which capture channel each output side hears;
+  it is finished when its `Input` is dropped.
+- **Three functions carry the arithmetic: `stereo`, `add`, `hard_clip`,
+  in `dsp/math.rs`.** Making stereo frames out of interleaved samples of
+  any width, by an index per side, is the same operation for a mono
+  sample (both sides from channel 0), a stereo sample (0 and 1) and an
+  input (any two of its channels); it was written twice before this.
+  `add` sums frames into the period. Every source ends with `add(out,
+  stereo(..))` and keeps only what is its own: the playhead a position,
+  the reader a ring and a lag rule, the mixer slots and a steal rule.
+  There is no gain parameter: level will be per mixer slot when it comes,
+  beside mute, not per source. A stereo source heard as stored goes
+  through the same index remap as everything else; a fast path was
+  considered and left until something measures it.
+- **Which capture channels an input is, is the engine's.**
+  `INPUT_CHANNELS` in `config.rs` is the device's capture width, and the
+  device code opens the capture stream at it or refuses, as the output
+  side does with `OUTPUT_CHANNELS`. The caller names one or two of those
+  channels on `Engine::input`: one is heard on both sides, two left and
+  right. That is checked once at add time, against the width, so neither
+  audio thread checks anything. cpal gives a count and no names; on the
+  target the codec is known and the panel can label them.
+- **Two clocks, one ring, a lag rule.** cpal has no duplex stream, so the
+  capture and output callbacks run on their own schedules even on a codec
+  with one clock, and the ring between them drifts. The reader takes one
+  period per render, heard or not. An empty ring is a gap. More than
+  `MAX_LAG_PERIODS` (two) of output queued is latency the ear notices, so
+  the surplus is skipped, oldest first, and the input catches up with a
+  click. A full ring drops whole frames on the feed side, never a partial
+  one, so the channels never swap.
+- **Samples and inputs have separate commands.** `Play`, `Stop`, `StopAll`
+  and `Evict` touch the sample mixer; `Input`, `RemoveInput`, `Monitor`
+  and `Unmonitor` the input mixer. A stop-all is a panic button for the
+  pads and must not mute the microphone, and a `SoundId` names a sound in
+  one table or the other, so a stop meant for one side cannot land on the
+  other. On the engine, `stop` and `stop_all` are for samples; `input`,
+  `monitor`, `unmonitor` and `remove_input` for inputs. The handle stays
+  `Input`, since it is the capture end of the input and not the hearing
+  of it.
+- **`VoiceId` became `SoundId`, `VOICE_COUNT` became
+  `SAMPLE_PLAYBACK_COUNT`.** The id names one instance of something in a
+  mixer, a sample played once or an input while it is added, and "sound"
+  was already the word the docs used for that. The count is the slot
+  count of the sample mixer, beside `INPUT_COUNT` for the input mixer.
+  The word "voice" is out of the code; it stays in the older entries of
+  this document as what things were called when they were decided.
+- **The order to remove in.** Both ends of an input's ring hold it, and it
+  is freed when the second goes. `remove_input` first and drop the
+  `Input` second, and the free happens on the caller's thread. Dropped
+  the other way, the reader finishes and the mixer frees the ring on the
+  audio thread: the same last-reference hazard as an unloaded buffer,
+  listed under Deferred ideas with the same fix. The rule is documented
+  on `Input` and `Engine::remove_input` and the `monitor` example follows
+  it.
+- **The example is `monitor`.** Opens the default capture device at
+  `INPUT_CHANNELS` and the default output, adds an input to the engine
+  and hands its `Input` and the `Renderer` to their callbacks, waits two
+  silent seconds, monitors for ten, unmonitors, removes the input, and
+  reads both streams' errors. The channel indices are its arguments.
+  Heard working on 2026-11-09.
 
 ### Process
 
@@ -788,28 +891,24 @@ changes to it.
   evicts, that is every unload of a sample mid-play, at the eviction
   rather than at the voice's end. Fix: unload keeps the removed `Arc`,
   and the engine keeps a retiring list it sweeps on the control side for
-  entries whose count has dropped to one. A take whose recorder was
-  dropped first has the same problem in the other direction. Not an
-  audible problem today; a rule to keep before the device is the target.
-- Input monitoring: hearing the input through the output while recording,
-  or before it. The engine mints a feed handle with a ring of a few
-  periods into the renderer, where the input is a producer piece beside
-  `Voices`, pulling from the ring and adding into the period with a
-  level; the caller feeds it beside the take in the input callback, since
-  monitoring
-  happens before and without recording and a take ending must not silence
-  the input. Two streams means two clocks and a ring that drifts, so the
-  render side drops or repeats by frame count; one duplex stream on the
-  target's codec has one clock and needs no ring. Check first whether that
-  codec monitors in hardware, with no latency, and makes the software
-  path unnecessary. This is step 7, next; the entry moves up when it is
-  decided.
+  entries whose count has dropped to one. An input whose `Input` handle
+  is dropped before `remove_input` has the same problem: its reader
+  finishes and the input mixer frees the ring. Not an audible problem
+  today; a rule to keep before the device is the target.
 - A level meter on a take: a peak or running power the take keeps as it
   quantises, in an atomic the recorder reads, so a panel can show input
   level while recording. Small; arrives with the panel.
-- Several inputs: a recorder and a feed per source, each an input piece
-  in the renderer with its own level. A fixed count of them, like the
-  voices, bounds the work per period.
+- Level per mixer slot, for samples and inputs alike. The input mixer
+  already holds `INPUT_COUNT` inputs, each its own ring; what is missing
+  is a gain per slot, set by command, which is where a monitor level and
+  a pad level both land. Not on the source: `add` takes no gain on
+  purpose.
+- A fast path in `stereo` for a stereo source heard as stored, which today
+  goes through the same per-frame index remap as everything else. Costs
+  an enum or a box to keep one return type. Wait for a measurement.
+- Hardware monitoring on the target's codec, if it has it: zero-latency
+  input to output with no software path. A device-side knob; the software
+  path stays for everything that is not a straight wire.
 - Taps and busses on the hard-coded path. A tap is an observer piece
   that copies the slice at its point into a ring for the control side,
   armed or not, dropping on full; the main out and a monitor pre- or
@@ -818,9 +917,9 @@ changes to it.
   effect with a tail lives on a bus. Both are pieces in the renderer's
   order, not a graph.
 - Finished and retire events from the render side to the engine, a ring
-  the other way, so the engine learns a voice ended and can drop the last
-  `Arc` on the control side; see the entry above on where the free
-  happens today.
+  the other way, so the engine learns a sound ended and can drop the last
+  `Arc`, or an input's ring, on the control side; see the entry above on
+  where the free happens today.
 - Stream errors (the device went away, an xrun the backend could not hide)
   are queued by the audio thread on a lock-free ring and read by the
   control side through `Stream::error`; the example prints them at the

@@ -11,8 +11,9 @@
 //! The renderer is the wiring: it owns every piece of state the path
 //! needs, says which functions run over it and in what order, and maps
 //! each command onto the state it changes. See the `dsp` module doc for
-//! the pieces and the convention they share. Today the path is: every
-//! voice plays into the period, then a hard clip.
+//! the pieces and the convention they share. Today the path is: the
+//! samples heard add into the period, then the inputs heard, then a hard
+//! clip.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
 //! end; the engine owns the producing end. The engine mints one renderer
@@ -21,10 +22,12 @@
 
 use rtrb::Consumer;
 
+use crate::config::{INPUT_COUNT, SAMPLE_PLAYBACK_COUNT};
 use crate::dsp::command::Command;
 #[cfg(test)]
-use crate::dsp::command::VoiceId;
-use crate::dsp::{Voices, hard_clip};
+use crate::dsp::command::SoundId;
+use crate::dsp::math::hard_clip;
+use crate::dsp::{InputReader, Mixer, Playhead};
 
 /// The render side of an engine: turns commands and resident audio into
 /// periods of output.
@@ -42,7 +45,9 @@ pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
     /// The sounds playing.
-    voices: Voices,
+    samples: Mixer<Playhead, SAMPLE_PLAYBACK_COUNT>,
+    /// The inputs heard.
+    inputs: Mixer<InputReader, INPUT_COUNT>,
 }
 
 impl Renderer {
@@ -50,7 +55,8 @@ impl Renderer {
     pub(crate) fn new(commands: Consumer<Command>) -> Self {
         Self {
             commands,
-            voices: Voices::empty(),
+            samples: Mixer::empty(),
+            inputs: Mixer::empty(),
         }
     }
 
@@ -59,12 +65,14 @@ impl Renderer {
     ///
     /// Commands the engine has sent since the last call are applied first,
     /// so a play, stop or eviction lands at a period boundary. Then every
-    /// voice plays into the zeroed slice, a sound that reaches its end
-    /// frees its voice, and the sum is clipped once to the unit range.
+    /// sample and every input heard adds into the zeroed slice, one that
+    /// reaches its end frees its slot, and the sum is clipped once to the
+    /// unit range.
     pub fn render(&mut self, out: &mut [f32]) {
         self.apply_commands();
         out.fill(0.0);
-        self.voices.play_all(out);
+        self.samples.add(out);
+        self.inputs.add(out);
         hard_clip(out);
     }
 
@@ -73,24 +81,31 @@ impl Renderer {
     fn apply_commands(&mut self) {
         while let Ok(command) = self.commands.pop() {
             match command {
-                Command::Play { id, audio } => self.voices.start(id, audio),
-                Command::Stop(id) => self.voices.stop(id),
-                Command::StopAll => self.voices.stop_all(),
-                Command::Evict(addr) => self.voices.evict(addr),
+                Command::Play { id, audio } => self.samples.start(id, Playhead::new(audio)),
+                Command::Input { id, reader, sides } => {
+                    self.inputs.start(id, InputReader::new(reader, sides));
+                    self.inputs.set_muted(id, true);
+                }
+                Command::RemoveInput(id) => self.inputs.stop(id),
+                Command::Monitor(id) => self.inputs.set_muted(id, false),
+                Command::Unmonitor(id) => self.inputs.set_muted(id, true),
+                Command::Stop(id) => self.samples.stop(id),
+                Command::StopAll => self.samples.stop_all(),
+                Command::Evict(addr) => self.samples.evict(addr),
             }
         }
     }
 
-    /// Whether the sound `id` is playing.
+    /// Whether the sound or input `id` is heard.
     #[cfg(test)]
-    pub(crate) fn is_playing(&self, id: VoiceId) -> bool {
-        self.voices.is_playing(id)
+    pub(crate) fn is_playing(&self, id: SoundId) -> bool {
+        self.samples.is_playing(id) || self.inputs.is_playing(id)
     }
 
-    /// How many sounds are playing.
+    /// How many sounds and inputs are heard.
     #[cfg(test)]
     pub(crate) fn playing(&self) -> usize {
-        self.voices.playing()
+        self.samples.playing() + self.inputs.playing()
     }
 }
 
@@ -102,7 +117,7 @@ mod tests {
 
     use super::*;
     use crate::audio::AudioBuffer;
-    use crate::config::Pcm;
+    use crate::config::{INPUT_CHANNELS, Pcm};
     use crate::dsp::command::BufferAddr;
     use crate::testing::audio;
 
@@ -120,7 +135,7 @@ mod tests {
 
     fn play(p: &mut Producer<Command>, id: u64, audio: &Arc<AudioBuffer>) {
         p.push(Command::Play {
-            id: VoiceId(id),
+            id: SoundId(id),
             audio: audio.clone(),
         })
         .unwrap();
@@ -155,6 +170,60 @@ mod tests {
         assert_eq!(out, vec![1.0, 1.0, -1.0, -1.0]);
     }
 
+    fn feed_two(writer: &mut Producer<Pcm>) {
+        for _ in 0..2 {
+            writer.push(0.25).unwrap();
+            writer.push(-0.25).unwrap();
+        }
+    }
+
+    #[test]
+    fn an_input_is_silent_until_monitored_and_removed_by_its_own_command() {
+        let (mut p, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 100]));
+        let (mut writer, reader) = RingBuffer::new(8 * INPUT_CHANNELS);
+        p.push(Command::Input {
+            id: SoundId(2),
+            reader,
+            sides: [0, 1],
+        })
+        .unwrap();
+        feed_two(&mut writer);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert_eq!(out, vec![0.5; 4], "an input is not heard until monitored");
+        assert_eq!(r.playing(), 2);
+        assert_eq!(
+            writer.slots(),
+            8 * INPUT_CHANNELS,
+            "but it keeps up with its ring"
+        );
+
+        p.push(Command::Monitor(SoundId(2))).unwrap();
+        feed_two(&mut writer);
+        r.render(&mut out);
+        assert_eq!(out, vec![0.75, 0.25, 0.75, 0.25]);
+
+        // A sample stop and a stop-all leave the input alone.
+        p.push(Command::Stop(SoundId(2))).unwrap();
+        p.push(Command::StopAll).unwrap();
+        feed_two(&mut writer);
+        r.render(&mut out);
+        assert_eq!(out, vec![0.25, -0.25, 0.25, -0.25]);
+
+        p.push(Command::Unmonitor(SoundId(2))).unwrap();
+        feed_two(&mut writer);
+        r.render(&mut out);
+        assert_eq!(out, vec![0.0; 4]);
+        assert!(r.is_playing(SoundId(2)), "unmonitored, still an input");
+
+        p.push(Command::RemoveInput(SoundId(2))).unwrap();
+        r.render(&mut out);
+        assert!(!r.is_playing(SoundId(2)));
+        // The reader is gone, so the input's writer feeds nothing.
+        assert!(writer.is_abandoned());
+    }
+
     #[test]
     fn stop_and_evict_land_at_the_next_render() {
         let (mut p, mut r) = renderer();
@@ -166,9 +235,9 @@ mod tests {
         r.render(&mut out);
         assert_eq!(r.playing(), 2);
 
-        p.push(Command::Stop(VoiceId(1))).unwrap();
+        p.push(Command::Stop(SoundId(1))).unwrap();
         r.render(&mut out);
-        assert!(!r.is_playing(VoiceId(1)));
+        assert!(!r.is_playing(SoundId(1)));
         assert_eq!(out, vec![0.5; 4]);
 
         p.push(Command::Evict(BufferAddr::of(&b))).unwrap();

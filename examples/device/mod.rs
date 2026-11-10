@@ -11,8 +11,10 @@
 //! returns a [`Stream`] that calls it once per period from the audio
 //! thread, for as long as the stream is held. The callback that makes
 //! sound moves an engine's output, its `Renderer`, in and renders from it.
+//! A [`Capture`] is the same for the default input: its callback is given
+//! each period the device recorded and feeds it to the engine's `Input`.
 //!
-//! The callback always sees `f32`. A device that wants 16- or 32-bit
+//! The callbacks always see `f32`. A device that wants 16- or 32-bit
 //! samples gets them converted in the callback, because `cpal` does
 //! no conversion of its own and a raw ALSA `hw:` device (an I2S codec on
 //! the target) often offers nothing else. The rate is never converted: a
@@ -22,13 +24,17 @@
 //! There is one implementation. `cpal` is itself the abstraction over ALSA,
 //! PipeWire, JACK and the rest; a trait of our own waits for a second
 //! implementation.
+//!
+//! Each example compiles this module on its own and uses the half it
+//! needs, so the other half is dead code there.
+#![allow(dead_code)]
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use generations::config::{OUTPUT_CHANNELS, SAMPLE_RATE};
+use generations::config::{INPUT_CHANNELS, OUTPUT_CHANNELS, SAMPLE_RATE};
 
 /// Frames of `f32` scratch the callback renders into before converting
 /// to the device's format. A period larger than this is rendered in
@@ -44,6 +50,9 @@ pub enum DeviceError {
     /// The system has no default output device.
     #[error("no output device")]
     NoOutputDevice,
+    /// The system has no default input device.
+    #[error("no input device")]
+    NoInputDevice,
     /// The device cannot run at the engine's rate and the channel count
     /// asked for in any sample format this code converts.
     #[error("device does not support {rate} Hz, {channels} channels, in f32, i16 or i32")]
@@ -164,6 +173,87 @@ fn build<T: SizedSample + FromSample<f32>>(
         },
         None,
     )?)
+}
+
+/// An input device that can run at the engine's input format, not yet
+/// running.
+pub struct Capture {
+    device: cpal::Device,
+    format: SampleFormat,
+    config: StreamConfig,
+}
+
+impl Capture {
+    /// The system's default input device, at [`SAMPLE_RATE`],
+    /// [`INPUT_CHANNELS`] channels. The same format preference and the
+    /// same refusals as [`Device::default_output`].
+    pub fn default_input() -> Result<Self, DeviceError> {
+        let channels = INPUT_CHANNELS as u16;
+        let device = cpal::default_host()
+            .default_input_device()
+            .ok_or(DeviceError::NoInputDevice)?;
+        let supported = pick(device.supported_input_configs()?, channels)?;
+        Ok(Self {
+            device,
+            format: supported.sample_format(),
+            config: supported.config(),
+        })
+    }
+
+    /// Starts the device. From now until the returned [`Stream`] is
+    /// dropped, the capture thread calls `feed` once per period with the
+    /// interleaved `f32` frames it recorded.
+    pub fn start(self, feed: impl FnMut(&[f32]) + Send + 'static) -> Result<Stream, DeviceError> {
+        let (errors_in, errors) = RingBuffer::new(ERROR_CAPACITY);
+        let inner = match self.format {
+            SampleFormat::F32 => build_input::<f32>(&self.device, &self.config, feed, errors_in),
+            SampleFormat::I16 => build_input::<i16>(&self.device, &self.config, feed, errors_in),
+            SampleFormat::I32 => build_input::<i32>(&self.device, &self.config, feed, errors_in),
+            _ => unreachable!("device format was chosen from the convertible set"),
+        }?;
+        inner.play()?;
+        Ok(Stream { inner, errors })
+    }
+}
+
+/// Builds the capture stream for one device sample type. The callback
+/// converts the device's buffer into `f32` scratch allocated here, on the
+/// control thread, and feeds that; for `f32` the conversion is a copy.
+fn build_input<T: SizedSample>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    mut feed: impl FnMut(&[f32]) + Send + 'static,
+    mut errors: rtrb::Producer<cpal::Error>,
+) -> Result<cpal::Stream, DeviceError>
+where
+    f32: FromSample<T>,
+{
+    let mut scratch = vec![0.0f32; SCRATCH_FRAMES * usize::from(config.channels)];
+    Ok(device.build_input_stream(
+        *config,
+        move |input: &[T], _| {
+            for chunk in input.chunks(scratch.len()) {
+                let converted = &mut scratch[..chunk.len()];
+                for (c, &sample) in converted.iter_mut().zip(chunk.iter()) {
+                    *c = sample.to_sample::<f32>();
+                }
+                feed(converted);
+            }
+        },
+        move |e| {
+            let _ = errors.push(e);
+        },
+        None,
+    )?)
+}
+
+impl std::fmt::Debug for Capture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Capture")
+            .field("format", &self.format)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for Device {

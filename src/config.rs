@@ -20,14 +20,29 @@ pub const MAX_CHANNELS: u16 = 2;
 /// is heard on both.
 pub const OUTPUT_CHANNELS: usize = 2;
 
-/// Number of sounds that can play at once: the voices.
+/// Channels the capture device delivers, and the width of every frame on
+/// the input ring. The device is refused if it cannot run at this count,
+/// as the output is; which of them an input is, is chosen at `Engine::input`.
+pub const INPUT_CHANNELS: usize = 2;
+
+/// Samples an input ring holds between the capture and output callbacks:
+/// a few periods, so the two clocks have room to disagree before a frame
+/// is dropped.
+pub const INPUT_CAPACITY: usize = INPUT_CHANNELS * 4096;
+
+/// Samples that can play at once: the slots in the renderer's sample
+/// mixer.
 ///
-/// A fixed count bounds the work in one audio callback. When every voice
-/// is taken, starting another sound steals the oldest rather than
-/// failing. Set generously for now; the cost per voice grows as sounds
-/// gain pitch and processing.
-pub const VOICE_COUNT: usize = 64;
-const _: () = assert!(VOICE_COUNT > 0, "there must be a voice to play");
+/// A fixed count bounds the work in one audio callback. When every slot
+/// is taken, playing another sample steals the oldest rather than
+/// failing. Set generously for now; the cost per slot grows as playback
+/// gains pitch and processing.
+pub const SAMPLE_PLAYBACK_COUNT: usize = 64;
+
+/// Inputs that can be heard at once: the slots in the renderer's input
+/// mixer. Each is its own ring; starting another when every slot is
+/// taken steals the oldest, as with samples.
+pub const INPUT_COUNT: usize = 2;
 
 /// Commands the engine can send the renderer before the renderer has had
 /// a period to take them. A press that finds the ring full is dropped,

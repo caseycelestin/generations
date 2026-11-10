@@ -27,8 +27,8 @@ use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::config::COMMAND_CAPACITY;
-use crate::dsp::{BufferAddr, Command, Renderer, VoiceId};
+use crate::config::{COMMAND_CAPACITY, INPUT_CAPACITY, INPUT_CHANNELS};
+use crate::dsp::{BufferAddr, Command, Input, Renderer, SoundId, input};
 use crate::import::{self as import, ImportError};
 use crate::memory::Ledger;
 use crate::project::{Project, ProjectError, SampleId};
@@ -50,6 +50,10 @@ pub enum EngineError {
     /// The command ring was full; the command was dropped.
     #[error("the output has not taken the last {COMMAND_CAPACITY} commands")]
     CommandsFull,
+    /// The channels asked of `Engine::input` are not one or two of the
+    /// device's `INPUT_CHANNELS`.
+    #[error("input channels {0:?} are not one or two of 0..{INPUT_CHANNELS}")]
+    BadInputChannels(Vec<usize>),
 }
 
 /// The engine for one open project.
@@ -60,7 +64,7 @@ pub struct Engine {
     ledger: Arc<Ledger>,
     /// The loaded samples: their audio in RAM. This is the engine's cache
     /// in front of storage and the control side's answer to "which samples
-    /// are in RAM". Every entry is immutable behind an `Arc` so a voice
+    /// are in RAM". Every entry is immutable behind an `Arc` so a sound
     /// can hold it while it plays; the render side only ever sees the
     /// clones it was handed. The memory itself is ordinary heap
     /// allocation: the guarantee that the budget's worth of RAM exists is
@@ -69,9 +73,9 @@ pub struct Engine {
     loaded: HashMap<SampleId, Arc<AudioBuffer>>,
     /// The sending end of the command ring; the renderer has the other.
     commands: Producer<Command>,
-    /// The next voice id to mint. Only goes up, and this is the one
+    /// The next sound id to mint. Only goes up, and this is the one
     /// sender, so an id is never reused.
-    next_voice: u64,
+    next_sound: u64,
     /// The render side, until the caller takes it with [`Engine::output`].
     output: Option<Renderer>,
 }
@@ -105,7 +109,7 @@ impl Engine {
             ledger: Ledger::new(budget),
             loaded: HashMap::new(),
             commands: producer,
-            next_voice: 0,
+            next_sound: 0,
             output: Some(Renderer::new(consumer)),
         };
         for id in engine.project.loaded_samples()? {
@@ -123,6 +127,54 @@ impl Engine {
     /// ring and apply on the first render.
     pub fn output(&mut self) -> Option<Renderer> {
         self.output.take()
+    }
+
+    /// Adds an input: the ability to put audio into the renderer. Mints a
+    /// ring, sends its reading end to the render side, and returns the
+    /// capture end for whoever owns the capture thread to feed from a
+    /// device's input callback. Nothing is heard until
+    /// [`Engine::monitor`].
+    ///
+    /// `channels` says which of the device's `INPUT_CHANNELS` this input
+    /// is, in output order: one channel is heard on both sides, two left
+    /// and right. That is checked here, once, so nothing on either audio
+    /// thread has to. The input is a sound in the input mixer,
+    /// [`Input::sound`], which `monitor`, `unmonitor` and `remove_input`
+    /// take. Up to `INPUT_COUNT` inputs; adding another steals the oldest.
+    pub fn input(&mut self, channels: &[usize]) -> Result<Input, EngineError> {
+        let sides = input::sides(channels)
+            .ok_or_else(|| EngineError::BadInputChannels(channels.to_vec()))?;
+        // The capture callback writes frames in through the `Input`, the
+        // renderer reads them out on the audio thread.
+        let (writer, reader) = RingBuffer::new(INPUT_CAPACITY);
+        let sound = SoundId(self.next_sound);
+        self.send(Command::Input {
+            id: sound,
+            reader,
+            sides,
+        })?;
+        self.next_sound += 1;
+        Ok(Input::new(writer, sound))
+    }
+
+    /// Hears the input `sound` through the output from the next period.
+    pub fn monitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
+        self.send(Command::Monitor(sound))
+    }
+
+    /// Stops hearing the input `sound`. It stays an input and keeps up
+    /// with the device; `monitor` hears it again.
+    pub fn unmonitor(&mut self, sound: SoundId) -> Result<(), EngineError> {
+        self.send(Command::Unmonitor(sound))
+    }
+
+    /// Removes the input `sound`, from [`Input::sound`]. Call this before
+    /// dropping the `Input`: the render side lets go of its end of the
+    /// ring here, and the ring is then freed when the `Input` is dropped,
+    /// on the caller's thread. Dropped the other way round, the render
+    /// side holds the last reference and frees it there.
+    pub fn remove_input(&mut self, sound: SoundId) -> Result<(), EngineError> {
+        self.send(Command::RemoveInput(sound))
     }
 
     /// The project this engine operates on.
@@ -204,34 +256,35 @@ impl Engine {
         Ok(())
     }
 
-    /// Starts playing `id` from its first frame and returns the voice, so
+    /// Starts playing `id` from its first frame and returns the sound, so
     /// it can be stopped.
     ///
     /// The sample must be loaded; nothing is read from disk here, so a
     /// press costs the same every time. Sound starts at the output's next
-    /// render. A play never fails for want of a free voice: the renderer
+    /// render. A play never fails for want of a free slot: the renderer
     /// steals the oldest.
-    pub fn play(&mut self, id: SampleId) -> Result<VoiceId, EngineError> {
+    pub fn play(&mut self, id: SampleId) -> Result<SoundId, EngineError> {
         let Some(audio) = self.loaded.get(&id) else {
             // Unknown and unloaded are different mistakes; say which.
             self.project.sample(id)?;
             return Err(EngineError::NotLoaded(id));
         };
-        let voice = VoiceId(self.next_voice);
+        let sound = SoundId(self.next_sound);
         let audio = Arc::clone(audio);
-        self.send(Command::Play { id: voice, audio })?;
+        self.send(Command::Play { id: sound, audio })?;
         // Minted only once the command is in; a refused press burns no id.
-        self.next_voice += 1;
-        Ok(voice)
+        self.next_sound += 1;
+        Ok(sound)
     }
 
-    /// Stops `voice` if it is still playing. A sound that has finished or
-    /// been stolen is left alone.
-    pub fn stop(&mut self, voice: VoiceId) -> Result<(), EngineError> {
-        self.send(Command::Stop(voice))
+    /// Stops the sample `sound` if it is still playing. One that has
+    /// finished or been stolen is left alone. Inputs are untouched: see
+    /// [`Engine::unmonitor`] and [`Engine::remove_input`].
+    pub fn stop(&mut self, sound: SoundId) -> Result<(), EngineError> {
+        self.send(Command::Stop(sound))
     }
 
-    /// Stops every sound.
+    /// Stops every sample. Inputs keep being heard.
     pub fn stop_all(&mut self) -> Result<(), EngineError> {
         self.send(Command::StopAll)
     }
@@ -539,7 +592,7 @@ mod tests {
         assert!(matches!(e.play(id), Err(EngineError::CommandsFull)));
         assert!(matches!(e.stop_all(), Err(EngineError::CommandsFull)));
 
-        // Once the renderer has drained the ring, the next voice id is the
+        // Once the renderer has drained the ring, the next sound id is the
         // one after the last accepted play, not after the refused ones.
         period(&mut r, 4);
         let next = e.play(id).unwrap();
@@ -615,7 +668,7 @@ mod tests {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         e.unload(id).unwrap();
-        // The ring still has every voice: nothing was pushed.
+        // The ring still has every sound: nothing was pushed.
         let mut free = 0;
         while e.stop_all().is_ok() {
             free += 1;
