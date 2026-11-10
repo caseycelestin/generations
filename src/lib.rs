@@ -46,7 +46,7 @@
 //!   where everything comes from: every other role is reachable through
 //!   it or not at all. An import is: decode, convert, add the result to
 //!   the project as a root. A load is: read the audio from the project
-//!   into RAM, mark the sample loaded, hand the audio out. An input is:
+//!   into RAM, hand the audio out as its owner. An input is:
 //!   mint ids, allocate rings, send the adds. The engine owns the ledger
 //!   (one memory budget for everything in RAM, which every allocation
 //!   along those paths is a block of) and makes the renderer and the

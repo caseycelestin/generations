@@ -2,22 +2,20 @@
 //!
 //! `Engine::load` reads a sample's audio into a block on the ledger and
 //! returns it as a [`LoadedSample`]. The handle is the audio's owner.
-//! Hold it and the sample is in RAM; drop it and the sample is unloaded,
-//! the block repaying the budget once the last sound playing it has let
-//! go. There is no list of loaded samples anywhere else: what is loaded
-//! is what is held, which is how Rust says it, a `File` is open while
-//! you hold it.
+//! Hold it and the sample is in RAM; drop it and the sample is unloaded:
+//! every sound playing it is cut at the output's next render and the
+//! block repays the budget once the last of them has let go. There is no
+//! list of loaded samples anywhere else and no unload call: what is
+//! loaded is what is held, which is how Rust says it, a `File` is open
+//! while you hold it.
 //!
 //! Playing is a verb on the loaded sample, because it needs nothing but
 //! the audio, a fresh sound id and the command ring, and the handle
-//! carries all three. `Engine::unload` takes the handle back to do the
-//! two things a drop cannot: cut the sounds playing it, and clear the
-//! sample's loaded flag in the project.
+//! carries all three.
 //!
-//! The flag the project keeps per sample, `loaded`, is what the caller
-//! asked for last: set by `load`, cleared by `unload`, left alone by a
-//! drop. `Project::loaded_samples` is therefore what to load on open,
-//! not what is in RAM; the engine loads nothing on its own.
+//! The project records nothing about what is loaded. What to load when a
+//! project is opened is the caller's to remember, until there is a panel
+//! with an opinion.
 
 use std::sync::Arc;
 
@@ -59,11 +57,6 @@ impl LoadedSample {
         &self.audio
     }
 
-    /// Where the audio lives, the key an eviction names it by.
-    pub(crate) fn addr(&self) -> BufferAddr {
-        BufferAddr::of(&self.audio)
-    }
-
     /// Starts playing the sample from its first frame and returns the
     /// sound, which is how it is stopped: [`Sound::stop`].
     ///
@@ -74,5 +67,17 @@ impl LoadedSample {
     pub fn play(&self) -> Result<Sound, EngineError> {
         let id = self.renderer.play(Arc::clone(&self.audio))?;
         Ok(Sound::new(id, self.renderer.clone()))
+    }
+}
+
+impl Drop for LoadedSample {
+    /// Unloads the sample: tells the renderer to stop every sound playing
+    /// it, then lets the audio go. The eviction goes out before the
+    /// reference does, which is what makes the address a safe key; see
+    /// `BufferAddr`. Best effort: a drop cannot fail, so if the ring has
+    /// no room for the eviction the sounds play out to their end instead,
+    /// and the block repays the budget when the last of them lets go.
+    fn drop(&mut self) {
+        let _ = self.renderer.evict(BufferAddr::of(&self.audio));
     }
 }

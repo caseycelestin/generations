@@ -33,16 +33,6 @@ pub struct Sample {
     pub id: SampleId,
     /// The sample one generation behind this one. `None` for a root.
     pub parent: Option<SampleId>,
-    /// Whether the engine keeps this sample's audio in RAM for playback.
-    ///
-    /// Playback reads only loaded audio, so this is the persisted intent
-    /// behind what is resident: the engine loads every loaded sample when
-    /// it opens the project. New samples start unloaded. Read it here;
-    /// change it with [`Engine::load`] and [`Engine::unload`].
-    ///
-    /// [`Engine::load`]: crate::engine::Engine::load
-    /// [`Engine::unload`]: crate::engine::Engine::unload
-    pub loaded: bool,
 }
 
 /// Reasons a project operation can fail.
@@ -59,7 +49,7 @@ pub enum ProjectError {
 ///
 /// A caller reaches it read-only through `Engine::project()`. Everything
 /// that changes it is an engine method, so the engine can keep the other
-/// roles in step (a loaded sample is also in playback's RAM).
+/// roles in step (an import passes through the ledger on its way here).
 pub struct Project {
     storage: Box<dyn Storage>,
 }
@@ -87,30 +77,16 @@ impl Project {
         Ok(self.storage.add_sample(parent, audio)?)
     }
 
-    /// Records whether the sample with this id is loaded.
-    ///
-    /// Crate-private because the flag is only half of loading: the engine
-    /// sets it and moves the audio, and a caller reaching the project
-    /// directly would leave the two disagreeing.
-    pub(crate) fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), ProjectError> {
-        self.check(id)?;
-        Ok(self.storage.set_loaded(id, loaded)?)
-    }
-
     /// Refuses an id no sample has. Asks only whether the record exists,
     /// not for the record, so it still works for a sample whose audio has
-    /// gone bad on disk: that sample must stay removable and unloadable.
+    /// gone bad on disk: that sample must stay a valid parent to point at
+    /// and, later, removable.
     fn check(&self, id: SampleId) -> Result<(), ProjectError> {
         if self.storage.has_sample(id)? {
             Ok(())
         } else {
             Err(ProjectError::UnknownSample(id))
         }
-    }
-
-    /// The ids of every loaded sample, in id order.
-    pub fn loaded_samples(&self) -> Result<Vec<SampleId>, ProjectError> {
-        Ok(self.storage.loaded_samples()?)
     }
 
     /// Everything stored about the sample with this id, except its audio.
@@ -182,30 +158,6 @@ pub(crate) mod tests {
             Ok(Some(AudioBuffer::new(channels, block).unwrap()))
         }
 
-        fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError> {
-            Ok(self
-                .0
-                .borrow()
-                .samples
-                .iter()
-                .filter(|(s, _, _)| s.loaded)
-                .map(|(s, _, _)| s.id)
-                .collect())
-        }
-
-        fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
-            if let Some((s, _, _)) = self
-                .0
-                .borrow_mut()
-                .samples
-                .iter_mut()
-                .find(|(s, _, _)| s.id == id)
-            {
-                s.loaded = loaded;
-            }
-            Ok(())
-        }
-
         fn add_sample(
             &mut self,
             parent: Option<SampleId>,
@@ -215,11 +167,7 @@ pub(crate) mod tests {
             let id = SampleId(s.next_id);
             s.next_id += 1;
             s.samples.push((
-                Sample {
-                    id,
-                    parent,
-                    loaded: false,
-                },
+                Sample { id, parent },
                 audio.channels(),
                 audio.samples().to_vec(),
             ));
@@ -290,24 +238,12 @@ pub(crate) mod tests {
             Sample {
                 id: child,
                 parent: Some(root),
-                loaded: false,
             }
         );
         assert_eq!(
             p.audio(child, &unlimited()).unwrap().samples(),
             tone().samples()
         );
-    }
-
-    #[test]
-    fn set_loaded_on_an_unknown_sample_is_refused() {
-        let (mut p, state) = project();
-        let bogus = SampleId(7);
-        assert!(matches!(
-            p.set_loaded(bogus, true),
-            Err(ProjectError::UnknownSample(id)) if id == bogus
-        ));
-        assert!(state.borrow().samples.is_empty());
     }
 
     #[test]

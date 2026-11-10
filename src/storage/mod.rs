@@ -89,14 +89,6 @@ pub trait Storage {
         ledger: &Arc<Ledger>,
     ) -> Result<Option<AudioBuffer>, StorageError>;
 
-    /// The ids of every stored sample that is loaded, in id order.
-    fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError>;
-
-    /// Records whether the sample with this id is loaded. Setting it on an
-    /// id that is not stored is not an error; whether it exists is the
-    /// project's rule.
-    fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError>;
-
     /// Stores a sample with its audio and returns its new id.
     ///
     /// Ids come from a counter that only goes up, so an id is never

@@ -122,12 +122,6 @@ impl RendererHandle {
         })
     }
 
-    /// Whether the ring has no room at all, for a caller that must know
-    /// before it does something it cannot undo.
-    pub(crate) fn is_full(&self) -> bool {
-        self.lock().is_full()
-    }
-
     /// The next id [`mint`](Self::mint) would return.
     #[cfg(test)]
     pub(crate) fn next_sound(&self) -> u64 {

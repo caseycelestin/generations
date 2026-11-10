@@ -119,9 +119,8 @@ impl Engine {
     ///
     /// Nothing is loaded here. Loaded audio is owned by the
     /// [`LoadedSample`] handles `load` returns, and the engine has no one
-    /// to give them to; the project remembers which samples were loaded
-    /// when it was last open, [`Project::loaded_samples`], so the caller
-    /// can bring them back and hold them.
+    /// to give them to. The project records nothing about what was loaded
+    /// last time; what to load is the caller's to remember.
     pub fn open(dir: &Path, budget: usize) -> Result<Self, EngineError> {
         Self::on(Project::new(storage::open(dir)?), budget)
     }
@@ -278,54 +277,19 @@ impl Engine {
 
     /// Loads `id`: brings its audio into RAM and returns it as a
     /// [`LoadedSample`], whose holder owns it. Playing is on the handle;
-    /// drop it and the sample is unloaded, its block repaying the budget
-    /// once the last sound playing it has let go. Also marks the sample
-    /// loaded in the project, so a reopen knows to bring it back.
+    /// drop it and the sample is unloaded: its sounds are cut and its
+    /// block repays the budget once the last of them has let go.
     ///
-    /// The audio goes into RAM first and the flag is set only if that
-    /// succeeded, so a sample is never marked loaded without having been
-    /// loadable. Storage allocates the block from the budget before it
-    /// reads the audio, from the size it stores, so a refused load reads
-    /// nothing. A sample that does not fit the budget is refused and
-    /// nothing changes.
+    /// Storage allocates the block from the budget before it reads the
+    /// audio, from the size it stores, so a refused load reads nothing. A
+    /// sample that does not fit the budget is refused and nothing changes.
     ///
     /// Each load is its own copy: the engine keeps no list of what is in
     /// RAM, so loading a sample twice costs its memory twice. Hold one
     /// handle per sample.
     pub fn load(&mut self, id: SampleId) -> Result<LoadedSample, EngineError> {
         let audio = self.project.audio(id, &self.ledger)?;
-        // If the flag cannot be written the block is dropped here and
-        // repays the budget, so nothing changed.
-        self.project.set_loaded(id, true)?;
         Ok(LoadedSample::new(id, audio, self.renderer.clone()))
-    }
-
-    /// Unloads `loaded`: stops every sound playing it, clears the sample's
-    /// loaded flag in the project, and drops the audio, which repays the
-    /// budget as soon as the last sound playing it has let go.
-    ///
-    /// Dropping the handle unloads too; this is the drop that also cuts
-    /// the sounds, hard, at the output's next render, and tells the
-    /// project not to bring the sample back on reopen. A refused unload
-    /// hands the handle back with the error, and changes nothing: a full
-    /// ring is `CommandsFull` before the flag is touched, and a flag that
-    /// cannot be written is refused before the eviction is sent. Room on
-    /// the ring is checked, not held, so a sound stopped from another
-    /// thread in the same instant can take it; the sounds then play out
-    /// instead of being cut, and the unload is otherwise complete.
-    ///
-    /// The eviction goes out before the audio is let go, which is what
-    /// makes the address a safe key; see `BufferAddr`.
-    pub fn unload(&mut self, loaded: LoadedSample) -> Result<(), (LoadedSample, EngineError)> {
-        if self.renderer.is_full() {
-            return Err((loaded, EngineError::CommandsFull));
-        }
-        if let Err(e) = self.project.set_loaded(loaded.id(), false) {
-            return Err((loaded, e.into()));
-        }
-        let _ = self.renderer.evict(loaded.addr());
-        drop(loaded);
-        Ok(())
     }
 
     /// Stops every sample. Inputs keep being heard.
@@ -453,7 +417,10 @@ mod tests {
                 DecodeError::Malformed { .. }
             )))
         ));
-        assert!(e.project().loaded_samples().unwrap().is_empty());
+        assert!(
+            e.project().sample(SampleId(0)).is_err(),
+            "nothing was added"
+        );
     }
 
     #[test]
@@ -495,35 +462,29 @@ mod tests {
     #[test]
     fn import_does_not_load() {
         let (mut e, _r) = engine();
-        let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        assert!(!e.project().sample(id).unwrap().loaded);
+        e.project.add_sample(None, &ramp(4)).unwrap();
         assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
-    fn load_returns_the_audio_and_sets_the_flag() {
+    fn load_returns_the_audio() {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
 
         let loaded = e.load(id).unwrap();
         assert_eq!(loaded.id(), id);
-        assert!(e.project().sample(id).unwrap().loaded);
         assert_eq!(loaded.audio().samples(), ramp(4).samples());
         assert_eq!(e.ledger.in_use(), ramp_bytes(4));
     }
 
     #[test]
-    fn dropping_the_handle_unloads_but_leaves_the_flag() {
+    fn dropping_the_handle_unloads() {
         let (mut e, _r) = engine();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
         let loaded = e.load(id).unwrap();
 
         drop(loaded);
-        assert_eq!(e.ledger.in_use(), 0, "the audio is gone");
-        assert!(
-            e.project().sample(id).unwrap().loaded,
-            "but the project still says to load it on reopen"
-        );
+        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
@@ -540,18 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn unload_clears_the_flag_and_drops_the_audio() {
-        let (mut e, _r) = engine();
-        let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        let loaded = e.load(id).unwrap();
-
-        e.unload(loaded).unwrap();
-        assert!(!e.project().sample(id).unwrap().loaded);
-        assert_eq!(e.ledger.in_use(), 0);
-    }
-
-    #[test]
-    fn load_over_budget_is_refused_and_leaves_the_flag_clear() {
+    fn load_over_budget_is_refused() {
         let mut e = Engine::on(memory_project(), ramp_bytes(4)).unwrap();
         let a = e.project.add_sample(None, &ramp(4)).unwrap();
         let b = e.project.add_sample(None, &ramp(4)).unwrap();
@@ -563,25 +513,8 @@ mod tests {
                 StorageError::OverBudget { .. }
             )))
         ));
-        assert!(!e.project().sample(b).unwrap().loaded);
-        assert!(e.project().sample(a).unwrap().loaded);
         // Refused at the allocation: nothing was brought in and let go.
         assert_eq!(e.ledger.in_use(), ramp_bytes(4));
-    }
-
-    #[test]
-    fn a_sample_whose_wav_went_bad_can_still_be_unloaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
-        let id = e.project.add_sample(None, &ramp(4)).unwrap();
-        let loaded = e.load(id).unwrap();
-        std::fs::remove_file(dir.path().join("samples").join(format!("{}.wav", id.0))).unwrap();
-
-        // The record comes from the manifest, so the unload goes through
-        // and the audio is not stuck in RAM.
-        e.unload(loaded).unwrap();
-        assert!(!e.project().sample(id).unwrap().loaded);
-        assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
@@ -788,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn unload_stops_the_sounds_playing_the_sample() {
+    fn dropping_the_handle_stops_the_sounds_playing_the_sample() {
         let (mut e, mut r) = engine();
         let gone = e.project.add_sample(None, &ramp(100)).unwrap();
         let kept = e.project.add_sample(None, &ramp(100)).unwrap();
@@ -798,7 +731,7 @@ mod tests {
         let b = kept.play().unwrap();
         period(&mut r, 4);
 
-        e.unload(gone).unwrap();
+        drop(gone);
         // Gone from the output at its next render, and only that sample.
         period(&mut r, 4);
         assert!(!r.is_playing(a.id()));
@@ -806,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn a_dropped_handle_lets_its_sounds_play_out() {
+    fn a_dropped_handle_frees_the_audio_once_its_sounds_are_cut() {
         let (mut e, mut r) = engine();
         let id = e.project.add_sample(None, &ramp(100)).unwrap();
         let loaded = e.load(id).unwrap();
@@ -814,80 +747,48 @@ mod tests {
         period(&mut r, 4);
 
         drop(loaded);
-        // Nothing was sent: the sound keeps the audio alive and plays on.
-        period(&mut r, 4);
-        assert!(r.is_playing(play.id()));
+        // The sound still holds the audio until the renderer applies the
+        // eviction at its next render; then both are gone.
         assert_eq!(e.ledger.in_use(), ramp_bytes(100));
-        // The audio is let go when the sound is.
+        period(&mut r, 4);
+        assert!(!r.is_playing(play.id()));
+        assert_eq!(e.ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn a_handle_dropped_onto_a_full_ring_lets_its_sounds_play_out() {
+        let (mut e, mut r) = engine();
+        let id = e.project.add_sample(None, &ramp(100)).unwrap();
+        let loaded = e.load(id).unwrap();
+        let mut last = None;
+        for _ in 0..COMMAND_CAPACITY {
+            last = Some(loaded.play().unwrap());
+        }
+
+        // No room for the eviction: the drop cannot fail, so it degrades.
+        drop(loaded);
+        period(&mut r, 4);
+        assert!(r.is_playing(last.unwrap().id()), "the sounds were not cut");
+        assert_eq!(e.ledger.in_use(), ramp_bytes(100), "and keep the audio");
         e.stop_all().unwrap();
         period(&mut r, 4);
         assert_eq!(e.ledger.in_use(), 0);
     }
 
     #[test]
-    fn unload_on_a_full_ring_is_refused_and_hands_the_handle_back() {
-        let (mut e, _r) = engine();
-        let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        let loaded = e.load(id).unwrap();
-        for _ in 0..COMMAND_CAPACITY {
-            loaded.play().unwrap();
-        }
-
-        let Err((loaded, EngineError::CommandsFull)) = e.unload(loaded) else {
-            panic!("refused with the handle");
-        };
-        assert_eq!(loaded.id(), id);
-        assert!(e.project().sample(id).unwrap().loaded);
-        assert_eq!(e.ledger.in_use(), ramp_bytes(100));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn unload_whose_flag_cannot_be_written_sends_no_eviction() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn open_loads_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
-        let mut r = e.output().unwrap();
-        let id = e.project.add_sample(None, &ramp(100)).unwrap();
-        let loaded = e.load(id).unwrap();
-        let play = loaded.play().unwrap();
-        period(&mut r, 4);
-        // A read-only directory: the manifest cannot be rewritten.
-        let perms = |mode| {
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(mode)).unwrap()
-        };
-        perms(0o555);
-        let result = e.unload(loaded);
-        perms(0o755);
-
-        let Err((loaded, EngineError::Project(ProjectError::Storage(_)))) = result else {
-            panic!("refused with the handle");
-        };
-        // The sample is still in RAM and the sound was not cut.
-        assert_eq!(loaded.id(), id);
-        assert!(e.project().sample(id).unwrap().loaded);
-        period(&mut r, 4);
-        assert!(r.is_playing(play.id()));
-    }
-
-    #[test]
-    fn open_loads_nothing_and_the_project_says_what_to_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
-        let kept = e.project.add_sample(None, &ramp(4)).unwrap();
-        let unloaded = e.project.add_sample(None, &ramp(8)).unwrap();
-        let dropped = e.project.add_sample(None, &ramp(8)).unwrap();
-        let _kept = e.load(kept).unwrap();
-        let unloaded = e.load(unloaded).unwrap();
-        e.unload(unloaded).unwrap();
-        drop(e.load(dropped).unwrap());
+        let id = e.project.add_sample(None, &ramp(4)).unwrap();
+        let _held = e.load(id).unwrap();
         drop(e);
 
         let e = Engine::open(dir.path(), usize::MAX).unwrap();
         assert_eq!(e.ledger.in_use(), 0, "nothing is in RAM");
-        // The held one and the dropped one were loaded last the caller
-        // said; the unloaded one was not.
-        assert_eq!(e.project().loaded_samples().unwrap(), [kept, dropped]);
+        assert_eq!(
+            e.project().sample(id).unwrap().parent,
+            None,
+            "the sample is still there"
+        );
     }
 }
