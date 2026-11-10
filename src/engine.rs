@@ -27,11 +27,11 @@ use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::config::{COMMAND_CAPACITY, MAX_INPUT_CHANNELS, MAX_INPUT_SOUNDS};
+use crate::config::{COMMAND_CAPACITY, MAX_INPUT_CHANNELS, MAX_INPUT_SOUNDS, MAX_PERIOD_FRAMES};
 use crate::dsp::{BufferAddr, SoundId};
 use crate::import::{self as import, ImportError};
 use crate::input::{self, Channels, Input, InputId};
-use crate::memory::{Ledger, OverBudget};
+use crate::memory::Ledger;
 use crate::project::{Project, ProjectError, SampleId};
 use crate::renderer::Renderer;
 use crate::renderer::command::{Command, InputCommand, SampleCommand};
@@ -46,9 +46,6 @@ pub enum EngineError {
     Project(#[from] ProjectError),
     #[error(transparent)]
     Import(#[from] ImportError),
-    /// The input's rings would put the engine's memory over its budget.
-    #[error(transparent)]
-    Memory(#[from] OverBudget),
     /// The sample exists but is not loaded, so there is nothing in RAM
     /// to play. Load it first.
     #[error("sample {} is not loaded", .0.0)]
@@ -60,9 +57,10 @@ pub enum EngineError {
     /// more than the engine takes from one device.
     #[error("an input is 1 to {MAX_INPUT_CHANNELS} channels wide, not {0}")]
     BadInputWidth(usize),
-    /// The capture period given to `Engine::input` is zero.
-    #[error("a capture period is at least one frame")]
-    BadInputPeriod,
+    /// The capture period given to `Engine::input` is zero or longer
+    /// than the engine takes.
+    #[error("a capture period is 1 to {MAX_PERIOD_FRAMES} frames, not {0}")]
+    BadInputPeriod(usize),
     /// The input's sources would not all fit beside the input sounds the
     /// engine already holds. Remove an input before adding another.
     #[error("the engine holds {MAX_INPUT_SOUNDS} input sounds at most")]
@@ -186,18 +184,16 @@ impl Engine {
     /// callback, which the caller knows from opening it and the engine
     /// cannot: the rings are sized from it, a few periods deep, so the
     /// capture and output clocks have room to disagree before a frame is
-    /// dropped. It is a size the engine must allocate for, like the RAM
-    /// budget at `open`, not a fact about the device's shape. The rings
-    /// come out of that budget and are refused with `OverBudget` if they
-    /// do not fit beside what is loaded; they are repaid when the `Input`
-    /// is dropped.
+    /// dropped. At most `MAX_PERIOD_FRAMES`, which is what makes the rings
+    /// fixed overhead with a known worst case rather than audio-sized
+    /// memory on the ledger.
     pub fn input(&mut self, layout: &[Channels], period: usize) -> Result<Input, EngineError> {
         let width = input::width(layout);
         if !(1..=MAX_INPUT_CHANNELS).contains(&width) {
             return Err(EngineError::BadInputWidth(width));
         }
-        if period == 0 {
-            return Err(EngineError::BadInputPeriod);
+        if !(1..=MAX_PERIOD_FRAMES).contains(&period) {
+            return Err(EngineError::BadInputPeriod(period));
         }
         let held: usize = self.inputs.values().map(Vec::len).sum();
         if held + layout.len() > MAX_INPUT_SOUNDS {
@@ -214,9 +210,7 @@ impl Engine {
             .collect();
         // The capture callback writes frames in through the `Input`, the
         // renderer reads them out through the readers on the audio thread.
-        // The rings are paid for on the ledger first; a refused input has
-        // allocated nothing and sent nothing.
-        let (input, readers) = Input::open(layout, period, id, &sounds, &self.ledger)?;
+        let (input, readers) = Input::open(layout, period, id, &sounds);
         for (&id, reader) in sounds.iter().zip(readers) {
             self.send(InputCommand::Add { id, reader })?;
         }
@@ -708,35 +702,14 @@ mod tests {
                 Err(EngineError::BadInputWidth(w)) if w == bad.len()
             ));
         }
-        assert!(matches!(
-            e.input(&[Channels::Mono], 0),
-            Err(EngineError::BadInputPeriod)
-        ));
+        for bad in [0, MAX_PERIOD_FRAMES + 1] {
+            assert!(matches!(
+                e.input(&[Channels::Mono], bad),
+                Err(EngineError::BadInputPeriod(p)) if p == bad
+            ));
+        }
         assert!(e.inputs.is_empty(), "a refused input holds no slot");
         assert_eq!((e.next_sound, e.next_input), (0, 0), "and burns no id");
-    }
-
-    #[test]
-    fn an_input_pays_the_budget_for_its_rings_and_is_refused_over_it() {
-        // Room for one stereo input's rings and not a sample more.
-        let rings = 2 * 64 * 8 * size_of::<Pcm>();
-        let mut e = Engine::on(memory_project(), rings).unwrap();
-        let _r = e.output().unwrap();
-        assert!(matches!(
-            e.input(&[Channels::Stereo, Channels::Mono], 64),
-            Err(EngineError::Memory(_))
-        ));
-        assert!(e.inputs.is_empty(), "a refused input holds no slot");
-        assert_eq!(e.ledger.in_use(), 0, "and has allocated nothing");
-
-        let input = e.input(&[Channels::Stereo], 64).unwrap();
-        assert_eq!(e.ledger.in_use(), rings);
-        assert!(matches!(
-            e.input(&[Channels::Mono], 64),
-            Err(EngineError::Memory(_))
-        ));
-        drop(input);
-        assert_eq!(e.ledger.in_use(), 0, "repaid when the handle drops");
     }
 
     #[test]

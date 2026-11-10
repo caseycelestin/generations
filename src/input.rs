@@ -14,8 +14,10 @@
 //! sources, the same as it sees samples.
 //!
 //! This is control-side code in the sense of the crate's split: it
-//! allocates, at [`Input::open`], paying the ledger for the rings, and it
-//! knows what a device is shaped like. The
+//! allocates, at [`Input::open`], and it knows what a device is shaped
+//! like. The rings are not on the memory ledger: they scale with the
+//! device's period and the layout, both bounded, not with the audio
+//! held, and their worst case is [`MAX_RING_BYTES`], fixed overhead. The
 //! one method the capture thread calls, [`Input::feed`], does neither:
 //! it is a fixed loop over the period into rings that already exist, so
 //! a device callback with a hard deadline can call it.
@@ -31,19 +33,28 @@
 //! slot go.
 
 use std::mem::size_of;
-use std::sync::Arc;
 
 use rtrb::Producer;
 
-use crate::config::Pcm;
+use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES, Pcm};
 use crate::dsp::{InputReader, SoundId};
-use crate::memory::{Ledger, OverBudget, Reservation};
 
 /// How many of the capture device's periods a source's ring holds: enough
 /// that the two clocks can disagree by [`MAX_LAG_PERIODS`] of output and
 /// a capture period can land on top before a frame is dropped. The ring
 /// is whole frames of the source's width, so a frame never wraps.
 const RING_PERIODS: usize = 8;
+
+/// The most memory every input ring together can take: every source of
+/// every input at the widest layout and the longest period. The rings
+/// are fixed overhead outside the memory ledger because this number
+/// exists; it is a few megabytes, and a bigger one is a change here.
+pub const MAX_RING_BYTES: usize =
+    MAX_INPUT_CHANNELS * MAX_PERIOD_FRAMES * RING_PERIODS * size_of::<Pcm>();
+const _: () = assert!(
+    MAX_RING_BYTES <= 4 << 20,
+    "input rings are meant to be a few megabytes of fixed overhead"
+);
 
 /// What a run of a device's channels means: one channel heard on both
 /// sides, or two heard left and right. Interleaved stereo is left then
@@ -104,27 +115,27 @@ pub struct Input {
     /// One sound per source of the layout, in order: what `monitor` and
     /// `unmonitor` take.
     sounds: Vec<SoundId>,
-    /// What the rings cost the budget; repaid when this handle drops.
-    _rings: Reservation,
 }
 
 impl Input {
     /// Both ends of a new input laid out as `layout`, as the input `id`,
     /// its sources the sounds `sounds`, one per entry of `layout`, in
-    /// order, fed `period` frames at a time. The rings are sized from the
-    /// period, paid for on `ledger` and allocated here, on the control
-    /// side; refused with nothing allocated if they do not fit. The
-    /// `Input` goes to the capture callback; each [`InputReader`] crosses
-    /// to the render side on the command that adds its source, in the same
-    /// order as `sounds`.
+    /// order, fed `period` frames at a time, at most `MAX_PERIOD_FRAMES`.
+    /// The rings are sized from the period and allocated here, on the
+    /// control side. The `Input` goes to the capture callback; each
+    /// [`InputReader`] crosses to the render side on the command that adds
+    /// its source, in the same order as `sounds`.
     pub(crate) fn open(
         layout: &[Channels],
         period: usize,
         id: InputId,
         sounds: &[SoundId],
-        ledger: &Arc<Ledger>,
-    ) -> Result<(Input, Vec<InputReader>), OverBudget> {
-        Self::open_with(layout, id, sounds, period * RING_PERIODS, ledger)
+    ) -> (Input, Vec<InputReader>) {
+        debug_assert!(
+            (1..=MAX_PERIOD_FRAMES).contains(&period),
+            "the engine checks the period"
+        );
+        Self::open_with(layout, id, sounds, period * RING_PERIODS)
     }
 
     /// [`open`](Self::open) with rings of `frames` frames.
@@ -133,15 +144,18 @@ impl Input {
         id: InputId,
         sounds: &[SoundId],
         frames: usize,
-        ledger: &Arc<Ledger>,
-    ) -> Result<(Input, Vec<InputReader>), OverBudget> {
+    ) -> (Input, Vec<InputReader>) {
         debug_assert_eq!(layout.len(), sounds.len(), "a sound per source");
-        // Paid for before anything is allocated, all the rings at once.
-        let rings = ledger.reserve(frames * width(layout) * size_of::<Pcm>())?;
         let mut sources = Vec::with_capacity(layout.len());
         let mut readers = Vec::with_capacity(layout.len());
         let mut first = 0;
         for &channels in layout {
+            // This allocation is seen and deliberately not on the ledger.
+            // `rtrb` allocates the ring itself, so it could only be counted
+            // beside the buffer, not as one; and it does not scale with
+            // the audio held, only with the period and the layout, both
+            // bounded, so its worst case is `MAX_RING_BYTES` and it is
+            // taken as part of the engine's fixed overhead.
             let (writer, reader) = rtrb::RingBuffer::new(frames * channels.count());
             sources.push(SourceWriter {
                 frames: writer,
@@ -156,9 +170,8 @@ impl Input {
             width: first,
             id,
             sounds: sounds.to_vec(),
-            _rings: rings,
         };
-        Ok((input, readers))
+        (input, readers)
     }
 
     /// The input as a whole: what `Engine::remove_input` takes.
@@ -209,13 +222,12 @@ mod tests {
     use super::Channels::{Mono, Stereo};
     use super::*;
     use crate::dsp::Source;
-    use crate::testing::unlimited;
 
     /// An input laid out as `layout`, its sources the sounds 1, 2, ...,
     /// over rings of `frames` frames.
     fn input(layout: &[Channels], frames: usize) -> (Input, Vec<InputReader>) {
         let sounds: Vec<SoundId> = (1..=layout.len() as u64).map(SoundId).collect();
-        Input::open_with(layout, InputId(0), &sounds, frames, &unlimited()).unwrap()
+        Input::open_with(layout, InputId(0), &sounds, frames)
     }
 
     #[test]
@@ -267,14 +279,8 @@ mod tests {
 
     #[test]
     fn open_sizes_each_ring_from_the_period_in_whole_frames_of_its_width() {
-        let (mut i, mut readers) = Input::open(
-            &[Mono, Stereo],
-            4,
-            InputId(5),
-            &[SoundId(6), SoundId(7)],
-            &unlimited(),
-        )
-        .unwrap();
+        let (mut i, mut readers) =
+            Input::open(&[Mono, Stereo], 4, InputId(5), &[SoundId(6), SoundId(7)]);
         assert_eq!(readers[0].capacity(), 4 * RING_PERIODS);
         assert_eq!(readers[1].capacity(), 4 * RING_PERIODS * 2);
         assert_eq!(i.id(), InputId(5));
@@ -288,37 +294,17 @@ mod tests {
 }
 
 #[cfg(test)]
-mod budget_tests {
-    use std::mem::size_of;
-
-    use super::Channels::{Mono, Stereo};
+mod worst_case {
     use super::*;
-    use crate::dsp::Source;
-    use crate::memory::Ledger;
 
     #[test]
-    fn the_rings_are_paid_for_on_the_ledger_and_repaid_when_the_input_drops() {
-        let ledger = Ledger::new(usize::MAX);
-        let (i, readers) = Input::open(
-            &[Stereo, Mono],
-            4,
-            InputId(0),
-            &[SoundId(1), SoundId(2)],
-            &ledger,
-        )
-        .unwrap();
-        // Three channels, four frames a period, eight periods a ring.
-        assert_eq!(ledger.in_use(), 3 * 4 * RING_PERIODS * size_of::<Pcm>());
-        drop(i);
-        assert_eq!(ledger.in_use(), 0, "repaid when the handle drops");
-        assert!(readers.iter().all(|r| r.finished()));
-    }
-
-    #[test]
-    fn an_input_over_budget_is_refused_with_nothing_allocated() {
-        let ledger = Ledger::new(10);
-        let refused = Input::open(&[Mono], 4, InputId(0), &[SoundId(1)], &ledger);
-        assert!(refused.is_err());
-        assert_eq!(ledger.in_use(), 0);
+    fn the_widest_input_at_the_longest_period_takes_exactly_the_worst_case() {
+        let widest = [Channels::Stereo; MAX_INPUT_CHANNELS / 2];
+        let (_i, readers) = Input::open(&widest, MAX_PERIOD_FRAMES, InputId(0), &[SoundId(0); 4]);
+        let bytes: usize = readers
+            .iter()
+            .map(|r| r.capacity() * size_of::<Pcm>())
+            .sum();
+        assert_eq!(bytes, MAX_RING_BYTES);
     }
 }

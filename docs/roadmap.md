@@ -888,19 +888,24 @@ more about the render side than about input.
   `MAX_LAG_PERIODS` (two) of output queued is latency the ear notices, so
   the surplus is skipped, oldest first, and the input catches up with a
   click. A full ring drops whole frames on the feed side, never a partial
-  one, so the channels never swap. The rings are paid for on the memory
-  ledger like every other buffer that scales with audio, through a
-  `Reservation`, since `rtrb` allocates them itself; an input that does
-  not fit is refused with `OverBudget` and the budget is repaid when the
-  `Input` handle drops. The ring's depth is sized from the
+  one, so the channels never swap. The ring's depth is sized from the
   capture device's period, which `Engine::input` takes as a parameter:
   the depth has to be several periods or the lag rule and the drop rule
   fight, and the period is the device's to know, like the RAM budget is
-  the machine's at `open`. A fixed depth of 4096 frames came first and
-  was right only by luck of the usual buffer sizes; a constant for the
-  largest period was considered and rejected as the engine guessing a
-  device fact. The example asks its capture device for a fixed period so
-  the figure is known before the stream runs.
+  the machine's at `open`. The engine bounds it with `MAX_PERIOD_FRAMES`
+  (4096, 85 ms), a bound on what the engine supports rather than a guess
+  at the device, and that bound is what keeps the rings off the memory
+  ledger: they scale with the period and the layout, both bounded, not
+  with the audio held, so they are fixed overhead with a worst case
+  computed at compile time, `input::MAX_RING_BYTES`, a few megabytes.
+  That is what memory-conscious programs do: count the few things that
+  can grow without limit, measure the rest once and pad. A fixed depth of
+  4096 frames came first and was right only by luck of the usual buffer
+  sizes; then the rings were paid for on the ledger through a
+  `Reservation`, which was exact and one mechanism too many for a few
+  megabytes that do not scale with audio. The example asks its capture
+  device for a fixed period so the figure is known before the stream
+  runs.
 - **A command names its mixer first.** `Command` is two variants,
   `Sample(SampleCommand)` and `Input(InputCommand)`, one per mixer the
   renderer holds. `SampleCommand` is `Play`, `Stop`, `StopAll` and

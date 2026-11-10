@@ -15,8 +15,7 @@
 //!   │        side of sound: holds the audio in RAM and sends the commands
 //!   │
 //!   ├─ memory    one memory budget; every buffer that scales with audio
-//!   │            is a block allocated from it, or a reservation held beside
-//!   │            it, and repays it when dropped
+//!   │            is a block allocated from it, and repays it when dropped
 //!   │
 //!   ├─ import    the world's audio into the project's
 //!   │   ├─ decode    reads a file into plain samples, whatever format it is in
