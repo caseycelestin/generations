@@ -1,4 +1,25 @@
-//! Commands in, a period of audio out.
+//! This engine's pipeline: commands and resident audio in, a period of
+//! output out.
+//!
+//! ```text
+//! control side                          render side
+//! (the engine)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
+//!                                         Mixer        the sources heard: start, stop, steal, add all
+//!                                           Playhead     a loaded sample, first frame to last
+//!                                           InputReader  the capture ring, a period at a time
+//!               ── Input ring(s) ─▶                     fed from the capture callback
+//!                                         math         stereo, add, hard_clip: the arithmetic they share
+//! ```
+//!
+//! The pieces come from [`dsp`](crate::dsp) and are generic; this module
+//! is the one place that picks which of them this engine runs, in what
+//! order, and what the control side may ask of them. It defines the
+//! [`Command`]s it accepts and the engine imports them. Nothing here
+//! knows what a project, a device or resident audio is: audio arrives
+//! inside a command as an `Arc<AudioBuffer>`, and a playhead holds its
+//! clone until it finishes or is told to let go; an input arrives as the
+//! reading end of its ring the same way. The control side names a buffer
+//! to this side by its address, never by what it is.
 //!
 //! The [`Renderer`] is real-time safe, not real-time only. Each call to
 //! `render` is given a stereo `f32` slice; the renderer applies the
@@ -17,17 +38,19 @@
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
 //! end; the engine owns the producing end. The engine mints one renderer
-//! and hands it out as its output; everything else here is the engine's
-//! business, so `render` is the one public method.
+//! and hands it out as its output; outside the crate, all of this is one
+//! type with one method, `render`.
+
+pub mod command;
 
 use rtrb::Consumer;
 
 use crate::config::{INPUT_COUNT, SAMPLE_PLAYBACK_COUNT};
-use crate::dsp::command::Command;
 #[cfg(test)]
-use crate::dsp::command::{InputCommand, SampleCommand, SoundId};
+use crate::dsp::SoundId;
 use crate::dsp::math::hard_clip;
 use crate::dsp::{InputReader, Mixer, Playhead};
+use command::{Command, InputCommand, SampleCommand};
 
 /// The render side of an engine: turns commands and resident audio into
 /// periods of output.
@@ -76,14 +99,40 @@ impl Renderer {
         hard_clip(out);
     }
 
-    /// Applies every command that has arrived, each by the mixer it is
+    /// Applies every command that has arrived, each to the mixer it is
     /// for.
     fn apply_commands(&mut self) {
         while let Ok(command) = self.commands.pop() {
             match command {
-                Command::Sample(command) => self.samples.apply(command),
-                Command::Input(command) => self.inputs.apply(command),
+                Command::Sample(command) => self.apply_sample(command),
+                Command::Input(command) => self.apply_input(command),
             }
+        }
+    }
+
+    /// Applies one command to the sample mixer.
+    fn apply_sample(&mut self, command: SampleCommand) {
+        match command {
+            SampleCommand::Play { id, audio } => {
+                self.samples.start(id, Playhead::new(audio), false)
+            }
+            SampleCommand::Stop(id) => self.samples.stop(id),
+            SampleCommand::StopAll => self.samples.stop_all(),
+            SampleCommand::Evict(addr) => self.samples.evict(addr),
+        }
+    }
+
+    /// Applies one command to the input mixer. An input is added muted:
+    /// it keeps up with its ring from the start and is heard once
+    /// monitored.
+    fn apply_input(&mut self, command: InputCommand) {
+        match command {
+            InputCommand::Add { id, reader, sides } => {
+                self.inputs.start(id, InputReader::new(reader, sides), true)
+            }
+            InputCommand::Remove(id) => self.inputs.stop(id),
+            InputCommand::Monitor(id) => self.inputs.set_muted(id, false),
+            InputCommand::Unmonitor(id) => self.inputs.set_muted(id, true),
         }
     }
 
@@ -109,7 +158,7 @@ mod tests {
     use super::*;
     use crate::audio::AudioBuffer;
     use crate::config::{INPUT_CHANNELS, Pcm};
-    use crate::dsp::command::BufferAddr;
+    use crate::dsp::BufferAddr;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;

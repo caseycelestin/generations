@@ -228,8 +228,9 @@ the code follows them.
 - **Sound has a control side and a render side, and the engine is the
   control side.** Pressing a pad is a front-panel action, and the engine
   is what the front panel calls; it owns the audio in RAM and the sending
-  end of a command ring. The render side, the `dsp` module, owns the
-  receiving end and the playing voices and turns commands into frames.
+  end of a command ring. The render side, the `renderer` module wired
+  from the pieces in `dsp`, owns the receiving end and the playing
+  voices and turns commands into frames.
   The split is by thread, not by feature: one side decides and may be
   slow, the other moves frames on a deadline and must never wait on the
   first. A `playback` module that held both halves was removed because
@@ -814,6 +815,20 @@ more about the render side than about input.
   builds the inner command and the grouping is spelled once. The handle
   stays `Input`, since it is the capture end of the input and not the
   hearing of it.
+- **`dsp` is the pieces, `renderer` is this engine's pipeline.** The
+  grouping above made a seam visible: a generic `Mixer` had grown an
+  `apply(SampleCommand)`, so the reusable piece imported the one
+  pipeline's command enums. Now `src/dsp/` holds only what any pipeline
+  could wire, `math`, `Mixer` and `Source`, `Playhead`, `InputReader` and
+  its `Input` end, with `SoundId` and `BufferAddr` beside the mixer that
+  keys on them, and knows nothing of commands. `src/renderer/` holds the
+  one pipeline: `Renderer`, which picks two mixers and an order, and
+  `command.rs`, which is its API. The two `apply`s are private methods on
+  `Renderer`, `apply_sample` and `apply_input`, so the mixer never sees a
+  command. The folder is `renderer`, after the type, and not `render`,
+  which was `dsp`'s old name before step 4's layout and would read as a
+  revert. A second pipeline, a bounce or a different front panel, wires
+  the same pieces beside this one.
 - **`VoiceId` became `SoundId`, `VOICE_COUNT` became
   `SAMPLE_PLAYBACK_COUNT`.** The id names one instance of something in a
   mixer, a sample played once or an input while it is added, and "sound"

@@ -1,7 +1,7 @@
 //! The input: frames from a capture device, heard through the output.
 //!
-//! An input is the ability to put audio into the renderer; whether it is
-//! heard is a separate switch, monitoring, which is the input mixer's
+//! An input is the ability to put audio into the render side; whether it
+//! is heard is a separate switch, monitoring, which is the input mixer's
 //! mute. Two ends of one ring. The [`Input`] is the handle the engine
 //! mints and the caller moves into the capture callback, where it is
 //! given each period the device recorded. The [`InputReader`] is the
@@ -27,9 +27,8 @@
 use rtrb::{Consumer, Producer};
 
 use crate::config::{INPUT_CHANNELS, OUTPUT_CHANNELS, Pcm};
-use crate::dsp::Source;
-use crate::dsp::command::SoundId;
 use crate::dsp::math::{Sides, add, stereo};
+use crate::dsp::{SoundId, Source};
 
 /// How far the input may fall behind the output, in output periods,
 /// before the reader skips ahead.

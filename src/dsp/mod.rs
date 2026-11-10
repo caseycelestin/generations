@@ -1,22 +1,20 @@
-//! Audio processing: commands and resident audio in, frames of output out.
+//! Audio processing pieces: the parts a pipeline is wired from.
 //!
-//! This is the half of the engine that runs where the frames are needed,
-//! on a thread the engine does not own.
-//! Live, that is the audio thread, called once per period from a device
-//! callback with a hard deadline. Offline, it is a bounce looping on the
-//! control thread as fast as the CPU goes. Both get the same frames,
-//! because nothing here depends on where it runs: no allocation, no lock,
-//! no disk, no error path, no clock. Frame counts only.
+//! Nothing here is a pipeline. These are the pieces, each a function
+//! over one period of frames, that the [`Renderer`](crate::renderer::Renderer)
+//! wires into this engine's pipeline and that any other pipeline could
+//! wire differently: a [`Mixer`] of [`Source`]s, a [`Playhead`] over a
+//! loaded sample, an [`InputReader`] over a capture ring, and the
+//! arithmetic they share in [`math`]. None of them knows about commands,
+//! the engine or the device; a piece is given a slice and its own state
+//! and nothing else.
 //!
-//! ```text
-//! control side                          render side
-//! (the engine)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
-//!                                         Mixer        the sources heard: start, stop, steal, add all
-//!                                           Playhead     a loaded sample, first frame to last
-//!                                           InputReader  the capture ring, a period at a time
-//!               ── Input ring(s) ─▶                     fed from the capture callback
-//!                                         math         stereo, add, hard_clip: the arithmetic they share
-//! ```
+//! Every piece runs where the frames are needed, on a thread it does not
+//! own. Live, that is the audio thread, called once per period from a
+//! device callback with a hard deadline. Offline, it is a bounce looping
+//! on the control thread as fast as the CPU goes. Both get the same
+//! frames, because nothing here depends on where it runs: no allocation,
+//! no lock, no disk, no error path, no clock. Frame counts only.
 //!
 //! # The pieces: functions over data
 //!
@@ -57,30 +55,11 @@
 //! for its whole life (a buffer to read, a scratch block, a delay line,
 //! from the ledger if it scales with audio), and moved to where it runs.
 //!
-//! # Boundaries
-//!
-//! The dependency points one way. This module defines the [`Command`]s it
-//! accepts and the [`SoundId`]s that name each sound heard; the control
-//! side imports them. Nothing here knows what a project, a device or
-//! resident audio is: audio arrives inside a command as an
-//! `Arc<AudioBuffer>`, and a playhead holds its clone until it finishes
-//! or is told to let go; an input arrives as the reading end of its ring
-//! the same way. The control side names a buffer to this side by its
-//! address, never by what it is.
-//!
-//! Outside the crate, all of this is one type with one method: the
-//! [`Renderer`], which the engine mints as its output and the caller
-//! drives with `render`. What it holds is the engine's business.
-
-pub mod command;
 pub mod input;
 pub mod math;
 mod mixer;
 mod playhead;
-pub mod renderer;
 
-pub use command::{BufferAddr, Command, InputCommand, SampleCommand, SoundId};
 pub use input::{Input, InputReader};
-pub use mixer::{Mixer, Source};
+pub use mixer::{BufferAddr, Mixer, SoundId, Source};
 pub use playhead::Playhead;
-pub use renderer::Renderer;

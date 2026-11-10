@@ -109,14 +109,16 @@ pub mod engine;
 pub(crate) mod import;
 pub(crate) mod memory;
 pub mod project;
+pub(crate) mod renderer;
 pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use dsp::{Input, Renderer, SoundId};
+pub use dsp::{Input, SoundId};
 pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
 pub use memory::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};
+pub use renderer::Renderer;
 pub use storage::StorageError;

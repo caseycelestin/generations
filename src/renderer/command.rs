@@ -7,7 +7,8 @@
 //! The renderer holds one mixer per kind of source, and a command is for
 //! exactly one of them, so the enum says which first and what second: a
 //! [`SampleCommand`] goes to the sample mixer, an [`InputCommand`] to the
-//! input mixer. The renderer only routes; each mixer applies its own.
+//! input mixer. A [`SoundId`] names a sound in one mixer or the other,
+//! never both, so a command meant for one cannot land on the other.
 
 use std::sync::Arc;
 
@@ -16,36 +17,7 @@ use rtrb::Consumer;
 use crate::audio::AudioBuffer;
 use crate::config::Pcm;
 use crate::dsp::math::Sides;
-
-/// Identity of one sound: one instance of something heard, a sample
-/// played once or an input while it is in the renderer. Minted by the
-/// engine when it is started.
-///
-/// Never reused, so a stop that arrives after its sound was stolen or
-/// finished names nothing and does nothing. Minted in order, so the
-/// lowest id among the sounds is the oldest. One id names a sample or
-/// an input, never both, so a command meant for one mixer cannot land
-/// on the other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SoundId(pub u64);
-
-/// Where a resident buffer lives, as a number.
-///
-/// The render side never learns a sample id, and a raw pointer cannot
-/// cross to another thread, so a buffer is named to the renderer by its
-/// address. Two live `Arc<AudioBuffer>`s never share one, and the engine
-/// sends an eviction before it lets go of the buffer, so the address is
-/// still that buffer's when the command is applied: any later buffer at
-/// the same address is started by a `Play` that is behind it on the ring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferAddr(usize);
-
-impl BufferAddr {
-    /// The address of the buffer `audio` points at.
-    pub fn of(audio: &Arc<AudioBuffer>) -> Self {
-        Self(Arc::as_ptr(audio) as usize)
-    }
-}
+use crate::dsp::{BufferAddr, SoundId};
 
 /// What the engine can ask of the renderer: a command for one of its
 /// mixers.

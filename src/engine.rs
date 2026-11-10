@@ -28,12 +28,12 @@ use thiserror::Error;
 
 use crate::audio::AudioBuffer;
 use crate::config::{COMMAND_CAPACITY, INPUT_CAPACITY, INPUT_CHANNELS};
-use crate::dsp::{
-    BufferAddr, Command, Input, InputCommand, Renderer, SampleCommand, SoundId, input,
-};
+use crate::dsp::{BufferAddr, Input, SoundId, input};
 use crate::import::{self as import, ImportError};
 use crate::memory::Ledger;
 use crate::project::{Project, ProjectError, SampleId};
+use crate::renderer::Renderer;
+use crate::renderer::command::{Command, InputCommand, SampleCommand};
 use crate::storage::{self as storage, StorageError};
 
 /// Reasons an engine operation can fail.

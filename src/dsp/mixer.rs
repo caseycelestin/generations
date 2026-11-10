@@ -12,15 +12,46 @@
 //! silence: its source skips the period instead of adding it, so a muted
 //! sample still ends and a muted input still keeps up with its ring.
 //!
-//! The renderer owns one mixer per kind of source, so a table of
-//! samples never steals from the table of inputs or the reverse.
+//! Whoever wires a pipeline owns one mixer per kind of source, so a
+//! table of samples never steals from the table of inputs or the reverse.
+//! The mixer knows nothing of commands; the pipeline maps those onto
+//! these methods.
 //!
 //! Real-time safe: the array is inline and fixed, and each method is one
 //! pass over at most `N` slots. Nothing here allocates, locks or fails.
 
+use std::sync::Arc;
+
+use crate::audio::AudioBuffer;
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::command::{BufferAddr, InputCommand, SampleCommand, SoundId};
-use crate::dsp::{InputReader, Playhead};
+use crate::dsp::Playhead;
+
+/// Identity of one sound: one instance of something in a mixer, a sample
+/// played once or an input while it is added. Minted by whoever starts
+/// it, in order, so the lowest id among the sounds is the oldest.
+///
+/// Never reused, so a stop that arrives after its sound was stolen or
+/// finished names nothing and does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SoundId(pub u64);
+
+/// Where a resident buffer lives, as a number.
+///
+/// The render side never learns a sample id, and a raw pointer cannot
+/// cross to another thread, so a buffer is named to the renderer by its
+/// address. Two live `Arc<AudioBuffer>`s never share one, and the engine
+/// sends an eviction before it lets go of the buffer, so the address is
+/// still that buffer's when the command is applied: any later buffer at
+/// the same address is started by a play that is behind it on the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferAddr(usize);
+
+impl BufferAddr {
+    /// The address of the buffer `audio` points at.
+    pub fn of(audio: &Arc<AudioBuffer>) -> Self {
+        Self(Arc::as_ptr(audio) as usize)
+    }
+}
 
 /// Something a mixer slot can hold: it adds its next period into the
 /// output, and says when it never will again.
@@ -137,16 +168,6 @@ impl<S: Source, const N: usize> Mixer<S, N> {
 }
 
 impl<const N: usize> Mixer<Playhead, N> {
-    /// Applies one command meant for the sample mixer.
-    pub fn apply(&mut self, command: SampleCommand) {
-        match command {
-            SampleCommand::Play { id, audio } => self.start(id, Playhead::new(audio), false),
-            SampleCommand::Stop(id) => self.stop(id),
-            SampleCommand::StopAll => self.stop_all(),
-            SampleCommand::Evict(addr) => self.evict(addr),
-        }
-    }
-
     /// Stops every sound playing the buffer at `addr`, dropping their
     /// references to it. A buffer nothing plays costs the pass and
     /// changes nothing. Only a sample has a buffer, so only this mixer
@@ -163,28 +184,9 @@ impl<const N: usize> Mixer<Playhead, N> {
     }
 }
 
-impl<const N: usize> Mixer<InputReader, N> {
-    /// Applies one command meant for the input mixer. An input is added
-    /// muted: it keeps up with its ring from the start and is heard once
-    /// monitored.
-    pub fn apply(&mut self, command: InputCommand) {
-        match command {
-            InputCommand::Add { id, reader, sides } => {
-                self.start(id, InputReader::new(reader, sides), true)
-            }
-            InputCommand::Remove(id) => self.stop(id),
-            InputCommand::Monitor(id) => self.set_muted(id, false),
-            InputCommand::Unmonitor(id) => self.set_muted(id, true),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::audio::AudioBuffer;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
