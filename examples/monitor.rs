@@ -53,30 +53,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     // many frames it delivers at a time.
     let capture = Capture::default_input()?;
     let have = capture.channels();
-    let mut input = engine.input(&layout, capture.period())?;
-    let id = input.id();
-    let sounds = input.sounds().to_vec();
+    let (input, mut feed) = engine.input(&layout, capture.period())?;
     // Declared after `engine`, so they are dropped first: both audio
     // threads stop before the engine goes.
     let mut playback = Device::default_output()?.start(move |out| output.render(out))?;
     // The first channels of the device, as many as the layout is wide.
-    let take = (0..input.channels()).collect();
-    let mut capture = capture.start(take, move |frames| input.feed(frames))?;
+    let take = (0..feed.channels()).collect();
+    let mut capture = capture.start(take, move |frames| feed.feed(frames))?;
 
     println!(
         "input {layout:?} added over a {have}-channel device; silent for 2s, then heard for {LISTEN:?}"
     );
     sleep(Duration::from_secs(2));
-    for &sound in &sounds {
-        engine.monitor(sound)?;
+    for source in input.sources() {
+        source.monitor()?;
     }
     sleep(LISTEN);
-    // Stop hearing it, then remove it before the capture stream, and its
-    // `Input`, go.
-    for &sound in &sounds {
-        engine.unmonitor(sound)?;
+    // Stop hearing it, then drop the input before the capture stream, and
+    // its feed, go: the rings are then freed on this thread.
+    for source in input.sources() {
+        source.unmonitor()?;
     }
-    engine.remove_input(id)?;
+    drop(input);
 
     while let Some(e) = capture.error() {
         eprintln!("capture stream error: {e}");

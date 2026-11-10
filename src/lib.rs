@@ -75,11 +75,14 @@
 //!   over one period of frames and its own state, generic enough that a
 //!   second pipeline would wire the same pieces differently. No piece
 //!   knows a command exists.
-//! - **`input`** is the control side of an input, as `engine` is the
-//!   control side of sound: it allocates the rings when an input is added
-//!   and knows what a device's frames look like, and hands the render side
-//!   nothing but mono and stereo rings to read. Its one hot method,
-//!   `feed`, is the fixed loop a capture callback runs.
+//! - **`input`** is the control side of an input: the [`Input`] handle
+//!   whose [`InputSource`]s are monitored and whose drop removes the
+//!   input, and the [`InputFeed`] a capture callback fills. It allocates
+//!   the rings when an input is added and knows what a device's frames
+//!   look like, and hands the render side nothing but mono and stereo
+//!   rings to read. Its one hot method, `feed`, is the fixed loop a
+//!   capture callback runs, and the feed holds no handle, so that loop
+//!   takes no lock.
 //! - **The device is not a role of this crate.** The caller, which knows
 //!   what machine it is on, opens an audio device and moves the engine's
 //!   output into its callback; `examples/device/` is one such caller's
@@ -147,10 +150,9 @@ pub(crate) mod storage;
 pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use dsp::SoundId;
 pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
-pub use input::{Channels, Input, InputId};
+pub use input::{Channels, Input, InputFeed, InputSource};
 pub use loaded_sample::LoadedSample;
 pub use memory::OverBudget;
 pub use project::{Project, ProjectError, Sample, SampleId};

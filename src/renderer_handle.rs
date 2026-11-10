@@ -3,9 +3,10 @@
 //!
 //! The engine mints the renderer and the command ring between them, and
 //! wraps the ring's sending end in a [`RendererHandle`]. The handle is
-//! cheap to clone, and the engine gives one to every [`LoadedSample`], [`Sound`]
-//! and input it hands out, so each can act on the renderer without going
-//! back through the engine. Its methods are the verbs the renderer
+//! cheap to clone, and the engine gives one to every [`LoadedSample`],
+//! [`Sound`] and [`Input`] it hands out, so each can act on the renderer
+//! without going back through the engine. Its methods are the verbs the
+//! renderer
 //! accepts, `play`, `stop`, `monitor`, named as such; building the
 //! [`Command`] that carries each one is this type's job and nobody
 //! else's, so the command vocabulary is private between here and the
@@ -26,13 +27,15 @@
 //!
 //! [`LoadedSample`]: crate::loaded_sample::LoadedSample
 //! [`Sound`]: crate::sound::Sound
+//! [`Input`]: crate::input::Input
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rtrb::Producer;
 
 use crate::audio::AudioBuffer;
+use crate::config::MAX_INPUT_SOUNDS;
 use crate::dsp::{BufferAddr, InputReader, SoundId};
 use crate::engine::EngineError;
 use crate::renderer::command::{Command, InputCommand, SampleCommand};
@@ -48,6 +51,11 @@ struct Shared {
     commands: Mutex<Producer<Command>>,
     /// The next sound id. Only goes up.
     next_sound: AtomicU64,
+    /// Input sounds added and not yet removed: the slots of the renderer's
+    /// input mixer that are spoken for. The control side's answer to "is
+    /// there room", so that question is never put to the render side,
+    /// which would answer by silently rejecting the add.
+    input_sounds: AtomicUsize,
 }
 
 impl RendererHandle {
@@ -56,6 +64,7 @@ impl RendererHandle {
         Self(Arc::new(Shared {
             commands: Mutex::new(commands),
             next_sound: AtomicU64::new(0),
+            input_sounds: AtomicUsize::new(0),
         }))
     }
 
@@ -90,27 +99,46 @@ impl RendererHandle {
     }
 
     /// Adds the sources of an input, the sound `sounds[n]` reading
-    /// `readers[n]`, none of them heard yet. All are added or none is:
-    /// refused as `CommandsFull` with nothing sent if the ring has no
-    /// room for every one.
+    /// `readers[n]`, none of them heard yet, taking a slot of the input
+    /// mixer for each. All are added or none is: refused as `InputsFull`
+    /// if they would not all fit beside the input sounds already held, so
+    /// an input already heard is never cut by another being added, and as
+    /// `CommandsFull` with nothing sent and no slot taken if the ring has
+    /// no room for every one.
     pub(crate) fn add_input(
         &self,
         sounds: &[SoundId],
         readers: Vec<InputReader>,
     ) -> Result<(), EngineError> {
         debug_assert_eq!(sounds.len(), readers.len(), "a sound per reader");
-        self.send_all(
+        let count = sounds.len();
+        self.0
+            .input_sounds
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+                (held + count <= MAX_INPUT_SOUNDS).then_some(held + count)
+            })
+            .map_err(|_| EngineError::InputsFull)?;
+        let sent = self.send_all(
             sounds
                 .iter()
                 .zip(readers)
                 .map(|(&id, reader)| InputCommand::Add { id, reader }.into()),
-        )
+        );
+        if sent.is_err() {
+            self.0.input_sounds.fetch_sub(count, Ordering::Relaxed);
+        }
+        sent
     }
 
-    /// Removes the input sounds `sounds`, dropping their readers. All or
-    /// none, as [`add_input`](Self::add_input).
+    /// Removes the input sounds `sounds`, dropping their readers, and gives
+    /// their slots back. All or none, as [`add_input`](Self::add_input);
+    /// a refused remove keeps the slots spoken for.
     pub(crate) fn remove_input(&self, sounds: &[SoundId]) -> Result<(), EngineError> {
-        self.send_all(sounds.iter().map(|&id| InputCommand::Remove(id).into()))
+        self.send_all(sounds.iter().map(|&id| InputCommand::Remove(id).into()))?;
+        self.0
+            .input_sounds
+            .fetch_sub(sounds.len(), Ordering::Relaxed);
+        Ok(())
     }
 
     /// Hears the input sound `id` through the output, or stops hearing it.
@@ -120,6 +148,12 @@ impl RendererHandle {
         } else {
             InputCommand::Unmonitor(id)
         })
+    }
+
+    /// How many input sounds are held: the input mixer's slots spoken for.
+    #[cfg(test)]
+    pub(crate) fn input_sounds(&self) -> usize {
+        self.0.input_sounds.load(Ordering::Relaxed)
     }
 
     /// The next id [`mint`](Self::mint) would return.
