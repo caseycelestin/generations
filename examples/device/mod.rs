@@ -11,8 +11,12 @@
 //! returns a [`Stream`] that calls it once per period from the audio
 //! thread, for as long as the stream is held. The callback that makes
 //! sound moves an engine's output, its `Renderer`, in and renders from it.
+//! A [`Capture`] is the same for the default input: it is told which of
+//! the device's channels to take, in what order, and its callback is given
+//! each period of just those, which it feeds to the engine's `Input`,
+//! whose layout says what each of them means.
 //!
-//! The callback always sees `f32`. A device that wants 16- or 32-bit
+//! The callbacks always see `f32`. A device that wants 16- or 32-bit
 //! samples gets them converted in the callback, because `cpal` does
 //! no conversion of its own and a raw ALSA `hw:` device (an I2S codec on
 //! the target) often offers nothing else. The rate is never converted: a
@@ -22,13 +26,25 @@
 //! There is one implementation. `cpal` is itself the abstraction over ALSA,
 //! PipeWire, JACK and the rest; a trait of our own waits for a second
 //! implementation.
+//!
+//! Each example compiles this module on its own and uses the half it
+//! needs, so the other half is dead code there.
+#![allow(dead_code)]
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig, SupportedStreamConfig};
+use cpal::{
+    BufferSize, FromSample, SampleFormat, SizedSample, StreamConfig, SupportedBufferSize,
+    SupportedStreamConfig,
+};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
 use generations::config::{OUTPUT_CHANNELS, SAMPLE_RATE};
+
+/// Frames per period the capture device is asked for, so the period is
+/// known before the stream runs and the engine can size its rings from
+/// it. Clamped to what the device supports.
+const CAPTURE_PERIOD_FRAMES: u32 = 512;
 
 /// Frames of `f32` scratch the callback renders into before converting
 /// to the device's format. A period larger than this is rendered in
@@ -44,10 +60,16 @@ pub enum DeviceError {
     /// The system has no default output device.
     #[error("no output device")]
     NoOutputDevice,
+    /// The system has no default input device.
+    #[error("no input device")]
+    NoInputDevice,
     /// The device cannot run at the engine's rate and the channel count
     /// asked for in any sample format this code converts.
     #[error("device does not support {rate} Hz, {channels} channels, in f32, i16 or i32")]
     UnsupportedFormat { rate: u32, channels: u16 },
+    /// A channel index past what the capture device has.
+    #[error("the capture device has {have} channels; there is no channel {channel}")]
+    NoSuchChannel { channel: usize, have: usize },
     /// The audio backend refused; the message is its own.
     #[error("audio backend: {0}")]
     Backend(String),
@@ -164,6 +186,133 @@ fn build<T: SizedSample + FromSample<f32>>(
         },
         None,
     )?)
+}
+
+/// An input device that can run at the engine's input format, not yet
+/// running.
+pub struct Capture {
+    device: cpal::Device,
+    format: SampleFormat,
+    config: StreamConfig,
+}
+
+impl Capture {
+    /// The system's default input device, at [`SAMPLE_RATE`], at the
+    /// channel count the device itself defaults to, and at a fixed period
+    /// of about [`CAPTURE_PERIOD_FRAMES`] so the period is known up front.
+    /// The same format preference and the same refusals as
+    /// [`Device::default_output`].
+    pub fn default_input() -> Result<Self, DeviceError> {
+        let device = cpal::default_host()
+            .default_input_device()
+            .ok_or(DeviceError::NoInputDevice)?;
+        let channels = device.default_input_config()?.channels();
+        let supported = pick(device.supported_input_configs()?, channels)?;
+        let period = match *supported.buffer_size() {
+            SupportedBufferSize::Range { min, max } => CAPTURE_PERIOD_FRAMES.clamp(min, max),
+            SupportedBufferSize::Unknown => CAPTURE_PERIOD_FRAMES,
+        };
+        let mut config = supported.config();
+        config.buffer_size = BufferSize::Fixed(period);
+        Ok(Self {
+            device,
+            format: supported.sample_format(),
+            config,
+        })
+    }
+
+    /// How many channels the device records: the width of every frame
+    /// `feed` is given.
+    pub fn channels(&self) -> usize {
+        usize::from(self.config.channels)
+    }
+
+    /// How many frames the device delivers per callback: what
+    /// `Engine::input` sizes its rings from.
+    pub fn period(&self) -> usize {
+        match self.config.buffer_size {
+            BufferSize::Fixed(frames) => frames as usize,
+            BufferSize::Default => CAPTURE_PERIOD_FRAMES as usize,
+        }
+    }
+
+    /// Starts the device, taking the device channels `take` out of each
+    /// frame it records. From now until the returned [`Stream`] is
+    /// dropped, the capture thread calls `feed` once per period with
+    /// interleaved `f32` frames of just those channels, in that order, as
+    /// wide as the input's layout.
+    pub fn start(
+        self,
+        take: Vec<usize>,
+        feed: impl FnMut(&[f32]) + Send + 'static,
+    ) -> Result<Stream, DeviceError> {
+        let have = self.channels();
+        if let Some(&channel) = take.iter().find(|&&c| c >= have) {
+            return Err(DeviceError::NoSuchChannel { channel, have });
+        }
+        let (errors_in, errors) = RingBuffer::new(ERROR_CAPACITY);
+        let inner = match self.format {
+            SampleFormat::F32 => {
+                build_input::<f32>(&self.device, &self.config, take, feed, errors_in)
+            }
+            SampleFormat::I16 => {
+                build_input::<i16>(&self.device, &self.config, take, feed, errors_in)
+            }
+            SampleFormat::I32 => {
+                build_input::<i32>(&self.device, &self.config, take, feed, errors_in)
+            }
+            _ => unreachable!("device format was chosen from the convertible set"),
+        }?;
+        inner.play()?;
+        Ok(Stream { inner, errors })
+    }
+}
+
+/// Builds the capture stream for one device sample type. The callback
+/// takes the channels `take` out of each device frame, converted to
+/// `f32`, into scratch allocated here, on the control thread, and feeds
+/// that: `take.len()` samples per frame.
+fn build_input<T: SizedSample>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    take: Vec<usize>,
+    mut feed: impl FnMut(&[f32]) + Send + 'static,
+    mut errors: rtrb::Producer<cpal::Error>,
+) -> Result<cpal::Stream, DeviceError>
+where
+    f32: FromSample<T>,
+{
+    let width = usize::from(config.channels);
+    let mut scratch = vec![0.0f32; SCRATCH_FRAMES * take.len()];
+    Ok(device.build_input_stream(
+        *config,
+        move |input: &[T], _| {
+            for frames in input.chunks(SCRATCH_FRAMES * width) {
+                let frames = frames.chunks_exact(width);
+                let fed = frames.len() * take.len();
+                let out = scratch[..fed].chunks_exact_mut(take.len());
+                for (out, frame) in out.zip(frames) {
+                    for (o, &channel) in out.iter_mut().zip(&take) {
+                        *o = frame[channel].to_sample::<f32>();
+                    }
+                }
+                feed(&scratch[..fed]);
+            }
+        },
+        move |e| {
+            let _ = errors.push(e);
+        },
+        None,
+    )?)
+}
+
+impl std::fmt::Debug for Capture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Capture")
+            .field("format", &self.format)
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for Device {

@@ -20,14 +20,34 @@ pub const MAX_CHANNELS: u16 = 2;
 /// is heard on both.
 pub const OUTPUT_CHANNELS: usize = 2;
 
-/// Number of sounds that can play at once: the voices.
+/// The widest input the engine takes: the most channels one capture
+/// device may deliver per frame.
+pub const MAX_INPUT_CHANNELS: usize = 8;
+
+/// Input sounds the engine holds at once, across every input: the slots
+/// in the renderer's input mixer, one per mono or stereo source. Unlike
+/// samples, an input sound is never stolen: `Engine::input` refuses an
+/// input whose sources would not all fit until one is removed.
+pub const MAX_INPUT_SOUNDS: usize = 8;
+
+/// The longest period, in frames, the engine takes from a device: the
+/// most frames one callback may deliver. A bound, not a device fact; the
+/// caller gets the period from the device and the engine refuses one
+/// past this. It is what makes the input rings, which are sized from the
+/// period, fixed overhead with a worst case known at compile time rather
+/// than audio-sized memory for the ledger: see `input::MAX_RING_BYTES`.
+/// 4096 frames is 85 ms at 48 kHz, already more latency than a sampler
+/// wants.
+pub const MAX_PERIOD_FRAMES: usize = 4096;
+
+/// Samples that can play at once: the slots in the renderer's sample
+/// mixer.
 ///
-/// A fixed count bounds the work in one audio callback. When every voice
-/// is taken, starting another sound steals the oldest rather than
-/// failing. Set generously for now; the cost per voice grows as sounds
-/// gain pitch and processing.
-pub const VOICE_COUNT: usize = 64;
-const _: () = assert!(VOICE_COUNT > 0, "there must be a voice to play");
+/// A fixed count bounds the work in one audio callback. When every slot
+/// is taken, playing another sample steals the oldest rather than
+/// failing. Set generously for now; the cost per slot grows as playback
+/// gains pitch and processing.
+pub const SAMPLE_PLAYBACK_COUNT: usize = 64;
 
 /// Commands the engine can send the renderer before the renderer has had
 /// a period to take them. A press that finds the ring full is dropped,
