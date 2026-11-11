@@ -209,7 +209,7 @@ impl InputFeed {
             // beside the buffer, not as one; and it does not scale with
             // the audio held, only with the period and the layout, both
             // bounded, so its worst case is `MAX_RING_BYTES` and it is
-            // taken as part of the engine's fixed overhead.
+            // taken as part of the renderer's fixed overhead.
             let (writer, reader) = rtrb::RingBuffer::new(frames * channels.count());
             sources.push(SourceWriter {
                 frames: writer,

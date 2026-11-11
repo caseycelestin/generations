@@ -57,12 +57,16 @@
 //!   `LoadedSample` by reference and shares its audio with the sound it
 //!   starts; `stop` cuts every sound playing one. Unloading is dropping
 //!   the sample.
-//! - **Handles** are where things are done. What a side makes it hands
-//!   out as a value with the verbs on it: a [`Sound`] stops, an
-//!   [`InputSource`] monitors, an [`Input`] removes itself when dropped.
-//!   Each carries a clone of the `RendererHandle`, so it needs nothing
-//!   else. Holding the value is what it means for the thing to exist, and
-//!   no side keeps a list of what is loaded or playing.
+//! - **Handles** are where things are done, and the rule for which values
+//!   have verbs is one sentence: what the renderer hands out carries a
+//!   clone of the `RendererHandle` and acts on its own; what the project
+//!   hands out is data the renderer takes by reference. So a [`Sound`]
+//!   stops, an [`InputSource`] monitors, an [`Input`] removes itself when
+//!   dropped, and a [`LoadedSample`] does nothing but be played or stopped
+//!   by `audio.play(&sample)` and `audio.stop(&sample)`. The asymmetry is
+//!   the price of the project not knowing the renderer. Holding a value is
+//!   what it means for the thing to exist, and no side keeps a list of
+//!   what is loaded or playing.
 //! - **`dsp`** is the pieces the pipeline is wired from, and nothing more:
 //!   a mixer of sources, a playhead over a loaded sample, the reading end
 //!   of an input ring, and the arithmetic they share. Each is a function
@@ -78,10 +82,10 @@
 //!   capture callback runs, and the feed holds no handle, so that loop
 //!   takes no lock.
 //! - **The device is not a role of this crate.** The caller, which knows
-//!   what machine it is on, opens an audio device and moves the engine's
-//!   output into its callback; `examples/device/` is one such caller's
-//!   code, over `cpal`. The library has no audio dependency, and a machine
-//!   with no device runs the engine all the same.
+//!   what machine it is on, opens an audio device and moves the renderer
+//!   into its callback; `examples/device/` is one such caller's code, over
+//!   `cpal`. The library has no audio dependency, and a machine with no
+//!   device runs everything here all the same.
 //! - **[`project`]** owns a `Storage` and holds nothing else. There is no
 //!   in-memory copy of a project: every read and write goes to storage, so
 //!   changing the project is changing the disk and there is no save step.
@@ -90,10 +94,12 @@
 //!   perhaps a database later) without the rules moving. A storage always
 //!   holds a whole, valid project; opening one creates or validates it.
 //! - **`memory`** is the one memory budget, the [`Ledger`]. The caller
-//!   makes it with the machine's figure and hands it to the engine. Decode,
-//!   convert and the storage read each allocate their block from it and
-//!   are refused what does not fit, so nothing that scales with audio
-//!   exists uncounted. Audio never leaves the engine for the same reason.
+//!   makes it with the machine's figure and hands it to the project.
+//!   Decode, convert and the storage read each allocate their block from
+//!   it and are refused what does not fit, so nothing that scales with
+//!   audio exists uncounted. Audio never leaves the crate as plain samples
+//!   for the same reason: a [`LoadedSample`] is a block, and the ledger
+//!   knows it.
 //! - **`import`** is the boundary between the world's audio and the
 //!   project's, in two steps. A decoder reads one file format into a plain
 //!   value (rate, channels, interleaved samples); `convert` resamples that

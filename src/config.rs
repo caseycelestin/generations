@@ -49,7 +49,7 @@ pub const MAX_PERIOD_FRAMES: usize = 4096;
 /// gains pitch and processing.
 pub const SAMPLE_PLAYBACK_COUNT: usize = 64;
 
-/// Commands the engine can send the renderer before the renderer has had
+/// Commands the handle can send the renderer before the renderer has had
 /// a period to take them. A press that finds the ring full is dropped,
 /// which is the right failure for a real-time system; with periods in the
 /// hundreds per second and presses in the tens, it does not happen by hand.

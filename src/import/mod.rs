@@ -5,7 +5,7 @@
 //! reads one file format into a plain value (rate, channels, interleaved
 //! samples), and `convert` takes that to the project format. Formats are
 //! added by writing a decoder; the project format never moves, and the
-//! engine sees neither step.
+//! project, which calls this, sees neither step.
 
 use std::path::Path;
 

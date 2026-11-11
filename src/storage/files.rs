@@ -18,11 +18,11 @@
 //! project is the disk. Adding a sample writes and syncs its WAV first,
 //! then replaces the manifest through a synced temp file and rename, with
 //! the directory synced after each step, so a power cut leaves the old
-//! manifest or the new one, never half of either. The directory is
-//! engine-owned; renaming a WAV by hand breaks the sample, and
+//! manifest or the new one, never half of either. The directory is the
+//! project's; renaming a WAV by hand breaks the sample, and
 //! [`FileStorage::open`] checks the whole project before opening on it.
 //!
-//! The WAV holds the engine's sample type as it is, so a read is a copy
+//! The WAV holds the crate's sample type as it is, so a read is a copy
 //! from disk into a block and nothing converts. A 16-bit project written
 //! by `storage` is refused as the wrong format; the format version does
 //! not move because nothing written at version 1 is meant to be kept.
@@ -145,7 +145,7 @@ impl FileStorage {
     /// Checks that what is stored is a whole project: the manifest reads,
     /// every parent exists and was minted before its child, the counter is
     /// past every id, and every sample's WAV is present with a header in
-    /// the engine's format.
+    /// the crate's format.
     fn validate(&self) -> Result<(), StorageError> {
         let manifest = self.read_manifest()?;
         let corrupt = |detail: String| StorageError::Corrupt(detail);
@@ -244,7 +244,7 @@ impl FileStorage {
     }
 }
 
-/// Refuses a WAV header that is not the engine's one fixed format.
+/// Refuses a WAV header that is not the crate's one fixed format.
 fn check_spec(id: SampleId, spec: WavSpec) -> Result<(), StorageError> {
     let expected = spec.sample_rate == SAMPLE_RATE
         && spec.bits_per_sample == BITS_PER_SAMPLE
@@ -366,7 +366,7 @@ mod tests {
         FileStorage::open(dir).unwrap()
     }
 
-    /// Reopens the directory, as the next run of the engine would.
+    /// Reopens the directory, as the next run of the sampler would.
     fn reopen(dir: &Path) -> Result<FileStorage, StorageError> {
         FileStorage::open(dir)
     }
@@ -474,7 +474,7 @@ mod tests {
         ));
     }
 
-    /// A project that was written by the engine passes the open check.
+    /// A project that was written by this crate passes the open check.
     #[test]
     fn open_accepts_a_whole_project() {
         let dir = tempfile::tempdir().unwrap();

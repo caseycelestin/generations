@@ -19,10 +19,11 @@ use crate::dsp::math::{add, sides_for, stereo};
 ///
 /// The render side never learns a sample id, and a raw pointer cannot
 /// cross to another thread, so a buffer is named to the renderer by its
-/// address. Two live `Arc<AudioBuffer>`s never share one, and the engine
-/// sends an eviction before it lets go of the buffer, so the address is
-/// still that buffer's when the command is applied: any later buffer at
-/// the same address is started by a play that is behind it on the ring.
+/// address. Two live `Arc<AudioBuffer>`s never share one, and the
+/// eviction is sent while the control side still holds the buffer, so
+/// the address is still that buffer's when the command is applied: any
+/// later buffer at the same address is started by a play that is behind
+/// it on the ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferAddr(usize);
 

@@ -9,9 +9,10 @@
 //! exists, and release cannot be forgotten or counted twice.
 //!
 //! The caller makes the ledger, because the budget is the machine's to
-//! know, and hands it to whatever allocates: today the engine, which lends
-//! it to decode, convert and storage reads. One ledger per machine, shared
-//! by everything that holds audio in RAM, so the figure is one figure.
+//! know, and hands it to whatever allocates: today the project, which
+//! lends it to decode, convert and storage reads. One ledger per machine,
+//! shared by everything that holds audio in RAM, so the figure is one
+//! figure.
 //! Who may allocate is decided by who holds a `Ledger`. The control side
 //! does.
 //! The render side never does, and so cannot allocate even by mistake;
@@ -33,8 +34,8 @@ pub use block::Block;
 ///
 /// Made by the caller with the machine's figure. A handle: cloning it
 /// shares the one figure, so everything that allocates from it, the
-/// engine and whatever it lends it to, and every block it has made, which
-/// repays into it on drop, hold the same ledger. One per machine.
+/// project and whatever it lends it to, and every block it has made,
+/// which repays into it on drop, hold the same ledger. One per machine.
 #[derive(Debug, Clone)]
 pub struct Ledger(Arc<Shared>);
 

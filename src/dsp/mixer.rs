@@ -4,7 +4,7 @@
 //! and knows when it is done: a [`Playhead`] over a loaded sample, an
 //! [`InputReader`](crate::dsp::InputReader) over the capture ring. A
 //! [`Mixer`] is `N` slots for one kind of source, each the sound the
-//! engine named by a [`SoundId`]. Its methods are the whole policy:
+//! control side named by a [`SoundId`]. Its methods are the whole policy:
 //! start a source, stop one by id, stop all, mute and unmute one, and
 //! add every slot into a period, freeing the ones that finish. As many
 //! sources can be heard at once as there are slots; what a start that
@@ -39,7 +39,7 @@ pub trait Source {
     fn finished(&self) -> bool;
 }
 
-/// One source in the mixer, and the id the engine named it by.
+/// One source in the mixer, and the id the control side named it by.
 #[derive(Debug)]
 struct Slot<S> {
     id: SoundId,

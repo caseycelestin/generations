@@ -1,9 +1,9 @@
-//! This engine's pipeline: commands and resident audio in, a period of
+//! This crate's pipeline: commands and resident audio in, a period of
 //! output out.
 //!
 //! ```text
 //! control side                          render side
-//! (the engine)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
+//! (the handle)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
 //!                                         Mixer        the sources heard: start, stop, steal, add all
 //!                                           Playhead     a loaded sample, first frame to last
 //!                                           InputReader  one source's ring, a period at a time
@@ -12,7 +12,7 @@
 //! ```
 //!
 //! The pieces come from [`dsp`](crate::dsp) and are generic; this module
-//! is the one place that picks which of them this engine runs, in what
+//! is the one place that picks which of them this crate runs, in what
 //! order, and what the control side may ask of them. It defines the
 //! [`Command`]s it accepts and its handle builds them. Nothing here
 //! knows what a project, a device or resident audio is: audio arrives
@@ -38,9 +38,9 @@
 //! clip.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
-//! end; the engine owns the producing end. The engine mints one renderer
-//! and hands it out as its output; outside the crate, all of this is one
-//! type with one method, `render`.
+//! end; its [`RendererHandle`] owns the producing end, and the two are
+//! made together by [`Renderer::new`]. Outside the crate the render side
+//! is one type with one method, `render`.
 
 pub mod command;
 
@@ -94,7 +94,7 @@ impl Renderer {
             commands,
             // A pad press always sounds, even if it cuts the oldest; an
             // input already heard is never cut by another being added. The
-            // engine refuses first; this is the backstop.
+            // handle refuses first; this is the backstop.
             samples: Mixer::empty(WhenFull::StealOldest),
             inputs: Mixer::empty(WhenFull::Reject),
         }
@@ -103,7 +103,7 @@ impl Renderer {
     /// Renders one period into `out`, an interleaved stereo `f32` slice,
     /// replacing whatever it held.
     ///
-    /// Commands the engine has sent since the last call are applied first,
+    /// Commands the handle has sent since the last call are applied first,
     /// so a play, stop or eviction lands at a period boundary. Then every
     /// sample and every input heard adds into the zeroed slice, one that
     /// reaches its end frees its slot, and the sum is clipped once to the

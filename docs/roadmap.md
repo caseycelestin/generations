@@ -66,8 +66,8 @@ out; the short version of the argument is here so it is not had twice.
   never touches a number it does not own.
 - **Two reads per sample.** `sample(id)` returns everything stored about a
   sample except its audio, and grows as fields are added. The audio read
-  is the engine's alone, crate-private and paid for by a reservation
-  taken from the record first. They are separate because structure is
+  is `Project::load`, which returns the audio as a block the caller owns
+  (it was the engine's and crate-private until Handles, below). They are separate because structure is
   small and read often, audio is large and read only when a load needs
   it.
 - **`add_sample` takes a buffer.** Audio in flight is not a copy of the
@@ -80,12 +80,16 @@ out; the short version of the argument is here so it is not had twice.
 - **Samples carry metadata as well as lineage.** The first version of this
   decision said structure only: no name, no label, nothing but the parent
   pointer. That was wrong. A sample needs to carry facts about itself that
-  nothing else is in a position to hold, and `loaded` is the first. More
-  arrive as their steps come. `sample(id)` is where they are read, and
+  nothing else is in a position to hold; `loaded` was the first, until
+  Handles removed it (a loaded sample is now a value the caller holds, so
+  the flag had nothing to mirror). More arrive as their steps come. `sample(id)` is where they are read, and
   each one that can change gets its own setter with its own rule, rather
   than one general update: the id and parent can never change, and a rule
   belongs next to the one field it governs.
-- **The engine is the only way in.** `Engine::project()` lends the
+- **The engine is the only way in.** *Reversed under Handles, below: there
+  is no engine type, the project and the renderer's handle are two doors,
+  and the rules hold by what each type can do rather than by one path.
+  Kept as the argument that was made.* `Engine::project()` lends the
   project read-only; every change is an engine method. Some changes are
   only half a project write (`load` sets a flag and moves audio into RAM),
   and a caller reaching a role directly would leave the two disagreeing.
@@ -94,7 +98,8 @@ out; the short version of the argument is here so it is not had twice.
   project's read side, the value types in the engine's signatures, the
   errors, the effects and config. One path to each action, and the rules
   hold on it. A reader who wants a role's internals opens the module.
-- **The engine's methods stay flat for now.** Most touch more than one
+- **The engine's methods stay flat for now.** *Moot since Handles: the
+  engine is gone and its verbs sit on the types they act on.* Most touch more than one
   role (`play` asks playback and, on failure, the project), so grouping
   them by role would mislead. If the list grows past easy reading, the
   grouping to use is by what the caller is doing (samples, sound, later
@@ -185,7 +190,8 @@ out; the short version of the argument is here so it is not had twice.
 
 ### Import
 
-- **The engine takes the file.** `Engine::import(path)` reads, converts and
+- **The project takes the file.** `Project::import(path)` (the engine's
+  until Handles) reads, converts and
   stores; the caller sees no decoder and never learns the project format.
   The device left the engine because it is machine knowledge: which audio
   library, which hardware, how much RAM. File formats are product
@@ -226,7 +232,8 @@ Step 4 was built up one decision at a time; the decisions are here and
 the code follows them.
 
 - **Sound has a control side and a render side, and the engine is the
-  control side.** Pressing a pad is a front-panel action, and the engine
+  control side.** *Since Handles the control side is the `RendererHandle`,
+  not an engine; the split itself stands.* Pressing a pad is a front-panel action, and the engine
   is what the front panel calls; it owns the audio in RAM and the sending
   end of a command ring. The render side, the `renderer` module wired
   from the pieces in `dsp`, owns the receiving end and the playing
@@ -247,7 +254,9 @@ the code follows them.
   a sibling `record` module, a ring the other way; the pair is the data
   plane, named by direction, and the rules (no allocation, no lock, no
   disk, no error path, no clock) apply to both.
-- **The engine mints the renderer and hands it out as its output.** The
+- **The engine mints the renderer and hands it out as its output.**
+  *Since Handles: `Renderer::new()` returns the renderer and its handle as
+  a pair, the way a channel comes as two ends; there is no `output()`.* The
   engine cannot expose a `fill(&mut self, out)` of its own: the audio
   thread must own what it calls for as long as the stream runs, and the
   control thread needs the engine for `play` and `import`; a mutex would
@@ -267,7 +276,9 @@ the code follows them.
   is 192 KB/s against tens of MB/s) but it is latency-bound, and our own
   prints are the main contention. Streaming long recordings is a deferred
   idea.
-- **Residency is explicit and persisted.** A sample is in RAM because
+- **Residency is explicit and persisted.** *Reversed under Handles: a
+  sample is in RAM while its `LoadedSample` is held, nothing is persisted,
+  and `open` loads nothing.* A sample is in RAM because
   someone asked, not because it was played. `loaded` on the sample is the
   recorded intent; the engine loads every flagged sample on open, so the
   device comes back ready after a power-down. `Engine::load` and
@@ -276,7 +287,10 @@ the code follows them.
   latency never depends on history. What to load is the caller's policy;
   the engine never loads on its own. Load-on-play is two lines in a
   caller that wants it.
-- **Unload stops every voice playing the sample.** Before this, a voice
+- **Unload stops every voice playing the sample.** *Since Handles the
+  verb is `RendererHandle::stop(&sample)`, by reference, and unloading is
+  dropping the sample; the eviction and its address argument are as
+  below.* Before this, a voice
   still playing an unloaded sample kept its `Arc` and played to the end,
   so sound came from memory the engine said it no longer held. Unloaded
   means gone from RAM. The fix is a third command keyed the third way:
@@ -293,8 +307,9 @@ the code follows them.
   would have to either refuse the add or store the sample unloaded anyway,
   which makes the flag a request rather than a fact. The cost is a disk
   read of bytes the engine was just holding, a few milliseconds per print.
-- **The budget is enforced where RAM is managed.** The caller passes the
-  budget to `Engine::open`; the project never learns about RAM. In step 4
+- **The budget is enforced where RAM is managed.** The caller makes the
+  `Ledger` and hands it to the project (it passed a byte count to
+  `Engine::open` until Handles); storage never learns about RAM. In step 4
   a resident set checked it, being the one thing that knew how many
   bytes it held. Step 5 moved the check into a ledger, under Memory
   below. `Engine::load` puts the audio in RAM first and sets the flag
@@ -623,6 +638,12 @@ thing the engine holds in RAM that the resident set cannot serve.
 Step 6. The first audio to enter the project without coming from a file,
 and the first thing the audio thread hands back to the control side.
 
+*The `Recorder` and `Take` described here were removed in the memory port
+(PR #40, 2026-11-09) rather than carried through it, since recording was
+to be reshaped on the ledger. The decisions stand as the shape recording
+will return in; the code does not exist today, and the engine they name
+is gone (Handles, below).*
+
 - **The recorder is the control side and owns the memory.** The engine
   mints a `Recorder` for so many frames of so many channels, reserving
   the bytes against the one figure as it does, and the recorder allocates
@@ -832,7 +853,10 @@ more about the render side than about input.
   were considered and left out: the engine does not care which input is
   "input 1"; the panel holds the ids and labels them, and nothing
   persists them yet.
-- **An input is not a sound, so it has an `InputId`.** The `Input`
+- **An input is not a sound, so it has an `InputId`.** *Since Handles
+  there is no `InputId`: the `Input` handle is the identity, its sources
+  are `InputSource` values with `monitor` on them, and dropping the handle
+  removes the input.* The `Input`
   handle is not in any mixer; its sources are. `remove_input` takes the
   handle's `InputId`, `monitor` and `unmonitor` take a source's `SoundId`,
   and mixing them up does not compile. The engine mints the two from
@@ -843,7 +867,11 @@ more about the render side than about input.
   keyed by `SoundId` again. Ids rather than handles because the things
   they name live on the audio thread or inside a capture closure, and a
   command must be a plain value; ids are what a panel stores.
-- **To revisit: how sounds, inputs and samples are managed.** Three
+- **To revisit: how sounds, inputs and samples are managed.** *Revisited
+  under Handles: ids left the public API, `remove_input` became a drop,
+  and the one shared minter is the `RendererHandle`. The retire ring and
+  finished-sound reporting are still open, deferred into the mixer
+  rewrite.* Three
   kinds of thing now have ids and lifetimes: a sound (a sample playing or
   an input source), an input (a ring, removed by hand with `remove_input`)
   and a loaded sample (an `Arc` the engine holds). Dropping an `Input`
@@ -965,8 +993,9 @@ more about the render side than about input.
   The word "voice" is out of the code; it stays in the older entries of
   this document as what things were called when they were decided.
 - **The order to remove in.** Both ends of each source's ring hold it, and
-  it is freed when the second goes. `remove_input` first and drop the
-  `Input` second, and the frees happen on the caller's thread. Dropped
+  it is freed when the second goes. Drop the `Input` handle first (it was
+  `remove_input` until Handles) and the `InputFeed` second, and the frees
+  happen on the caller's thread. Dropped
   the other way, the readers finish and the mixer frees the rings on the
   audio thread: the same last-reference hazard as an unloaded buffer,
   listed under Deferred ideas with the same fix. The rule is documented
@@ -979,6 +1008,133 @@ more about the render side than about input.
   to their callbacks, waits two silent seconds, monitors every source for
   ten, unmonitors, removes the input, and reads both streams' errors.
   Heard working on 2026-11-09 and after each reshaping on 2026-11-10.
+
+### Handles
+
+Built 2026-11-10 on the branch after step 7, from one question: why does
+a caller pass ids around when there are types for these things? The
+answer took the engine apart.
+
+- **A verb lives on the thing it acts on, and the thing carries what the
+  verb needs.** `engine.stop(id)` became `sound.stop()`; `engine.monitor(
+  id)` became `source.monitor()`. This is how Rust is written (`JoinHandle::
+  join`, `Sender::send`, cpal's `Stream::play`, kira's sound handles) and
+  not how the engine was: the engine was the only way in because it alone
+  held the command ring's sending end, so every verb had to be an engine
+  method taking an id. The rules the one path enforced (is this an input
+  source, has it been removed) are enforced by the types instead, at
+  compile time, and `NotAnInputSource` and `NoSuchInput` went with the
+  path.
+- **The sending end is shared.** `RendererHandle` wraps the ring's
+  producer in a mutex behind an `Arc`, with the sound id counter and the
+  input slot count beside it, and is cloned into every value that sends.
+  The lock is control-side only; the renderer's end is unchanged and the
+  renderer never sees a handle. Nothing on the audio or capture thread may
+  hold one. The handle is the only code that builds a `Command`, so the
+  vocabulary is private between it and the renderer. Named for tokio's
+  `runtime::Handle`, a cheap clone that acts on a thing running
+  elsewhere; `Link` said too little, `Remote` means a network in code,
+  `Control` is the name of a side in this document.
+- **The engine dissolved into two sides that never name each other.** No
+  method on it needed both the disk and the renderer, so there was
+  nothing to coordinate. `Project::open(dir, ledger)` is the disk side,
+  with `import` and `load`; `Renderer::new()` returns the sound side as a
+  pair, the renderer for the audio thread and the handle that stays, with
+  `play`, `stop`, `input` and `stop_all`. The only thing that crosses is
+  a `LoadedSample`, carried by the caller. A project with no renderer is
+  an import tool or a test; a renderer with no project is the `monitor`
+  example, which opens none. A joint constructor was drawn and rejected:
+  it would have been the engine again with a smaller body.
+- **The ledger is the caller's, one per machine.** The budget is the
+  machine's figure, not any project's: a project loads into it, and when
+  effects arrive their scratch is allocated from it on the control side
+  and moved to the renderer by command, as the rule under Memory already
+  said. So `Ledger::new(budget)` is the caller's first line, and both
+  sides take it. It became a handle like the others, `Arc` inside and
+  `Clone`, so `Arc` left the public API; the struct behind every such
+  handle is called `Shared`.
+- **A loaded sample is data, owned by whoever holds it.** `LoadedSample`
+  is an id and an `Arc<AudioBuffer>` and nothing else. Hold it and the
+  sample is in RAM; drop it and the block repays the ledger once the
+  last sound playing it lets go. It carries no handle, because a project
+  cannot hand out a handle on a renderer it knows nothing about, and so
+  its verbs are the renderer's, taking it as an argument: `play(&sample)`
+  shares the audio with the sound it starts, `stop(&sample)` cuts every
+  sound playing it. The rule for what has verbs is therefore one
+  sentence: what the renderer hands out carries a handle and acts on its
+  own; what the project hands out is data the renderer takes by
+  reference. kira makes the same split (`StaticSoundData` is inert,
+  `play` returns the handle). For an afternoon the sample carried a
+  handle, had `play` on it and sent the eviction from `Drop`; it was the
+  nicer call site and the wrong coupling.
+- **The loaded flag went.** It mirrored the engine's map of what was in
+  RAM; with the map gone it recorded "what the caller asked for last",
+  which is a preference, and there is no panel yet to have one. Removed
+  end to end, manifest field included; old manifests still open because
+  serde ignores the field, so the format version did not move. What to
+  load at open is the caller's to remember until a panel has an opinion.
+  Each load is its own copy and there is no dedup cache; loading a sample
+  twice costs its memory twice, documented rather than hidden.
+- **Unloading is dropping; stopping is a verb.** `drop(sample)` lets its
+  sounds play out, each letting go of the audio as it ends.
+  `audio.stop(&sample)` first if they should not. The three stops read as
+  one family: `sound.stop()` is one play, `audio.stop(&sample)` every
+  play of one sample, `audio.stop_all()` everything. "Unload" on the
+  renderer was tried and rejected: the renderer loads nothing, so it
+  cannot unload. Taking the sample by reference also closes the address
+  argument: the caller still owns the buffer when the eviction is pushed,
+  so the address cannot name a later buffer.
+- **An input comes as a pair, like a channel.** `input(layout, period)`
+  returns the `Input` handle, which stays and whose `sources()` are
+  `InputSource`s with `monitor` and `unmonitor`, and the `InputFeed`,
+  which moves into the capture callback and has `feed` and no handle, so
+  the capture loop takes no lock. Dropping the `Input` sends the removes
+  and gives the slots back. A pair is what `mpsc::channel`, `rtrb` and
+  `io::pipe` return for the same reason, two owners on two threads; the
+  source is `InputSource`, not `Source`, because `dsp::Source` is the
+  mixer's trait. The slot count moved into the handle, reserved by the
+  add and released by the remove; `InputId` and the engine's map went.
+- **A refused command burns its id.** Ids are minted by an atomic add
+  before the send. The old engine, as the single sender, could promise
+  no gaps; keeping that promise with many senders needed closures that
+  built the command under the lock, and nothing reads the gaps. Removed
+  as the wrong trade.
+- **Drop is best effort, and the degrade is written down.** A drop cannot
+  fail, so an `Input` dropped onto a full ring cannot send its removes:
+  its readers stay until the feed drops and finish on their own, and
+  their slots stay spoken for, because releasing slots the mixer still
+  holds would let a later add be silently rejected. The command ring
+  cannot be sized to make this impossible, since the control side is
+  unbounded; it is sized so it does not happen by hand (64 commands per
+  period), and the degrade is the answer for programs. The return ring,
+  when it comes, can be sized to never fill, because the renderer's
+  output is bounded by its slots.
+- **The retire ring waits for the mixer rewrite.** The audio-thread free
+  is now the normal path rather than the rare one: drop a `LoadedSample`
+  mid-play and a playhead's end on the audio thread frees the block.
+  The fix is unchanged (sources handed back over a ring and dropped on
+  the control side, swept on every send) and it touches every place the
+  mixer frees a slot, so it is a requirement on step 8's mixer rather
+  than a patch on this one. The rule until then is on `Renderer`: drop
+  what drives it before the samples it plays.
+- **Build the engine this product needs, with clean seams.** The question
+  "is the engine for one product or for many" came up over whether the
+  renderer should come with a handle at all. The answer this project has
+  been giving since step 3 is: one product, opinionated, with the seams
+  (no device in the crate, generic dsp pieces, a storage trait) there for
+  testing and the hardware, not for generality. So a choice is made when
+  a feature on this roadmap needs it and not before: the renderer pair is
+  justified by the offline bounce and step 8's renderer-wide verbs, a
+  many-renderer API today would not be.
+- **Rejected on the way.** `handle.load()` with the renderer reaching
+  into the project, because the audio thread cannot do disk or
+  allocation and would need a servicing loop to ask for it, and there is
+  no "direct call" across the thread boundary in any design: the handle
+  is the call made into a message. `project.play()` or `sample.play()`
+  with the project knowing the renderer, for the coupling. A `static`
+  ledger, because the explicit handle is what lets a test have a tiny
+  budget. `stop_sample` as the name of the by-reference stop, unless
+  `stop(&sample)` beside `sound.stop()` keeps tripping readers.
 
 ### Process
 
@@ -995,6 +1151,11 @@ more about the render side than about input.
   when the range holds fewer frames than columns, so the answer is sized
   by the screen and never by the audio. That method arrives with the
   panel that calls it.
+- **One product, opinionated, with clean seams.** Decided under Handles
+  and the frame for every generic-versus-specific choice since: build
+  what this sampler needs when a step on this roadmap needs it, and keep
+  the seams that testing and the hardware require. A choice that pays off
+  only for some other product is not made.
 - **Nothing is settled by having been written.** The step 1 model was
   removed in step 3 when it stopped fitting. New steps are designed from
   the decision, then existing code is changed to fit, not the other way
@@ -1039,15 +1200,17 @@ changes to it.
   rather than read a clock.
 - A master gain and a bus limiter before the final clamp, once stacked
   pads clipping is a complaint rather than a design.
-- The free of an unloaded buffer still happens on the audio thread, since
-  the renderer's voice is the last holder when it drops. Since unload
-  evicts, that is every unload of a sample mid-play, at the eviction
-  rather than at the voice's end. Fix: unload keeps the removed `Arc`,
-  and the engine keeps a retiring list it sweeps on the control side for
-  entries whose count has dropped to one. An input whose `Input` handle
-  is dropped before `remove_input` has the same problem: its sources'
-  readers finish and the input mixer frees their rings. Not an audible problem
-  today; a rule to keep before the device is the target.
+- The free of a dropped sample's buffer still happens on the audio
+  thread when a sound is playing it: the playhead is the last holder when
+  the eviction or the end of the sound drops it. An `InputFeed` dropped
+  before its `Input` has the same problem: its readers finish and the
+  input mixer frees their rings. Fix, decided under Handles and deferred
+  into the mixer rewrite: every place the mixer frees a slot hands the
+  source to a sink, the renderer pushes it onto a ring back to the
+  control side, and the `RendererHandle` sweeps that ring on every send;
+  sized at the slot count plus the command capacity it can never fill.
+  Not an audible problem today; a rule to keep before the device is the
+  target.
 - A level meter on a take: a peak or running power the take keeps as it
   quantises, in an atomic the recorder reads, so a panel can show input
   level while recording. Small; arrives with the panel.

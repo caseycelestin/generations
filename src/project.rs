@@ -33,8 +33,9 @@ use crate::storage::{self as storage, Storage, StorageError};
 pub struct SampleId(pub u32);
 
 /// Everything stored about one sample except its audio, which never
-/// leaves the engine: it is heard through playback and changed through a
-/// print. More fields arrive as the project grows.
+/// leaves the crate as plain samples: it is loaded as a block on the
+/// ledger, heard through the renderer and changed through a print. More
+/// fields arrive as the project grows.
 ///
 /// "Generation" is not a type. It is the relationship between a sample and
 /// its parent: the sample one generation behind it. Lineage is the tree
