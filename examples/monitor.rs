@@ -52,8 +52,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let capture = Capture::default_input()?;
     let have = capture.channels();
     let (input, mut feed) = control.input(&layout, capture.period())?;
-    // Declared after `engine`, so they are dropped first: both audio
-    // threads stop before the engine goes.
     let mut playback = Device::default_output()?.start(move |out| renderer.render(out))?;
     // The first channels of the device, as many as the layout is wide.
     let take = (0..feed.channels()).collect();

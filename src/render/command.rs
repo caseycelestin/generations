@@ -20,11 +20,16 @@
 //!
 //! The two sides name things to each other with the two ids here: a sound
 //! by its [`SoundId`], a buffer by its [`BufferAddress`].
+//!
+//! One thing goes the other way: every sound the renderer lets go of
+//! comes back as a [`Released`], so its last free happens on the control
+//! side and never on the audio thread.
 
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::render::dsp::{InputReader, SampleReader};
+use crate::render::sound::Sound;
 
 /// What the handle can ask of the renderer.
 ///
@@ -54,6 +59,33 @@ impl From<SoundCommand<SampleReader>> for Command {
 impl From<SoundCommand<InputReader>> for Command {
     fn from(command: SoundCommand<InputReader>) -> Self {
         Self::Input(command)
+    }
+}
+
+/// A sound the renderer has let go of, on its way back to the control
+/// side to be dropped there. It may hold the last reference to a sample's
+/// audio or the last end of an input's ring, and freeing either is a call
+/// into the allocator, and for a large buffer into the kernel, that has
+/// no bound on how long it takes. Nothing reads it; arriving is its job.
+#[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
+#[expect(dead_code, reason = "held only to be dropped on the control side")]
+pub enum Released {
+    /// A sample sound: finished, removed, stolen or evicted.
+    Sample(Sound<SampleReader>),
+    /// An input sound: finished, removed, or refused for want of room.
+    Input(Sound<InputReader>),
+}
+
+impl From<Sound<SampleReader>> for Released {
+    fn from(sound: Sound<SampleReader>) -> Self {
+        Self::Sample(sound)
+    }
+}
+
+impl From<Sound<InputReader>> for Released {
+    fn from(sound: Sound<InputReader>) -> Self {
+        Self::Input(sound)
     }
 }
 

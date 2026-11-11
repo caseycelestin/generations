@@ -309,9 +309,9 @@ or rejected instead. The history of how a shape was reached is in git.
   channel is the caller's, thin and decision-free; what is heard and at
   what level is the engine's, by command.
 - **The stream runs from open to drop.** Opening clicks and costs tens of
-  milliseconds, so it renders silence when idle. Drop the stream before
-  the samples it plays, or the last `Arc` is freed on the audio thread
-  (the retire ring, below, fixes this).
+  milliseconds, so it renders silence when idle. Samples can be dropped
+  in any order: a sound holding the last `Arc` goes back on the release
+  ring to be freed on the control side.
 - **The examples are `first_sound` and `monitor`**, and are plain
   demonstration code: no hardening or shared abstractions there. When the
   device exists, they move into a binary crate.
@@ -351,14 +351,22 @@ the renderer. The decisions that stand:
 
 The mixer rewrite is built (see the render side, above): accumulate
 mixing over a `Source` trait, a `Gain` per sound, low-level commands and
-per-device `RendererSettings`. What is left:
+per-device `RendererSettings`.
 
-- **The retire ring.** Every place the renderer lets go of a sound
-  (`Sounds::remove_where` already takes a sink) hands it to a ring back to
-  the control side, and `Control` sweeps it on every send. Sized at the
-  sound counts plus the command capacity, it can never fill. This moves
-  the last free of a sample's buffer and an input's ring off the audio
-  thread.
+The release ring is built. Every sound the renderer lets go of
+(finished, removed, stolen, evicted, or an add refused) goes back over a
+second ring as a `Released`, and `Control` drops what is there at the
+start of every send, or when its owner calls `Control::collect`, for
+when it has gone quiet or before a load that needs the budget back.
+Sized at the sound counts plus the command capacity, it cannot fill
+between two sends. Freeing a large buffer is a trip into the allocator
+and the kernel with no bound on its time, so the last free of a sample's
+buffer and an input's ring is off the audio thread. Dropping a `Sample`
+while it plays still lets the sound ring out; the audio is freed at the
+first send or collect after it ends, and the ledger counts it until
+then.
+
+What is left:
 - **Routing a source to two destinations** (a bus and a recorder) is open:
   a ring has one consumer, so either the reader fans out or the second
   destination taps after the first.

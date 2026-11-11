@@ -60,8 +60,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut project = Project::open(&dir, Ledger::new(SAMPLE_RAM_BUDGET))?;
     // The output device renders in pieces of at most this many frames.
     let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES));
-    // Declared after `engine`, so it is dropped first: the audio thread
-    // stops before the engine lets go of its audio.
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
     let scratch = tempfile::tempdir()?;
