@@ -20,7 +20,7 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Channels, Engine};
+use generations::{Channels, Renderer};
 
 mod device;
 use device::{Capture, Device};
@@ -44,16 +44,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     // No project: monitoring an input needs no samples and no disk.
-    let mut engine = Engine::new();
-    let mut output = engine.output().ok_or("output already taken")?;
+    let (mut renderer, audio) = Renderer::new();
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.
     let capture = Capture::default_input()?;
     let have = capture.channels();
-    let (input, mut feed) = engine.input(&layout, capture.period())?;
+    let (input, mut feed) = audio.input(&layout, capture.period())?;
     // Declared after `engine`, so they are dropped first: both audio
     // threads stop before the engine goes.
-    let mut playback = Device::default_output()?.start(move |out| output.render(out))?;
+    let mut playback = Device::default_output()?.start(move |out| renderer.render(out))?;
     // The first channels of the device, as many as the layout is wide.
     let take = (0..feed.channels()).collect();
     let mut capture = capture.start(take, move |frames| feed.feed(frames))?;

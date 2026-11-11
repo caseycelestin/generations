@@ -8,67 +8,61 @@
 //!
 //! # Architecture
 //!
-//! Seven roles, each its own module, with one rule about who talks to whom:
+//! Two sides that never name each other, a ledger they share, and the
+//! caller carrying things between them:
 //!
 //! ```text
-//! engine     coordinates: what a UI or front panel calls. Also the control
-//!   │        side of sound: holds the audio in RAM and sends the commands
-//!   │
-//!   ├─ memory    one memory budget; every buffer that scales with audio
-//!   │            is a block allocated from it, and repays it when dropped
-//!   │
+//! memory      the Ledger: one memory budget, the caller's to make. Every
+//!             buffer that scales with audio is a block allocated from it,
+//!             and repays it when dropped
+//!
+//! project     the disk side. Opens on a directory, imports, loads: the
+//!   │         rules over a Storage, and the one way audio moves between
+//!   │         disk and RAM. Hands out a LoadedSample, plain owned audio
 //!   ├─ import    the world's audio into the project's
 //!   │   ├─ decode    reads a file into plain samples, whatever format it is in
 //!   │   └─ convert   takes those to the project format: resample, quantise
-//!   │
-//!   ├─ input     the capture side of an input: the handle a device callback
-//!   │            feeds, which splits the device's frames into one ring per
-//!   │            mono or stereo source for the render side to hear
-//!   │
-//!   ├─ renderer  the other side of sound, on another thread: this engine's
-//!   │   │        pipeline, commands in and a period of frames out, wherever
-//!   │   │        the caller drives it. One public type: Renderer
-//!   │   └─ dsp   the pieces it is wired from: a mixer of sources, a playhead,
-//!   │            an input reader, the arithmetic they share. Generic; knows
-//!   │            no command and no pipeline
-//!   │
-//!   └─ project   the rules: what a project holds and what is allowed
-//!        │
-//!        └─ storage   the medium: keeps and returns bytes, never interprets
-//!              └─ files   a directory of WAVs and a manifest (the one backend)
+//!   └─ storage   the medium: keeps and returns bytes, never interprets
+//!        └─ files   a directory of WAVs and a manifest (the one backend)
 //!
-//! (the caller)  owns the audio device, if there is one, and hands it the
-//!               engine's output to drive. No code in this crate knows an
-//!               audio library or that there is an audio thread
+//! renderer    the sound side, in two ends like a channel. The Renderer
+//!   │         goes to the audio thread and makes frames; the RendererHandle
+//!   │         stays and is where every sound starts: play a LoadedSample,
+//!   │         stop its sounds, add an input. Commands cross on a ring
+//!   ├─ sound     a Sound: one play, stop it
+//!   ├─ input     an Input you hold and monitor by source, and the InputFeed
+//!   │            a capture callback fills, one ring per mono or stereo source
+//!   └─ dsp       the pieces the renderer is wired from: a mixer of sources,
+//!                a playhead, an input reader, the arithmetic they share.
+//!                Generic; knows no command and no pipeline
+//!
+//! (the caller)  makes the ledger, opens the project, makes the renderer,
+//!               and owns the audio device, if there is one, handing it the
+//!               renderer to drive. No code in this crate knows an audio
+//!               library or that there is an audio thread
 //! ```
 //!
-//! - **[`engine`]** is the only code that touches more than one role, and
-//!   where everything comes from: every other role is reachable through
-//!   it or not at all. An import is: decode, convert, add the result to
-//!   the project as a root. A load is: read the audio from the project
-//!   into RAM, hand the audio out as its owner. An input is:
-//!   mint ids, allocate rings, send the adds. The engine owns the ledger
-//!   (one memory budget for everything in RAM, which every allocation
-//!   along those paths is a block of) and makes the renderer and the
-//!   lock-free command ring to it; nothing on the control side can block
-//!   the other end.
-//! - **Handles** are where things are done. What the engine makes it
-//!   hands out as a handle, and the verbs on that thing are on the handle:
-//!   a [`LoadedSample`] owns its audio and plays, a [`Sound`] names one
-//!   play and stops it. Holding the handle is what it means for the thing
-//!   to exist; drop the `LoadedSample` and the sample is unloaded. Each
-//!   handle carries a `RendererHandle`, the control side's clone of the
-//!   ring's sending end, so it needs the engine for nothing more. The
-//!   engine keeps no list of what is loaded or playing.
-//! - **`renderer`** is the other end of that ring, and the one role that
-//!   runs on a thread the engine does not. It is this engine's pipeline:
-//!   which pieces run, in what order, and what the control side may ask
-//!   of them, the commands. It turns commands and resident audio into
-//!   frames and depends on nothing about where it runs, so a device can
-//!   drive it live and a bounce can drive it offline. Nothing in it knows
-//!   what a project or a device is. Outside the crate it is one type,
-//!   [`Renderer`], minted once per engine as its output, with one method
-//!   that fills a period.
+//! - **[`project`]** is the disk and the budget. It owns the storage and
+//!   the ledger it was opened with, because every byte it brings into RAM
+//!   is a block on that ledger. An import is: decode, convert, add the
+//!   result as a root. A load is: read the audio into a block, hand it out
+//!   as a [`LoadedSample`], whose holder owns it. The project sends no
+//!   commands and knows nothing about sound.
+//! - **`renderer`** is everything heard. [`Renderer::new`] returns the
+//!   renderer and its [`RendererHandle`] as a pair; the renderer runs on
+//!   a thread the handle does not, turning commands and resident audio
+//!   into frames wherever it is driven, live in a device callback or
+//!   offline in a loop. Nothing in it knows what a project or a device is.
+//!   The handle is cheap to clone and carries the verbs: `play` takes a
+//!   `LoadedSample` by reference and shares its audio with the sound it
+//!   starts; `stop` cuts every sound playing one. Unloading is dropping
+//!   the sample.
+//! - **Handles** are where things are done. What a side makes it hands
+//!   out as a value with the verbs on it: a [`Sound`] stops, an
+//!   [`InputSource`] monitors, an [`Input`] removes itself when dropped.
+//!   Each carries a clone of the `RendererHandle`, so it needs nothing
+//!   else. Holding the value is what it means for the thing to exist, and
+//!   no side keeps a list of what is loaded or playing.
 //! - **`dsp`** is the pieces the pipeline is wired from, and nothing more:
 //!   a mixer of sources, a playhead over a loaded sample, the reading end
 //!   of an input ring, and the arithmetic they share. Each is a function
@@ -117,9 +111,9 @@
 //! Project::open(dir, ledger)   the disk side: import and load
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!
-//! Engine::new()                the sound side: play, input, stop_all
-//! engine.output()              the renderer, taken once
-//! device.start(move |out| output.render(out))
+//! Renderer::new()              the sound side: the renderer and its handle,
+//!                              which plays, adds inputs, stops all
+//! device.start(move |out| renderer.render(out))
 //!                              the caller's own device, whatever it is
 //! ```
 //!
@@ -127,18 +121,17 @@
 //! missing, validates the whole project it finds otherwise, and refuses a
 //! directory holding anything else. From then on every change is durable
 //! by the time the call that made it returns. The stream plays while held;
-//! drop it before the engine.
+//! drop it before the loaded samples it plays.
 //!
 //! # Where to start
 //!
-//! [`Engine`] for what a caller does; `examples/first_sound.rs` for the
-//! whole path, file to speaker; `docs/roadmap.md` for the plan and the
-//! decisions behind it.
+//! [`Project`] and [`RendererHandle`] for what a caller does;
+//! `examples/first_sound.rs` for the whole path, file to speaker;
+//! `docs/roadmap.md` for the plan and the decisions behind it.
 
 pub mod audio;
 pub mod config;
 pub(crate) mod dsp;
-pub mod engine;
 pub(crate) mod import;
 pub(crate) mod input;
 pub(crate) mod loaded_sample;
@@ -152,12 +145,12 @@ pub(crate) mod storage;
 pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError};
-pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
 pub use input::{Channels, Input, InputFeed, InputSource};
 pub use loaded_sample::LoadedSample;
 pub use memory::{Ledger, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use renderer::Renderer;
+pub use renderer_handle::{RendererError, RendererHandle};
 pub use sound::Sound;
 pub use storage::StorageError;

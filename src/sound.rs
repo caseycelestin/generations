@@ -13,7 +13,7 @@
 //! [`LoadedSample`]: crate::loaded_sample::LoadedSample
 
 use crate::dsp::SoundId;
-use crate::engine::EngineError;
+use crate::renderer_handle::RendererError;
 use crate::renderer_handle::RendererHandle;
 
 /// One play of a sample. Drop it and the sound plays on to its end;
@@ -40,7 +40,7 @@ impl Sound {
     /// period. One that has finished or been stolen is left alone, so
     /// stopping twice is harmless. Refused as `CommandsFull` if the ring
     /// has no room.
-    pub fn stop(&self) -> Result<(), EngineError> {
-        self.renderer.stop(self.id)
+    pub fn stop(&self) -> Result<(), RendererError> {
+        self.renderer.stop_sound(self.id)
     }
 }

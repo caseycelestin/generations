@@ -14,7 +14,7 @@
 //! The pieces come from [`dsp`](crate::dsp) and are generic; this module
 //! is the one place that picks which of them this engine runs, in what
 //! order, and what the control side may ask of them. It defines the
-//! [`Command`]s it accepts and the engine imports them. Nothing here
+//! [`Command`]s it accepts and its handle builds them. Nothing here
 //! knows what a project, a device or resident audio is: audio arrives
 //! inside a command as an `Arc<AudioBuffer>`, and a playhead holds its
 //! clone until it finishes or is told to let go; each source of an input
@@ -44,26 +44,27 @@
 
 pub mod command;
 
-use rtrb::Consumer;
+use rtrb::{Consumer, RingBuffer};
 
-use crate::config::{MAX_INPUT_SOUNDS, SAMPLE_PLAYBACK_COUNT};
+use crate::config::{COMMAND_CAPACITY, MAX_INPUT_SOUNDS, SAMPLE_PLAYBACK_COUNT};
 #[cfg(test)]
 use crate::dsp::SoundId;
 use crate::dsp::math::hard_clip;
 use crate::dsp::{InputReader, Mixer, Playhead, WhenFull};
+use crate::renderer_handle::RendererHandle;
 use command::{Command, InputCommand, SampleCommand};
 
-/// The render side of an engine: turns commands and resident audio into
-/// periods of output.
+/// The render side: turns commands and resident audio into periods of
+/// output.
 ///
-/// Taken once from `Engine::output` and moved to whoever owns the audio
-/// thread: into a device callback for live sound, or a loop for the same
-/// frames offline.
+/// Made by [`Renderer::new`] together with its [`RendererHandle`], and
+/// moved to whoever owns the audio thread: into a device callback for
+/// live sound, or a loop for the same frames offline.
 ///
-/// **Drop whatever drives this before dropping the engine.** A sound
-/// still playing holds a reference to its audio; if the engine goes
-/// first, that reference is the last one and the buffer is freed on the
-/// audio thread when the sound ends.
+/// **Drop whatever drives this before dropping the loaded samples it
+/// plays.** A sound still playing holds a reference to its audio; if the
+/// `LoadedSample` goes first, that reference is the last one and the
+/// buffer is freed on the audio thread when the sound ends.
 #[derive(Debug)]
 pub struct Renderer {
     /// The consuming end of the command ring.
@@ -76,8 +77,19 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// A silent renderer and the handle that commands it, as a pair, the
+    /// way a channel comes as two ends. The renderer goes to the audio
+    /// thread; the handle stays on the control side and is where every
+    /// sound starts. Commands sent before the renderer is driven are not
+    /// lost: they wait in the ring and apply on the first render. No audio
+    /// device is involved: a machine without one drives it in a loop.
+    pub fn new() -> (Renderer, RendererHandle) {
+        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
+        (Self::on(consumer), RendererHandle::new(producer))
+    }
+
     /// A silent renderer that takes its commands from `commands`.
-    pub(crate) fn new(commands: Consumer<Command>) -> Self {
+    pub(crate) fn on(commands: Consumer<Command>) -> Self {
         Self {
             commands,
             // A pad press always sounds, even if it cuts the oldest; an
@@ -170,7 +182,7 @@ mod tests {
 
     fn renderer() -> (Producer<Command>, Renderer) {
         let (producer, consumer) = RingBuffer::new(8);
-        (producer, Renderer::new(consumer))
+        (producer, Renderer::on(consumer))
     }
 
     fn mono(data: Vec<Pcm>) -> Arc<AudioBuffer> {

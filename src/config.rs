@@ -26,7 +26,7 @@ pub const MAX_INPUT_CHANNELS: usize = 8;
 
 /// Input sounds the engine holds at once, across every input: the slots
 /// in the renderer's input mixer, one per mono or stereo source. Unlike
-/// samples, an input sound is never stolen: `Engine::input` refuses an
+/// samples, an input sound is never stolen: `RendererHandle::input` refuses an
 /// input whose sources would not all fit until one is removed.
 pub const MAX_INPUT_SOUNDS: usize = 8;
 

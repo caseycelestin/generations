@@ -10,11 +10,12 @@
 //!
 //! It is data, not a handle on anything: it knows nothing about the
 //! renderer or whether it is playing. Hearing it is the renderer's verb,
-//! which takes it by reference and shares the audio with the sound it
-//! starts; cutting those sounds and letting the audio go at once is the
-//! renderer's too, taking it by value. So a loaded sample made by one
-//! project can be heard on any renderer, and the project and the renderer
-//! never name each other.
+//! `play`, which takes it by reference and shares the audio with the
+//! sound it starts; so is `stop`, which cuts every sound playing it.
+//! Unloading is dropping it: the sounds still playing let go of the audio
+//! as they end, or at once if they were stopped first. A loaded sample
+//! made by one project can be heard on any renderer, and the project and
+//! the renderer never name each other.
 //!
 //! The project records nothing about what is loaded. What to load when a
 //! project is opened is the caller's to remember, until there is a panel

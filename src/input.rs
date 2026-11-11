@@ -3,11 +3,11 @@
 //!
 //! An input is the ability to put audio into the renderer; whether it is
 //! heard is a separate switch, monitoring, which is the input mixer's
-//! mute. `Engine::input` returns two things. The [`Input`] is the handle:
-//! it names the input's sources, each an [`InputSource`] with `monitor`
-//! and `unmonitor` on it, and holding it is what keeps the input in the
-//! renderer; drop it and the input is removed. The [`InputFeed`] is the
-//! other end: it moves into the capture callback and has one method,
+//! mute. `RendererHandle::input` returns two things. The [`Input`] is the
+//! handle: it names the input's sources, each an [`InputSource`] with
+//! `monitor` and `unmonitor` on it, and holding it is what keeps the input
+//! in the renderer; drop it and the input is removed. The [`InputFeed`] is
+//! the other end: it moves into the capture callback and has one method,
 //! `feed`, which takes the device's frames.
 //!
 //! An input is added in the shape of its device: one layout saying what
@@ -40,7 +40,7 @@ use rtrb::Producer;
 
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES, Pcm};
 use crate::dsp::{InputReader, SoundId};
-use crate::engine::EngineError;
+use crate::renderer_handle::RendererError;
 use crate::renderer_handle::RendererHandle;
 
 /// How many of the capture device's periods a source's ring holds: enough
@@ -105,19 +105,19 @@ impl InputSource {
 
     /// Hears the source through the output from the next period. Refused
     /// as `CommandsFull` if the ring has no room.
-    pub fn monitor(&self) -> Result<(), EngineError> {
+    pub fn monitor(&self) -> Result<(), RendererError> {
         self.renderer.monitor(self.id, true)
     }
 
     /// Stops hearing the source. It stays an input and keeps up with the
     /// device; `monitor` hears it again. Refused as `CommandsFull` if the
     /// ring has no room.
-    pub fn unmonitor(&self) -> Result<(), EngineError> {
+    pub fn unmonitor(&self) -> Result<(), RendererError> {
         self.renderer.monitor(self.id, false)
     }
 }
 
-/// An input the renderer holds: the handle from `Engine::input`. Its
+/// An input the renderer holds: the handle from `RendererHandle::input`. Its
 /// sources are what you monitor; dropping it removes the input.
 #[derive(Debug)]
 pub struct Input {
@@ -173,9 +173,8 @@ struct SourceWriter {
 /// The capture side of an input: takes periods of device frames from
 /// whoever owns the capture thread and splits them into its sources.
 ///
-/// From `Engine::input`, moved into a device's capture callback. Drop the
-/// [`Input`] first, then this with the stream that drives it, then the
-/// engine.
+/// From `RendererHandle::input`, moved into a device's capture callback.
+/// Drop the [`Input`] first, then this with the stream that drives it.
 #[derive(Debug)]
 pub struct InputFeed {
     /// One per source of the layout, in order.
