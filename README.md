@@ -41,9 +41,9 @@ the hardware unit all sit on top of. It is responsible for:
 Early. A project opens on disk, imports audio, keeps itself durable across
 a power-down and loads samples into RAM under one memory budget; a renderer
 plays them, and hears a microphone, through whatever device the caller
-gives it. The crate itself needs no audio device. The generation model is
-in place; the effects that will print new generations arrive with the
-real-time side.
+gives it. The crate itself needs no audio device. Nothing prints yet, so
+generations are not recorded; lineage returns with the effects that print
+them.
 See [docs/roadmap.md](docs/roadmap.md) for
 the plan and the decisions behind it, and `cargo doc --open` for the
 architecture.

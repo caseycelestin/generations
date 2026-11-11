@@ -36,20 +36,14 @@ use storage::{Storage, StorageError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SampleId(pub u32);
 
-/// Everything stored about one sample except its audio, which never
-/// leaves the crate as plain samples: it is loaded as a block on the
-/// ledger, heard through the renderer and changed through a print. More
-/// fields arrive as the project grows.
+/// Everything stored about one sample except its audio and its id: what
+/// storage writes beside the audio when a sample is added. Part of the
+/// storage format, so it stays inside the crate.
 ///
-/// "Generation" is not a type. It is the relationship between a sample and
-/// its parent: the sample one generation behind it. Lineage is the tree
-/// formed by those pointers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SampleMetadata {
-    pub id: SampleId,
-    /// The sample one generation behind this one. `None` for a root.
-    pub parent: Option<SampleId>,
-}
+/// Empty for now. Fields join it as steps need them; the parent pointer
+/// comes back here with prints.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SampleMetadata {}
 
 /// Reasons a project operation can fail.
 #[derive(Debug, Error)]
@@ -93,7 +87,7 @@ impl Project {
         Self { storage, ledger }
     }
 
-    /// Imports an audio file as a new root.
+    /// Imports an audio file as a new sample.
     ///
     /// The file is read in whatever format it is in, converted to the
     /// project format and stored. The file itself is not kept or
@@ -109,7 +103,7 @@ impl Project {
     /// and nothing is stored.
     pub fn import(&mut self, file: &Path) -> Result<SampleId, ProjectError> {
         let audio = import::import(file, &self.ledger)?;
-        self.add_sample(None, &audio)
+        self.add_sample(&audio)
     }
 
     /// Loads `id`: brings its audio into RAM and returns it as a
@@ -129,38 +123,8 @@ impl Project {
     }
 
     /// Adds audio as a sample and returns its id.
-    ///
-    /// With no parent it starts a new lineage; with one it is the next
-    /// generation of that lineage. An unknown parent is refused and
-    /// nothing is stored.
-    pub(crate) fn add_sample(
-        &mut self,
-        parent: Option<SampleId>,
-        audio: &AudioBuffer,
-    ) -> Result<SampleId, ProjectError> {
-        if let Some(p) = parent {
-            self.check(p)?;
-        }
-        Ok(self.storage.add_sample(parent, audio)?)
-    }
-
-    /// Refuses an id no sample has. Asks only whether the record exists,
-    /// not for the record, so it still works for a sample whose audio has
-    /// gone bad on disk: that sample must stay a valid parent to point at
-    /// and, later, removable.
-    fn check(&self, id: SampleId) -> Result<(), ProjectError> {
-        if self.storage.has_sample(id)? {
-            Ok(())
-        } else {
-            Err(ProjectError::UnknownSample(id))
-        }
-    }
-
-    /// Everything stored about the sample with this id, except its audio.
-    pub fn metadata(&self, id: SampleId) -> Result<SampleMetadata, ProjectError> {
-        self.storage
-            .metadata(id)?
-            .ok_or(ProjectError::UnknownSample(id))
+    pub(crate) fn add_sample(&mut self, audio: &AudioBuffer) -> Result<SampleId, ProjectError> {
+        Ok(self.storage.add_sample(&SampleMetadata {}, audio)?)
     }
 
     /// The audio of the sample with this id, read from storage into a
@@ -199,7 +163,7 @@ pub(crate) mod tests {
         next_id: u32,
         /// Each sample with its layout and audio as plain samples: the
         /// backend's own copy, outside the budget, as a disk is.
-        samples: Vec<(SampleMetadata, ChannelLayout, Vec<Pcm>)>,
+        samples: Vec<(SampleId, ChannelLayout, Vec<Pcm>)>,
     }
 
     /// In-memory storage for tests, shared with the test through `Rc` so
@@ -209,10 +173,6 @@ pub(crate) mod tests {
     impl Storage for Memory {
         fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
             Ok(self.find(id).is_some())
-        }
-
-        fn metadata(&self, id: SampleId) -> Result<Option<SampleMetadata>, StorageError> {
-            Ok(self.find(id).map(|(s, _, _)| s))
         }
 
         fn audio(
@@ -232,28 +192,25 @@ pub(crate) mod tests {
 
         fn add_sample(
             &mut self,
-            parent: Option<SampleId>,
+            _metadata: &SampleMetadata,
             audio: &AudioBuffer,
         ) -> Result<SampleId, StorageError> {
             let mut s = self.0.borrow_mut();
             let id = SampleId(s.next_id);
             s.next_id += 1;
-            s.samples.push((
-                SampleMetadata { id, parent },
-                audio.layout(),
-                audio.samples().to_vec(),
-            ));
+            s.samples
+                .push((id, audio.layout(), audio.samples().to_vec()));
             Ok(id)
         }
     }
 
     impl Memory {
-        fn find(&self, id: SampleId) -> Option<(SampleMetadata, ChannelLayout, Vec<Pcm>)> {
+        fn find(&self, id: SampleId) -> Option<(SampleId, ChannelLayout, Vec<Pcm>)> {
             self.0
                 .borrow()
                 .samples
                 .iter()
-                .find(|(s, _, _)| s.id == id)
+                .find(|(s, _, _)| *s == id)
                 .cloned()
         }
     }
@@ -281,66 +238,34 @@ pub(crate) mod tests {
         audio(ChannelLayout::Mono, &[0.0, 0.1, 0.2, 0.3])
     }
 
-    fn structure(state: &Rc<RefCell<State>>) -> Vec<(SampleId, Option<SampleId>)> {
-        state
-            .borrow()
-            .samples
-            .iter()
-            .map(|(s, _, _)| (s.id, s.parent))
-            .collect()
+    fn structure(state: &Rc<RefCell<State>>) -> Vec<SampleId> {
+        state.borrow().samples.iter().map(|(s, _, _)| *s).collect()
     }
 
     #[test]
-    fn add_without_parent_stores_a_root() {
+    fn add_stores_a_sample_under_a_new_id() {
         let (mut p, state) = project();
-        let id = p.add_sample(None, &tone()).unwrap();
-        assert_eq!(structure(&state), vec![(id, None)]);
-    }
-
-    #[test]
-    fn add_with_parent_stores_the_next_generation() {
-        let (mut p, state) = project();
-        let root = p.add_sample(None, &tone()).unwrap();
-        let child = p.add_sample(Some(root), &tone()).unwrap();
-        assert_ne!(root, child);
-        assert_eq!(structure(&state), vec![(root, None), (child, Some(root))]);
+        let a = p.add_sample(&tone()).unwrap();
+        let b = p.add_sample(&tone()).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(structure(&state), vec![a, b]);
     }
 
     #[test]
     fn a_stored_sample_reads_back() {
         let (mut p, _state) = project();
-        let root = p.add_sample(None, &tone()).unwrap();
-        let child = p.add_sample(Some(root), &tone()).unwrap();
-        assert_eq!(
-            p.metadata(child).unwrap(),
-            SampleMetadata {
-                id: child,
-                parent: Some(root),
-            }
-        );
-        assert_eq!(p.audio(child).unwrap().samples(), tone().samples());
+        let id = p.add_sample(&tone()).unwrap();
+        assert_eq!(p.audio(id).unwrap().samples(), tone().samples());
     }
 
     #[test]
     fn reading_an_unknown_sample_is_refused() {
         let (p, _state) = project();
         let bogus = SampleId(7);
-        assert!(matches!(p.metadata(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
         assert!(matches!(
             p.audio(bogus),
             Err(ProjectError::UnknownSample(id)) if id == bogus
         ));
-    }
-
-    #[test]
-    fn add_with_unknown_parent_is_refused_and_stores_nothing() {
-        let (mut p, state) = project();
-        let bogus = SampleId(99);
-        assert!(matches!(
-            p.add_sample(Some(bogus), &tone()),
-            Err(ProjectError::UnknownSample(id)) if id == bogus
-        ));
-        assert!(structure(&state).is_empty());
     }
 
     /// A mono buffer of `n` frames, no two alike.
@@ -388,7 +313,6 @@ pub(crate) mod tests {
             audio.samples(),
             &[scaled(0), scaled(1000), scaled(-1000), scaled(32_767)]
         );
-        assert_eq!(p.metadata(id).unwrap().parent, None, "an import is a root");
     }
 
     #[test]
@@ -432,7 +356,7 @@ pub(crate) mod tests {
         // Room for the loaded ramp and nothing else.
         let (state, storage) = memory_storage();
         let mut p = Project::on(storage, Ledger::new(ramp_bytes(4)));
-        let root = p.add_sample(None, &ramp(4)).unwrap();
+        let root = p.add_sample(&ramp(4)).unwrap();
         let _held = p.load(root).unwrap();
 
         assert!(matches!(
@@ -448,7 +372,7 @@ pub(crate) mod tests {
     #[test]
     fn load_returns_the_audio() {
         let mut p = memory_project();
-        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let id = p.add_sample(&ramp(4)).unwrap();
 
         let loaded = p.load(id).unwrap();
         assert_eq!(loaded.id(), id);
@@ -459,7 +383,7 @@ pub(crate) mod tests {
     #[test]
     fn dropping_a_loaded_sample_unloads_it() {
         let mut p = memory_project();
-        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let id = p.add_sample(&ramp(4)).unwrap();
         let loaded = p.load(id).unwrap();
 
         drop(loaded);
@@ -469,7 +393,7 @@ pub(crate) mod tests {
     #[test]
     fn each_load_is_its_own_copy() {
         let mut p = memory_project();
-        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let id = p.add_sample(&ramp(4)).unwrap();
         let a = p.load(id).unwrap();
         let b = p.load(id).unwrap();
         assert_eq!(p.ledger().in_use(), 2 * ramp_bytes(4));
@@ -483,8 +407,8 @@ pub(crate) mod tests {
     fn load_over_budget_is_refused() {
         let (_state, storage) = memory_storage();
         let mut p = Project::on(storage, Ledger::new(ramp_bytes(4)));
-        let a = p.add_sample(None, &ramp(4)).unwrap();
-        let b = p.add_sample(None, &ramp(4)).unwrap();
+        let a = p.add_sample(&ramp(4)).unwrap();
+        let b = p.add_sample(&ramp(4)).unwrap();
         let _held = p.load(a).unwrap();
 
         assert!(matches!(
@@ -498,7 +422,7 @@ pub(crate) mod tests {
     #[test]
     fn load_of_an_unknown_sample_is_refused() {
         let mut p = memory_project();
-        let root = p.add_sample(None, &ramp(4)).unwrap();
+        let root = p.add_sample(&ramp(4)).unwrap();
         let bogus = SampleId(root.0 + 1);
         assert!(matches!(
             p.load(bogus),
@@ -511,15 +435,14 @@ pub(crate) mod tests {
     fn open_loads_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let mut p = Project::open(dir.path(), unlimited()).unwrap();
-        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let id = p.add_sample(&ramp(4)).unwrap();
         let _held = p.load(id).unwrap();
         drop(p);
 
         let p = Project::open(dir.path(), unlimited()).unwrap();
         assert_eq!(p.ledger().in_use(), 0, "nothing is in RAM");
-        assert_eq!(
-            p.metadata(id).unwrap().parent,
-            None,
+        assert!(
+            p.storage.has_sample(id).unwrap(),
             "the sample is still there"
         );
     }

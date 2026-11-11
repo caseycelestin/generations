@@ -2,9 +2,9 @@
 //!
 //! Audio moves forward by printing: committing a change to a sample as a
 //! new generation of it, with the previous one kept. See the README for
-//! the idea; this crate is the engine underneath it. The data model knows
-//! generations today; the effects that will make them arrive with the
-//! render side (see the roadmap), so nothing prints yet.
+//! the idea; this crate is the engine underneath it. Nothing prints yet,
+//! so the data model does not record generations: lineage returns with
+//! prints (see the roadmap).
 //!
 //! # Architecture
 //!
@@ -105,7 +105,7 @@
 //! - **[`project`]** owns a `Storage` and holds nothing else. There is no
 //!   in-memory copy of a project: every read and write goes to storage, so
 //!   changing the project is changing the disk and there is no save step.
-//!   The rules live here: a parent must exist, a sample with children stays.
+//!   The rules about what may change live here.
 //! - **`project/storage`** is a trait so the medium can change (a directory
 //!   today, perhaps a database later) without the rules moving. A storage
 //!   always holds a whole, valid project; opening one creates or validates
@@ -169,5 +169,5 @@ pub use memory::{Ledger, OverBudgetError};
 pub use project::import::{ConvertError, DecodeError, ImportError};
 pub use project::sample::Sample;
 pub use project::storage::StorageError;
-pub use project::{Project, ProjectError, SampleId, SampleMetadata};
+pub use project::{Project, ProjectError, SampleId};
 pub use render::{Renderer, RendererSettings};

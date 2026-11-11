@@ -38,18 +38,29 @@ or rejected instead. The history of how a shape was reached is in git.
   The first model kept everything in RAM and treated persistence as a
   dump; step 3 replaced it.
 - **The project holds the rules, storage is dumb.** The project enforces
-  that a parent exists; storage answers questions and does what it is
-  told. Rules in storage would be repeated in every backend and drift.
+  what may change (that a parent exists, once lineage returns); storage
+  answers questions and does what it is told. Rules in storage would be
+  repeated in every backend and drift.
 - **Storage mints sample ids.** A sample does not exist until it is
   stored, like a database insert returning the row id. The counter is on
   disk, only goes up, and never reuses an id.
-- **Generation is a relationship, not a type.** A sample is an id and an
-  optional parent id; lineage is the tree of parent pointers. `metadata(id)`
-  returns what is stored about a sample except its audio; `load(id)`
-  returns the audio. Metadata fields join the sample as steps need them,
-  each with its own setter and rule. (A `loaded` flag was the first and
-  was removed under Handles. Removing samples was built and cut in the
-  memory port: no caller.)
+- **A sample is named by its `SampleId`; a sound is not.** A sample
+  outlives the program, so callers refer to it by an id they can keep and
+  store (a parent pointer, pads and patterns later), and
+  `load(id)` turns that into a `Sample` the way a path opens a file. A
+  sound lives only while it plays, so its handle keeps its `SoundId`
+  private and carries the verbs instead.
+- **Generation is a relationship, not a type.** A sample will be an id
+  and an optional parent id; lineage is the tree of parent pointers. It
+  was built in step 3 and removed after step 8, because nothing had made
+  a child since prints went in step 5. It returns with prints: `parent`
+  joins the crate-private `SampleMetadata` that `Storage::add_sample`
+  writes beside the audio (empty until then), goes in the manifest's
+  per-sample `Entry` with `#[serde(default)]`, and gets its rule on
+  `Project`; `metadata(id)` comes back to read it. Other fields join the
+  sample the same way as steps need them. (A `loaded` flag was the first
+  and was removed under Handles. Removing samples was built and cut in
+  the memory port: no caller.)
 - **"Project"** is what every sampler calls the unit a user opens and
   copies to a card. It will hold patterns, settings and pad layouts too.
 
@@ -61,9 +72,10 @@ or rejected instead. The history of how a shape was reached is in git.
 - **A storage always holds a whole project.** `open(dir)` creates an empty
   project in an empty or missing directory, validates a whole project
   otherwise, and refuses anything else. Validation happens on open, not
-  per call: the manifest reads, every parent exists and was minted before
-  its child (which rules out cycles without a graph walk), the counter is
-  past every id, every WAV is present in the engine's format.
+  per call: the manifest reads, the counter is past every id, every WAV
+  is present in the engine's format. When lineage returns, every parent
+  must exist and be minted before its child, which rules out cycles
+  without a graph walk.
 - **Every write is fsynced before the call returns.** WAV before the
   manifest names it, temp manifest before the rename, the directory after
   each file change. A power cut leaves the old manifest or the new one; a
@@ -146,7 +158,7 @@ or rejected instead. The history of how a shape was reached is in git.
 ### The two sides
 
 - **The engine is two sides that never name each other.** The disk side is
-  `Project` (`open`, `import`, `load`, `metadata`). The sound side is
+  `Project` (`open`, `import`, `load`). The sound side is
   `Renderer::new() -> (Renderer, Control)`: the renderer moves to the audio
   thread, `Control` stays (`play`, `stop`, `stop_all`, `input`). The only
   thing that crosses is a `Sample`, carried by the caller. Until
@@ -365,6 +377,9 @@ The storage layer does not know about tiers.
 
 ## Deferred ideas
 
+- **A mono output device** folds the stereo mix at the very end; the mix
+  itself stays stereo. The fold's level (a plain sum, or -3 or -6 dB) is
+  undecided.
 - **Effects on the render side.** Heard live on a sound or a bus; a print
   is the committed offline render of the same effect, stored as a new
   generation.

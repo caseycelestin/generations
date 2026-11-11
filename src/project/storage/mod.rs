@@ -64,11 +64,6 @@ pub trait Storage {
     /// alone, so it holds even when the sample's audio cannot be read.
     fn has_sample(&self, id: SampleId) -> Result<bool, StorageError>;
 
-    /// Everything stored about the sample with this id except its audio,
-    /// or `None` if there is none. Answered from the record alone, so it
-    /// holds even when the sample's audio cannot be read.
-    fn metadata(&self, id: SampleId) -> Result<Option<SampleMetadata>, StorageError>;
-
     /// The stored audio of the sample with this id in a block from
     /// `ledger`, or `None` if there is none.
     ///
@@ -78,14 +73,14 @@ pub trait Storage {
     /// bytes go back when the buffer drops.
     fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError>;
 
-    /// Stores a sample with its audio and returns its new id.
+    /// Stores a sample, its metadata beside its audio, and returns its new
+    /// id.
     ///
     /// Ids come from a counter that only goes up, so an id is never
-    /// reused, even after the sample it named is removed. The parent is
-    /// recorded as given; whether it exists is the project's rule.
+    /// reused, even after the sample it named is removed.
     fn add_sample(
         &mut self,
-        parent: Option<SampleId>,
+        metadata: &SampleMetadata,
         audio: &AudioBuffer,
     ) -> Result<SampleId, StorageError>;
 }
