@@ -68,6 +68,22 @@ impl<T> Block<T> {
         self.data.truncate(len);
     }
 
+    /// Writes every sample of the capacity once, then empties the block,
+    /// so the OS backs every page of it now. A fresh block is reserved,
+    /// not backed: the first write to each page stops the thread while
+    /// the kernel finds one. Call it on the control side for a block that
+    /// will be filled on the audio thread, so that thread never waits.
+    pub fn prefault(&mut self)
+    where
+        T: Default + Clone,
+    {
+        self.truncate(0);
+        self.extend(std::iter::repeat_n(T::default(), self.capacity()));
+        // The writes are never read; keep the optimiser from dropping them.
+        std::hint::black_box(&self.data[..]);
+        self.truncate(0);
+    }
+
     /// Wraps a buffer already paid for against `ledger`. Only `alloc`
     /// calls this; it is what has done the paying.
     pub(super) fn new(data: Vec<T>, ledger: Ledger) -> Self {
@@ -105,6 +121,16 @@ impl<T> Drop for Block<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_prefaulted_block_is_empty_with_its_capacity_and_payment() {
+        let ledger = Ledger::new(usize::MAX);
+        let mut block: Block<f32> = ledger.alloc(1000).unwrap();
+        block.prefault();
+        assert!(block.is_empty());
+        assert_eq!(block.capacity(), 1000);
+        assert_eq!(ledger.in_use(), 1000 * size_of::<f32>());
+    }
 
     #[test]
     fn a_block_reads_as_the_slice_it_holds() {

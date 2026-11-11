@@ -229,7 +229,9 @@ impl Control {
     }
 
     /// A recorder at `tap` with room for `frames` stereo frames, paid for
-    /// now from the ledger, so no take ever allocates. One recorder makes
+    /// now from the ledger, so no take ever allocates, and every page of
+    /// it touched now, so recording never waits on the OS. That costs a
+    /// pass over the buffer here, on the control side. One recorder makes
     /// many takes: [`record`](Recorder::record) one, [`stop`](Recorder::stop)
     /// it or let it fill, and ask [`is_recording`](Recorder::is_recording)
     /// to find out it has ended. Refused as `TapInUse` if the tap already
@@ -240,7 +242,9 @@ impl Control {
             return Err(ControlError::TapInUse);
         }
         let samples = frames.saturating_mul(Renderer::CHANNELS);
-        let block = self.0.ledger.alloc(samples)?;
+        let mut block = self.0.ledger.alloc(samples)?;
+        // The renderer writes it; touch every page here so it never waits.
+        block.prefault();
         let audio =
             AudioBuffer::new(ChannelLayout::Stereo, block).expect("an empty block is whole frames");
         taps.insert(tap);
