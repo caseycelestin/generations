@@ -19,9 +19,10 @@
 //! or capture thread may hold one of these: it has a mutex.
 //!
 //! The renderer sends back every sound it lets go of, and the control
-//! drops them here, on the control side: whenever the rings' lock is
-//! taken, so at the start of every send, and whenever
-//! [`collect`](Control::collect) is called. A sample's audio the
+//! drops them here, on the control side; a recorder it sends back is
+//! kept, by its recording, for its owner to take back. This happens
+//! whenever the rings' lock is taken, so at the start of every send, and
+//! whenever [`collect`](Control::collect) is called. A sample's audio the
 //! caller has already dropped is freed then. The ring cannot fill,
 //! because nothing reaches the renderer except through a send, and every
 //! send empties it first.
@@ -42,6 +43,7 @@
 pub(crate) mod input;
 pub(crate) mod sample_sound;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -52,8 +54,8 @@ use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
 use crate::memory::Ledger;
 use crate::project::sample::Sample;
-use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam};
-use crate::render::dsp::{InputReader, SampleReader};
+use crate::render::command::{Command, RecordingId, Released, SoundCommand, SoundId, SoundParam};
+use crate::render::dsp::{InputReader, Recorder, SampleReader};
 use input::{Input, InputFeed, InputLayout};
 
 /// Reasons the control side can refuse what it is asked: the ring is full,
@@ -110,15 +112,22 @@ struct Rings {
     /// The sending end of the command ring.
     commands: Producer<Command>,
     /// The receiving end of the ring the renderer sends back every sound
-    /// it lets go of on.
+    /// and recorder it lets go of on.
     released: Consumer<Released>,
+    /// Recorders the renderer has let go of, with their takes, by the
+    /// recording they made, until their owner takes them back.
+    recorders: HashMap<RecordingId, Recorder>,
 }
 
 impl Rings {
-    /// Drops every sound the renderer has let go of since the last
-    /// collect.
+    /// Takes everything the renderer has let go of since the last
+    /// collect: drops every sound, and keeps every recorder for its owner.
     fn collect(&mut self) {
-        while self.released.pop().is_ok() {}
+        while let Ok(released) = self.released.pop() {
+            if let Released::Recorder { id, recorder } = released {
+                self.recorders.insert(id, recorder);
+            }
+        }
     }
 }
 
@@ -133,7 +142,11 @@ impl Control {
         ledger: Ledger,
     ) -> Self {
         Self(Arc::new(Shared {
-            rings: Mutex::new(Rings { commands, released }),
+            rings: Mutex::new(Rings {
+                commands,
+                released,
+                recorders: HashMap::new(),
+            }),
             next_sound: AtomicU64::new(0),
             input_sounds: AtomicUsize::new(0),
             input_capacity,
@@ -179,7 +192,8 @@ impl Control {
     /// Frees, here on the control side, every sound the renderer has let
     /// go of since the last send or collect: the audio of a sample dropped
     /// while it played, once that sound has ended, and the rings of an
-    /// input removed. Every send does this first, so only an owner that
+    /// input removed. A recorder let go of, full or stopped, is kept
+    /// with its take for its owner instead. Every send does this first, so only an owner that
     /// can go quiet needs it: call it from a UI or event loop tick, or
     /// before a load that needs the budget back. Never on the audio
     /// thread: it is where the freeing happens.
@@ -349,6 +363,14 @@ impl Control {
                 .expect("room was checked under the lock");
         }
         Ok(())
+    }
+
+    /// The recorder of the recording `id`, with its take, once the
+    /// renderer has let it go: full or stopped. `None` while it is still
+    /// recording, or once it has been taken.
+    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side owner yet"))]
+    pub(crate) fn take_recorder(&self, id: RecordingId) -> Option<Recorder> {
+        self.lock().recorders.remove(&id)
     }
 
     /// The rings, with everything the renderer has let go of already
@@ -742,5 +764,20 @@ mod tests {
         assert_eq!(p.ledger().in_use(), ramp_bytes(100));
         control.stop_all().unwrap();
         assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn a_recorder_let_go_of_is_kept_for_its_owner_by_recording() {
+        let ledger = unlimited();
+        let (mut r, control) = Renderer::new(SETTINGS, ledger.clone());
+        let id = RecordingId(7);
+        let recorder = Recorder::new(&ledger, 1).unwrap();
+        control.send(Command::Record { id, recorder }).unwrap();
+        assert!(control.take_recorder(id).is_none(), "not sent back yet");
+
+        period(&mut r, 1);
+        let recorder = control.take_recorder(id).expect("full, so let go of");
+        assert_eq!(recorder.recorded(), &[0.0, 0.0]);
+        assert!(control.take_recorder(id).is_none(), "taken once");
     }
 }

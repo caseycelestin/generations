@@ -5,6 +5,9 @@
 //! for on the control side when the recorder is made, and appends each
 //! period's frames to it. A full recorder keeps nothing more; being full
 //! is not an error.
+//!
+//! One recorder makes many takes. Clearing it empties the block and keeps
+//! what was paid for, so starting another take allocates nothing.
 
 use crate::config::Pcm;
 use crate::memory::{Block, Ledger, OverBudgetError};
@@ -36,6 +39,13 @@ impl Recorder {
     /// Frames past the room are dropped.
     pub fn record(&mut self, frames: impl IntoIterator<Item = Frame>) {
         self.block.extend(frames.into_iter().flatten());
+    }
+
+    /// Forgets what it kept, so the next frames start a new take. The
+    /// room comes back; the block stays paid for.
+    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side owner yet"))]
+    pub fn clear(&mut self) {
+        self.block.truncate(0);
     }
 
     /// Whether it has no room for another frame.
@@ -79,6 +89,21 @@ mod tests {
         assert!(recorder.full());
         recorder.record([[0.7, 0.8]]);
         assert_eq!(recorder.recorded(), &[0.1, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn a_cleared_recorder_starts_a_new_take_and_keeps_its_payment() {
+        let ledger = Ledger::new(usize::MAX);
+        let mut recorder = Recorder::new(&ledger, 1).unwrap();
+        recorder.record([[0.1, 0.2]]);
+        assert!(recorder.full());
+        let paid = ledger.in_use();
+        recorder.clear();
+        assert!(recorder.recorded().is_empty());
+        assert!(!recorder.full());
+        recorder.record([[0.3, 0.4]]);
+        assert_eq!(recorder.recorded(), &[0.3, 0.4]);
+        assert_eq!(ledger.in_use(), paid);
     }
 
     #[test]

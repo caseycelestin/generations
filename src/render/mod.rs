@@ -279,15 +279,8 @@ impl Renderer {
         if let Some((_, recorder)) = &mut self.main_out_recorder {
             recorder.record(as_frames(out));
             if recorder.full() {
-                self.release_main_out_recorder();
+                release_recorder(&mut self.main_out_recorder, &mut self.released);
             }
-        }
-    }
-
-    /// Lets the main out recorder go, if one is held, with what it kept.
-    fn release_main_out_recorder(&mut self) {
-        if let Some((id, recorder)) = self.main_out_recorder.take() {
-            release(&mut self.released, Released::Recorder { id, recorder });
         }
     }
 
@@ -308,10 +301,18 @@ impl Renderer {
                     |s| BufferAddress::of(s.source().audio()) == addr,
                     |s| release(released, s),
                 ),
-                Command::Record { id, recorder } => {
-                    if let Some((id, recorder)) = self.main_out_recorder.replace((id, recorder)) {
-                        release(released, Released::Recorder { id, recorder });
+                Command::StopRecording(id) => {
+                    if self
+                        .main_out_recorder
+                        .as_ref()
+                        .is_some_and(|(held, _)| *held == id)
+                    {
+                        release_recorder(&mut self.main_out_recorder, released);
                     }
+                }
+                Command::Record { id, recorder } => {
+                    release_recorder(&mut self.main_out_recorder, released);
+                    self.main_out_recorder = Some((id, recorder));
                 }
             }
         }
@@ -368,6 +369,14 @@ fn apply<S>(
                 sound.set(param);
             }
         }
+    }
+}
+
+/// Lets the recorder in `held` go, if there is one, back to the control
+/// side with its id and what it kept.
+fn release_recorder(held: &mut Option<(RecordingId, Recorder)>, released: &mut Producer<Released>) {
+    if let Some((id, recorder)) = held.take() {
+        release(released, Released::Recorder { id, recorder });
     }
 }
 
@@ -726,5 +735,37 @@ mod tests {
         record(&mut p, 2, 8);
         r.render(&mut out);
         assert_eq!(released_take(&mut released), Some((1, vec![0.5, 0.5])));
+    }
+
+    fn stop_recording(p: &mut Producer<Command>, id: u64) {
+        p.push(Command::StopRecording(RecordingId(id))).unwrap();
+    }
+
+    #[test]
+    fn a_stopped_recording_comes_back_with_what_it_kept_so_far() {
+        let (mut p, mut released, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 8]));
+        record(&mut p, 1, 8);
+        let mut out = vec![0.0; 2];
+        r.render(&mut out);
+        stop_recording(&mut p, 1);
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), Some((1, vec![0.5, 0.5])));
+    }
+
+    #[test]
+    fn a_stop_for_another_recording_leaves_the_held_one_recording() {
+        let (mut p, mut released, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 8]));
+        record(&mut p, 2, 2);
+        stop_recording(&mut p, 1);
+        let mut out = vec![0.0; 2];
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), None);
+        r.render(&mut out);
+        assert_eq!(
+            released_take(&mut released),
+            Some((2, vec![0.5, 0.5, 0.5, 0.5]))
+        );
     }
 }

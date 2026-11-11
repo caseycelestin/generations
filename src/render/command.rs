@@ -53,6 +53,10 @@ pub enum Command {
     /// on, as the recording `id`. A recorder already held is let go of.
     #[cfg_attr(not(test), expect(dead_code, reason = "no control-side sender yet"))]
     Record { id: RecordingId, recorder: Recorder },
+    /// Let go of the recording `id` with what it has kept so far, if it
+    /// is still held. One that has already filled names nothing.
+    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side sender yet"))]
+    StopRecording(RecordingId),
 }
 
 impl From<SoundCommand<SampleReader>> for Command {
@@ -80,8 +84,8 @@ pub enum Released {
     Sample(Sound<SampleReader>),
     /// An input sound: finished, removed, or refused for want of room.
     Input(Sound<InputReader>),
-    /// The recorder of the recording `id`, with what it kept: full, or
-    /// replaced by another.
+    /// The recorder of the recording `id`, with what it kept: full,
+    /// stopped, or replaced by another.
     Recorder { id: RecordingId, recorder: Recorder },
 }
 
