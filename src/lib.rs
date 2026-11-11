@@ -135,7 +135,7 @@
 //! `examples/first_sound.rs` for the whole path, file to speaker;
 //! `docs/roadmap.md` for the plan and the decisions behind it.
 
-pub mod audio;
+pub(crate) mod audio;
 pub mod config;
 pub(crate) mod dsp;
 pub(crate) mod import;
@@ -150,7 +150,7 @@ pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioBuffer, AudioError};
+pub use audio::AudioError;
 pub use import::{ConvertError, DecodeError, ImportError};
 pub use input::{Channels, Input, InputFeed, InputSource};
 pub use loaded_sample::LoadedSample;
