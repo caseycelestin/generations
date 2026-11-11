@@ -1,4 +1,5 @@
-//! The engine's memory budget, and the only source of audio-length memory.
+//! The machine's memory budget for audio, and the only source of
+//! audio-length memory.
 //!
 //! [`Ledger`] holds one figure, the budget, and hands out [`Block`]s
 //! against it. A block is a fixed-capacity buffer of samples that was paid
@@ -7,8 +8,12 @@
 //! length, so every such byte is checked against the budget before it
 //! exists, and release cannot be forgotten or counted twice.
 //!
-//! Who may allocate is decided by who holds a `&Arc<Ledger>`. The control
-//! side does: decode, convert, storage reads, the engine.
+//! The caller makes the ledger, because the budget is the machine's to
+//! know, and hands it to whatever allocates: today the engine, which lends
+//! it to decode, convert and storage reads. One ledger per machine, shared
+//! by everything that holds audio in RAM, so the figure is one figure.
+//! Who may allocate is decided by who holds a `Ledger`. The control side
+//! does.
 //! The render side never does, and so cannot allocate even by mistake;
 //! what it works on arrives already allocated, by command. A block holds
 //! its own handle to the ledger it came from, but only to repay it: that
@@ -24,14 +29,19 @@ pub mod block;
 
 pub use block::Block;
 
-/// The engine's memory budget and how much of it is spoken for.
+/// The memory budget for audio and how much of it is spoken for.
 ///
-/// Shared by `Arc` between the engine, which lends it to whatever on the
-/// control side needs to allocate, and every block it has made, which
-/// repays into it on drop. One per engine.
+/// Made by the caller with the machine's figure. A handle: cloning it
+/// shares the one figure, so everything that allocates from it, the
+/// engine and whatever it lends it to, and every block it has made, which
+/// repays into it on drop, hold the same ledger. One per machine.
+#[derive(Debug, Clone)]
+pub struct Ledger(Arc<Shared>);
+
+/// What a ledger's clones share: the budget and the bytes in use.
 #[derive(Debug)]
-pub struct Ledger {
-    /// The bytes the engine was opened with.
+struct Shared {
+    /// The bytes the ledger was made with.
     budget: usize,
     /// Bytes held by live blocks. It protects nothing but itself, so
     /// relaxed ordering is enough.
@@ -40,15 +50,11 @@ pub struct Ledger {
 
 impl Ledger {
     /// A ledger of `budget` bytes, none of them in use.
-    ///
-    /// Returned already shared, because that is the only way it is ever
-    /// held: the engine keeps one handle and every block made from it
-    /// keeps another.
-    pub fn new(budget: usize) -> Arc<Self> {
-        Arc::new(Self {
+    pub fn new(budget: usize) -> Self {
+        Self(Arc::new(Shared {
             budget,
             in_use: AtomicUsize::new(0),
-        })
+        }))
     }
 
     /// A block with room for `samples` samples of `T`, paid for here.
@@ -60,42 +66,44 @@ impl Ledger {
     /// afforded.
     ///
     /// The block comes back empty, with exactly the capacity asked for.
-    pub fn alloc<T>(self: &Arc<Self>, samples: usize) -> Result<Block<T>, OverBudget> {
+    pub fn alloc<T>(&self, samples: usize) -> Result<Block<T>, OverBudget> {
+        let shared = &*self.0;
         let over = |requested, in_use| OverBudget {
             requested,
             in_use,
-            budget: self.budget,
+            budget: shared.budget,
         };
         let bytes = samples
             .checked_mul(size_of::<T>())
-            .ok_or_else(|| over(usize::MAX, self.in_use.load(Ordering::Relaxed)))?;
-        self.in_use
+            .ok_or_else(|| over(usize::MAX, shared.in_use.load(Ordering::Relaxed)))?;
+        shared
+            .in_use
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |in_use| {
                 in_use
                     .checked_add(bytes)
-                    .filter(|&total| total <= self.budget)
+                    .filter(|&total| total <= shared.budget)
             })
             .map_err(|in_use| over(bytes, in_use))?;
-        Ok(Block::new(Vec::with_capacity(samples), Arc::clone(self)))
+        Ok(Block::new(Vec::with_capacity(samples), self.clone()))
     }
 
     /// Bytes held by live blocks right now.
     #[cfg(test)] // read by nothing but tests until a panel asks
     pub fn in_use(&self) -> usize {
-        self.in_use.load(Ordering::Relaxed)
+        self.0.in_use.load(Ordering::Relaxed)
     }
 
     /// Gives `bytes` back. Called by a block as it drops; nothing else
     /// has a reason to.
     fn release(&self, bytes: usize) {
-        self.in_use.fetch_sub(bytes, Ordering::Relaxed);
+        self.0.in_use.fetch_sub(bytes, Ordering::Relaxed);
     }
 }
 
-/// The bytes asked for would put the engine's memory over its budget.
+/// The bytes asked for would put the audio in memory over its budget.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(
-    "{requested} bytes would put the engine's memory at {} of a {budget} byte budget",
+    "{requested} bytes would put audio memory at {} of a {budget} byte budget",
     in_use.saturating_add(*requested)
 )]
 pub struct OverBudget {
@@ -103,7 +111,7 @@ pub struct OverBudget {
     pub requested: usize,
     /// Bytes in use at the time.
     pub in_use: usize,
-    /// The budget the engine was opened with.
+    /// The budget the ledger was made with.
     pub budget: usize,
 }
 

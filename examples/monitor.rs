@@ -20,7 +20,7 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Channels, Engine};
+use generations::{Channels, Engine, Ledger};
 
 mod device;
 use device::{Capture, Device};
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     };
 
     let project = tempfile::tempdir()?;
-    let mut engine = Engine::open(project.path(), SAMPLE_RAM_BUDGET)?;
+    let mut engine = Engine::open(project.path(), Ledger::new(SAMPLE_RAM_BUDGET))?;
     let mut output = engine.output().ok_or("output already taken")?;
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.

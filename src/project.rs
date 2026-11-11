@@ -7,8 +7,6 @@
 
 use thiserror::Error;
 
-use std::sync::Arc;
-
 use crate::audio::AudioBuffer;
 use crate::memory::Ledger;
 use crate::storage::{Storage, StorageError};
@@ -101,11 +99,7 @@ impl Project {
     /// Crate-private because reading allocates the whole buffer against
     /// `ledger`; the engine holds that and is the one place a caller gets
     /// audio from.
-    pub(crate) fn audio(
-        &self,
-        id: SampleId,
-        ledger: &Arc<Ledger>,
-    ) -> Result<AudioBuffer, ProjectError> {
+    pub(crate) fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, ProjectError> {
         self.storage
             .audio(id, ledger)?
             .ok_or(ProjectError::UnknownSample(id))
@@ -146,7 +140,7 @@ pub(crate) mod tests {
         fn audio(
             &self,
             id: SampleId,
-            ledger: &Arc<Ledger>,
+            ledger: &Ledger,
         ) -> Result<Option<AudioBuffer>, StorageError> {
             let Some((_, channels, samples)) = self.find(id) else {
                 return Ok(None);

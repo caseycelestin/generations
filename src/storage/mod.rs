@@ -18,7 +18,6 @@ pub mod files;
 
 use std::error::Error;
 use std::path::Path;
-use std::sync::Arc;
 
 use thiserror::Error as ThisError;
 
@@ -41,7 +40,7 @@ pub enum StorageError {
     /// Stored audio is not in the engine's one fixed format.
     #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
     BadAudioFormat { id: SampleId, detail: String },
-    /// The sample's audio would put the engine's memory over its budget.
+    /// The sample's audio would put audio memory over its budget.
     /// Nothing was allocated.
     #[error("reading sample {}: {source}", .id.0)]
     OverBudget {
@@ -83,11 +82,7 @@ pub trait Storage {
     /// so a sample that does not fit is refused with nothing allocated.
     /// The caller holds the audio for as long as it wants the memory; the
     /// bytes go back when the buffer drops.
-    fn audio(
-        &self,
-        id: SampleId,
-        ledger: &Arc<Ledger>,
-    ) -> Result<Option<AudioBuffer>, StorageError>;
+    fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError>;
 
     /// Stores a sample with its audio and returns its new id.
     ///

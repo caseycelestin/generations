@@ -95,10 +95,11 @@
 //! - **`storage`** is a trait so the medium can change (a directory today,
 //!   perhaps a database later) without the rules moving. A storage always
 //!   holds a whole, valid project; opening one creates or validates it.
-//! - **`memory`** is the one memory budget. Decode, convert and the storage
-//!   read each allocate their block from it and are refused what does not
-//!   fit, so nothing that scales with audio exists uncounted. Audio never
-//!   leaves the engine for the same reason.
+//! - **`memory`** is the one memory budget, the [`Ledger`]. The caller
+//!   makes it with the machine's figure and hands it to the engine. Decode,
+//!   convert and the storage read each allocate their block from it and
+//!   are refused what does not fit, so nothing that scales with audio
+//!   exists uncounted. Audio never leaves the engine for the same reason.
 //! - **`import`** is the boundary between the world's audio and the
 //!   project's, in two steps. A decoder reads one file format into a plain
 //!   value (rate, channels, interleaved samples); `convert` resamples that
@@ -112,7 +113,8 @@
 //! # Opening a project, and hearing it
 //!
 //! ```text
-//! Engine::open(dir, budget)    the caller knows the machine's RAM; the engine does not
+//! Ledger::new(budget)          the caller knows the machine's RAM; the engine does not
+//! Engine::open(dir, ledger)
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!   └─ Project::new(storage)   plain constructor; nothing left to check
 //!
@@ -154,7 +156,7 @@ pub use engine::{Engine, EngineError};
 pub use import::{ConvertError, DecodeError, ImportError};
 pub use input::{Channels, Input, InputFeed, InputSource};
 pub use loaded_sample::LoadedSample;
-pub use memory::OverBudget;
+pub use memory::{Ledger, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use renderer::Renderer;
 pub use sound::Sound;

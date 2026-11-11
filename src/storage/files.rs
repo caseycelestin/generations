@@ -30,7 +30,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
@@ -231,7 +230,7 @@ impl FileStorage {
     /// Reads a sample's WAV into a block of exactly its sample count,
     /// allocated from `ledger` after the header is checked and before any
     /// audio is read.
-    fn read_wav(&self, id: SampleId, ledger: &Arc<Ledger>) -> Result<AudioBuffer, StorageError> {
+    fn read_wav(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
         let channels = reader.spec().channels;
@@ -293,11 +292,7 @@ impl Storage for FileStorage {
         }))
     }
 
-    fn audio(
-        &self,
-        id: SampleId,
-        ledger: &Arc<Ledger>,
-    ) -> Result<Option<AudioBuffer>, StorageError> {
+    fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
         }

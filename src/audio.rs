@@ -106,13 +106,12 @@ impl fmt::Debug for AudioBuffer {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::*;
     use crate::memory::Ledger;
 
     /// A block holding `data`, from a ledger that refuses nothing.
-    fn block(data: &[Pcm]) -> (Arc<Ledger>, Block<Pcm>) {
+    fn block(data: &[Pcm]) -> (Ledger, Block<Pcm>) {
         let ledger = Ledger::new(usize::MAX);
         let mut block = ledger.alloc(data.len()).unwrap();
         block.extend(data.iter().copied());

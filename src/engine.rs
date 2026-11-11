@@ -26,7 +26,6 @@
 //! output.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use rtrb::RingBuffer;
 use thiserror::Error;
@@ -75,7 +74,7 @@ pub struct Engine {
     project: Project,
     /// The memory budget; every buffer the engine holds in RAM is a block
     /// allocated from it, and repays it when dropped.
-    ledger: Arc<Ledger>,
+    ledger: Ledger,
     /// The control side's handle on the renderer: the sending end of the
     /// command ring and the sound id counter. Shared: every
     /// [`LoadedSample`] and [`Sound`] the engine hands out holds a clone
@@ -90,12 +89,15 @@ pub struct Engine {
 
 impl Engine {
     /// An engine on the project at `dir`, created there if none exists,
-    /// with `budget` bytes of RAM for everything it holds in memory.
+    /// allocating everything it holds in memory from `ledger`.
     ///
-    /// The budget is the caller's to know: it depends on the machine's RAM
-    /// and on what else runs there, and the engine never reads either.
-    /// Playback reads only loaded audio, so everything a pad can trigger
-    /// must fit under it. Loading past it is an error, not an eviction.
+    /// The ledger is the caller's to make, because its budget is the
+    /// machine's to know: it depends on the RAM and on what else runs
+    /// there, and the engine never reads either. One ledger is meant to
+    /// be shared by everything on the machine that holds audio in RAM, so
+    /// a second engine on the same machine takes the same one. Playback
+    /// reads only loaded audio, so everything a pad can trigger must fit
+    /// under the budget. Loading past it is an error, not an eviction.
     ///
     /// No audio device is involved: the engine works the same on a machine
     /// without one. To hear it, take [`Engine::output`] and drive it.
@@ -104,16 +106,16 @@ impl Engine {
     /// [`LoadedSample`] handles `load` returns, and the engine has no one
     /// to give them to. The project records nothing about what was loaded
     /// last time; what to load is the caller's to remember.
-    pub fn open(dir: &Path, budget: usize) -> Result<Self, EngineError> {
-        Self::on(Project::new(storage::open(dir)?), budget)
+    pub fn open(dir: &Path, ledger: Ledger) -> Result<Self, EngineError> {
+        Self::on(Project::new(storage::open(dir)?), ledger)
     }
 
-    /// An engine on an already open project with `budget` bytes of RAM.
-    pub(crate) fn on(project: Project, budget: usize) -> Result<Self, EngineError> {
+    /// An engine on an already open project, allocating from `ledger`.
+    pub(crate) fn on(project: Project, ledger: Ledger) -> Result<Self, EngineError> {
         let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
         Ok(Self {
             project,
-            ledger: Ledger::new(budget),
+            ledger,
             renderer: RendererHandle::new(producer),
             output: Some(Renderer::new(consumer)),
         })
@@ -262,7 +264,7 @@ mod tests {
     /// An engine on a memory project, and its output, which the test
     /// drives by hand.
     fn engine() -> (Engine, Renderer) {
-        let mut engine = Engine::on(memory_project(), usize::MAX).unwrap();
+        let mut engine = Engine::on(memory_project(), unlimited()).unwrap();
         let output = engine.output().unwrap();
         (engine, output)
     }
@@ -276,14 +278,14 @@ mod tests {
 
     #[test]
     fn output_is_taken_once() {
-        let mut e = Engine::on(memory_project(), usize::MAX).unwrap();
+        let mut e = Engine::on(memory_project(), unlimited()).unwrap();
         assert!(e.output().is_some());
         assert!(e.output().is_none());
     }
 
     #[test]
     fn commands_sent_before_the_output_is_taken_wait_for_it() {
-        let mut e = Engine::on(memory_project(), usize::MAX).unwrap();
+        let mut e = Engine::on(memory_project(), unlimited()).unwrap();
         let id = e.project.add_sample(None, &ramp(2)).unwrap();
         let loaded = e.load(id).unwrap();
         loaded.play().unwrap();
@@ -371,7 +373,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = wav(dir.path(), "d.wav", 48_000, &[0; 100]);
         // Room for the loaded ramp and nothing else.
-        let mut e = Engine::on(memory_project(), ramp_bytes(4)).unwrap();
+        let mut e = Engine::on(memory_project(), Ledger::new(ramp_bytes(4))).unwrap();
         let root = e.project.add_sample(None, &ramp(4)).unwrap();
         let _held = e.load(root).unwrap();
 
@@ -436,7 +438,7 @@ mod tests {
 
     #[test]
     fn load_over_budget_is_refused() {
-        let mut e = Engine::on(memory_project(), ramp_bytes(4)).unwrap();
+        let mut e = Engine::on(memory_project(), Ledger::new(ramp_bytes(4))).unwrap();
         let a = e.project.add_sample(None, &ramp(4)).unwrap();
         let b = e.project.add_sample(None, &ramp(4)).unwrap();
         let _held = e.load(a).unwrap();
@@ -723,12 +725,12 @@ mod tests {
     #[test]
     fn open_loads_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let mut e = Engine::open(dir.path(), usize::MAX).unwrap();
+        let mut e = Engine::open(dir.path(), unlimited()).unwrap();
         let id = e.project.add_sample(None, &ramp(4)).unwrap();
         let _held = e.load(id).unwrap();
         drop(e);
 
-        let e = Engine::open(dir.path(), usize::MAX).unwrap();
+        let e = Engine::open(dir.path(), unlimited()).unwrap();
         assert_eq!(e.ledger.in_use(), 0, "nothing is in RAM");
         assert_eq!(
             e.project().sample(id).unwrap().parent,

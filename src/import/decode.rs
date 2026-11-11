@@ -15,7 +15,6 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::Arc;
 
 use hound::{SampleFormat, WavReader};
 use thiserror::Error;
@@ -48,7 +47,7 @@ pub enum DecodeError {
     /// one, or a sample width it does not handle.
     #[error("{path}: {reason}")]
     Malformed { path: Box<Path>, reason: String },
-    /// The file's samples would put the engine's memory over its budget.
+    /// The file's samples would put audio memory over its budget.
     /// Nothing was allocated.
     #[error("{path}: {source}")]
     OverBudget {
@@ -66,7 +65,7 @@ pub enum DecodeError {
 /// so each lands on the same range, which is exact up to 24 bits.
 /// Anything else `hound` can open but we do not expect is reported as
 /// malformed rather than guessed at.
-pub fn decode(path: &Path, ledger: &Arc<Ledger>) -> Result<Decoded, DecodeError> {
+pub fn decode(path: &Path, ledger: &Ledger) -> Result<Decoded, DecodeError> {
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
     let width = check_width(path, spec)?;

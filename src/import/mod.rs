@@ -8,7 +8,6 @@
 //! engine sees neither step.
 
 use std::path::Path;
-use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -41,7 +40,7 @@ pub enum ImportError {
 /// already at the project rate. A file too large to pass through RAM
 /// beside what the ledger already holds is refused, at whichever of the
 /// two allocations does not fit.
-pub fn import(path: &Path, ledger: &Arc<Ledger>) -> Result<AudioBuffer, ImportError> {
+pub fn import(path: &Path, ledger: &Ledger) -> Result<AudioBuffer, ImportError> {
     let decoded = decode::decode(path, ledger)?;
     Ok(convert::convert(decoded, ledger)?)
 }
