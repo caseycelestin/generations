@@ -18,7 +18,7 @@
 //!
 //! [`Control::recorder`]: crate::Control::recorder
 
-use crate::audio::AudioBuffer;
+use crate::audio::Take;
 use crate::control::{Control, ControlError};
 use crate::render::command::{TakeId, Tap};
 
@@ -32,20 +32,20 @@ use crate::render::command::{TakeId, Tap};
 pub struct Recorder {
     control: Control,
     tap: Tap,
-    /// The buffer, while it is here: before the first take, and after
-    /// each with the take in it. `None` while the renderer has it.
-    audio: Option<AudioBuffer>,
+    /// The buffer, while it is here: empty before the first take, and
+    /// after each holding it. `None` while the renderer has it.
+    buffer: Option<Take>,
     /// The take running, while the renderer has the buffer.
     take: Option<TakeId>,
 }
 
 impl Recorder {
-    /// A recorder at `tap` recording into `audio`, no take running.
-    pub(crate) fn new(control: Control, tap: Tap, audio: AudioBuffer) -> Self {
+    /// A recorder at `tap` recording into `buffer`, no take running.
+    pub(crate) fn new(control: Control, tap: Tap, buffer: Take) -> Self {
         Self {
             control,
             tap,
-            audio: Some(audio),
+            buffer: Some(buffer),
             take: None,
         }
     }
@@ -58,14 +58,14 @@ impl Recorder {
         if self.is_recording() {
             return Err(ControlError::Recording);
         }
-        let audio = self.audio.take().expect("here when no take runs");
-        match self.control.start_recording(self.tap, audio) {
+        let buffer = self.buffer.take().expect("here when no take runs");
+        match self.control.start_recording(self.tap, buffer.into_audio()) {
             Ok(id) => {
                 self.take = Some(id);
                 Ok(())
             }
             Err((error, audio)) => {
-                self.audio = Some(audio);
+                self.buffer = Some(Take::new(audio));
                 Err(error)
             }
         }
@@ -91,9 +91,22 @@ impl Recorder {
         let Some(audio) = self.control.take_back(id) else {
             return true;
         };
-        self.audio = Some(audio);
+        self.buffer = Some(Take::new(audio));
         self.take = None;
         false
+    }
+
+    /// The last take, once it is back: `None` while a take is running,
+    /// before the first, or if the last kept no frames. Asking checks
+    /// whether it is back, as [`is_recording`](Self::is_recording) does.
+    /// It lasts until the next [`record`](Self::record), which records
+    /// over it; save it with
+    /// [`Project::save_take`](crate::Project::save_take) to keep it.
+    pub fn last_take(&mut self) -> Option<&Take> {
+        if self.is_recording() {
+            return None;
+        }
+        self.buffer.as_ref().filter(|t| t.audio().frames() > 0)
     }
 }
 
@@ -114,9 +127,12 @@ impl Drop for Recorder {
 mod tests {
     use std::mem::size_of;
 
+    use crate::audio::ChannelLayout;
     use crate::config::Pcm;
     use crate::memory::Ledger;
+    use crate::project::tests::memory_project;
     use crate::render::{Renderer, RendererSettings};
+    use crate::testing::audio;
     use crate::{ControlError, Tap};
 
     const SETTINGS: RendererSettings = RendererSettings::new(64);
@@ -140,7 +156,7 @@ mod tests {
         assert!(rec.is_recording());
         period(&mut r, 2);
         assert!(!rec.is_recording());
-        assert_eq!(rec.audio.as_ref().unwrap().samples(), &[0.0; 8]);
+        assert_eq!(rec.last_take().unwrap().audio().samples(), &[0.0; 8]);
     }
 
     #[test]
@@ -152,7 +168,7 @@ mod tests {
         rec.stop().unwrap();
         period(&mut r, 1);
         assert!(!rec.is_recording());
-        assert_eq!(rec.audio.as_ref().unwrap().samples(), &[0.0; 2]);
+        assert_eq!(rec.last_take().unwrap().audio().samples(), &[0.0; 2]);
     }
 
     #[test]
@@ -164,7 +180,7 @@ mod tests {
             rec.record().unwrap();
             period(&mut r, 1);
             assert!(!rec.is_recording());
-            assert_eq!(rec.audio.as_ref().unwrap().samples().len(), 2);
+            assert_eq!(rec.last_take().unwrap().audio().samples().len(), 2);
             assert_eq!(ledger.in_use(), bytes(1));
         }
     }
@@ -221,5 +237,52 @@ mod tests {
         let rec = control.recorder(Tap::MainOut, 4).unwrap();
         drop(rec);
         assert_eq!(ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn there_is_no_last_take_before_the_first_or_while_one_runs() {
+        let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
+        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
+        assert!(rec.last_take().is_none(), "before the first");
+        rec.record().unwrap();
+        assert!(rec.last_take().is_none(), "sent, not yet rendered");
+        period(&mut r, 1);
+        assert!(rec.last_take().is_none(), "still recording");
+        rec.stop().unwrap();
+        period(&mut r, 1);
+        assert_eq!(rec.last_take().unwrap().audio().frames(), 1);
+    }
+
+    #[test]
+    fn a_take_stopped_before_it_kept_a_frame_is_no_take() {
+        let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
+        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
+        rec.record().unwrap();
+        rec.stop().unwrap();
+        period(&mut r, 1);
+        assert!(!rec.is_recording());
+        assert!(rec.last_take().is_none());
+    }
+
+    #[test]
+    fn a_saved_take_loads_as_a_sample_of_what_was_heard() {
+        let mut project = memory_project();
+        let id = project
+            .add_sample(&audio(ChannelLayout::Mono, &[0.1, 0.2, 0.3]))
+            .unwrap();
+        let sample = project.load(id).unwrap();
+        let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
+        let mut rec = control.recorder(Tap::MainOut, 8).unwrap();
+        rec.record().unwrap();
+        control.play(&sample).unwrap();
+        period(&mut r, 2);
+        rec.stop().unwrap();
+        period(&mut r, 1);
+
+        let take = rec.last_take().expect("stopped, so back");
+        let saved = project.save_take(take).unwrap();
+        let loaded = project.load(saved).unwrap();
+        assert_eq!(loaded.audio().samples(), &[0.1, 0.1, 0.2, 0.2]);
+        assert_eq!(loaded.audio().layout(), ChannelLayout::Stereo);
     }
 }

@@ -22,7 +22,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::audio::AudioBuffer;
+use crate::audio::{AudioBuffer, Take};
 use crate::memory::Ledger;
 use crate::project::sample::Sample;
 use import::ImportError;
@@ -94,9 +94,8 @@ impl Project {
     /// referenced: the project holds its own copy. The new sample is not
     /// loaded; that is a separate decision, so an import lands on disk
     /// whether or not it fits in RAM. The add itself is
-    /// `add_sample`; a finished recording will make
-    /// the same call with its own buffer, and once in, the two are
-    /// indistinguishable.
+    /// `add_sample`; [`save_take`](Self::save_take) makes the same call
+    /// with a take, and once in, the two are indistinguishable.
     ///
     /// The import passes through the budget on its way to disk; a file
     /// too large to pass through RAM beside what is loaded is refused,
@@ -104,6 +103,14 @@ impl Project {
     pub fn import(&mut self, file: &Path) -> Result<SampleId, ProjectError> {
         let audio = import::import(file, &self.ledger)?;
         self.add_sample(&audio)
+    }
+
+    /// Saves `take` as a new sample and returns its id: the frames it
+    /// kept, not the room after them. The take is read where it is, in
+    /// its recorder's buffer, and nothing is copied into RAM. The new
+    /// sample is not loaded; [`load`](Self::load) it to play it.
+    pub fn save_take(&mut self, take: &Take) -> Result<SampleId, ProjectError> {
+        self.add_sample(take.audio())
     }
 
     /// Loads `id`: brings its audio into RAM and returns it as a

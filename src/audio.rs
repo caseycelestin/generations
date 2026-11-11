@@ -156,6 +156,34 @@ impl AudioBuffer {
     }
 }
 
+/// A finished take: what a [`Recorder`](crate::Recorder) kept, before
+/// it is saved.
+///
+/// It is the recorder's own buffer, so it lasts until the recorder
+/// records again, which records over it. Save it with
+/// [`Project::save_take`](crate::Project::save_take) to keep it: that
+/// makes it a sample, with an id, that can be loaded and played. The
+/// audio stays inside the crate, as a loaded sample's does.
+#[derive(Debug)]
+pub struct Take(AudioBuffer);
+
+impl Take {
+    /// The take held in `audio`.
+    pub(crate) fn new(audio: AudioBuffer) -> Self {
+        Self(audio)
+    }
+
+    /// The audio, to read.
+    pub(crate) fn audio(&self) -> &AudioBuffer {
+        &self.0
+    }
+
+    /// The buffer, to record into again.
+    pub(crate) fn into_audio(self) -> AudioBuffer {
+        self.0
+    }
+}
+
 impl fmt::Debug for AudioBuffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AudioBuffer")

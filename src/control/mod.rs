@@ -51,7 +51,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, ChannelLayout};
+use crate::audio::{AudioBuffer, ChannelLayout, Take};
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
 use crate::memory::{Ledger, OverBudgetError};
@@ -244,7 +244,7 @@ impl Control {
         let audio =
             AudioBuffer::new(ChannelLayout::Stereo, block).expect("an empty block is whole frames");
         taps.insert(tap);
-        Ok(Recorder::new(self.clone(), tap, audio))
+        Ok(Recorder::new(self.clone(), tap, Take::new(audio)))
     }
 
     /// Adds an input: the ability to put audio into the renderer. Mints a

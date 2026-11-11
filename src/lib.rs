@@ -163,7 +163,7 @@ pub(crate) mod render;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioError, ChannelLayout};
+pub use audio::{AudioError, ChannelLayout, Take};
 pub use control::input::{Input, InputFeed, InputLayout, InputSound};
 pub use control::recorder::Recorder;
 pub use control::sample_sound::SampleSound;
