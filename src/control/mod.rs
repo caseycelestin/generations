@@ -341,7 +341,7 @@ mod tests {
     /// that sample's id.
     fn project_with(n: usize) -> (Project, SampleId) {
         let mut p = memory_project();
-        let id = p.add_sample(None, &ramp(n)).unwrap();
+        let id = p.add_sample(&ramp(n)).unwrap();
         (p, id)
     }
 
@@ -606,8 +606,8 @@ mod tests {
     #[test]
     fn stop_cuts_the_sounds_playing_the_sample_and_no_other() {
         let mut p = memory_project();
-        let gone = p.add_sample(None, &ramp(100)).unwrap();
-        let kept = p.add_sample(None, &ramp(100)).unwrap();
+        let gone = p.add_sample(&ramp(100)).unwrap();
+        let kept = p.add_sample(&ramp(100)).unwrap();
         let gone = p.load(gone).unwrap();
         let kept = p.load(kept).unwrap();
         let (mut r, control) = Renderer::new(SETTINGS);

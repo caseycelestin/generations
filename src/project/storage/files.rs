@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! myproject/
-//!   project.json      the manifest: format version, id counter, lineage
+//!   project.json      the manifest: format version, id counter, samples
 //!   samples/
 //!     0.wav           one 48 kHz 32-bit float WAV per sample, named by id
 //!     1.wav
@@ -75,11 +75,23 @@ struct Manifest {
     samples: BTreeMap<u32, Entry>,
 }
 
-/// Everything stored about one sample except its audio and its id, which
-/// is the map key.
+/// A sample's [`SampleMetadata`] as the manifest writes it; its id is the
+/// map key.
+///
+/// Empty for now, as the metadata is: the map's keys record which samples
+/// exist. A new field goes in with `#[serde(default)]` so manifests
+/// written before it still open. Unknown keys are ignored, so manifests
+/// that carry the old `parent` or `loaded` fields open too.
 #[derive(Serialize, Deserialize)]
-struct Entry {
-    parent: Option<u32>,
+struct Entry {}
+
+impl From<&SampleMetadata> for Entry {
+    fn from(metadata: &SampleMetadata) -> Self {
+        // Destructured so a new metadata field does not compile until it
+        // is written here.
+        let SampleMetadata {} = metadata;
+        Entry {}
+    }
 }
 
 /// A project stored as a directory.
@@ -143,31 +155,17 @@ impl FileStorage {
     }
 
     /// Checks that what is stored is a whole project: the manifest reads,
-    /// every parent exists and was minted before its child, the counter is
-    /// past every id, and every sample's WAV is present with a header in
-    /// the crate's format.
+    /// the counter is past every id, and every sample's WAV is present
+    /// with a header in the crate's format.
     fn validate(&self) -> Result<(), StorageError> {
         let manifest = self.read_manifest()?;
-        let corrupt = |detail: String| StorageError::Corrupt(detail);
-        for (&id, entry) in &manifest.samples {
-            if let Some(parent) = entry.parent {
-                if parent >= id {
-                    return Err(corrupt(format!(
-                        "sample {id} has parent {parent}, which does not come before it"
-                    )));
-                }
-                if !manifest.samples.contains_key(&parent) {
-                    return Err(corrupt(format!(
-                        "sample {id} has parent {parent}, which does not exist"
-                    )));
-                }
-            }
+        for &id in manifest.samples.keys() {
             self.open_wav(SampleId(id))?;
         }
         if let Some(&max) = manifest.samples.keys().next_back()
             && manifest.next_id <= max
         {
-            return Err(corrupt(format!(
+            return Err(StorageError::Corrupt(format!(
                 "next id {} does not follow the largest sample id {max}",
                 manifest.next_id
             )));
@@ -281,17 +279,6 @@ impl Storage for FileStorage {
         Ok(self.read_manifest()?.samples.contains_key(&id.0))
     }
 
-    fn metadata(&self, id: SampleId) -> Result<Option<SampleMetadata>, StorageError> {
-        let manifest = self.read_manifest()?;
-        let Some(entry) = manifest.samples.get(&id.0) else {
-            return Ok(None);
-        };
-        Ok(Some(SampleMetadata {
-            id,
-            parent: entry.parent.map(SampleId),
-        }))
-    }
-
     fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
@@ -301,19 +288,14 @@ impl Storage for FileStorage {
 
     fn add_sample(
         &mut self,
-        parent: Option<SampleId>,
+        metadata: &SampleMetadata,
         audio: &AudioBuffer,
     ) -> Result<SampleId, StorageError> {
         let mut manifest = self.read_manifest()?;
         let id = SampleId(manifest.next_id);
         manifest.next_id += 1;
         self.write_wav(id, audio)?;
-        manifest.samples.insert(
-            id.0,
-            Entry {
-                parent: parent.map(|p| p.0),
-            },
-        );
+        manifest.samples.insert(id.0, metadata.into());
         self.write_manifest(&manifest)?;
         Ok(id)
     }
@@ -329,7 +311,7 @@ mod tests {
     fn a_read_is_paid_for_exactly_and_returned_on_drop() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(Stereo, 3)).unwrap();
+        let id = s.add_sample(&SampleMetadata {}, &ramp(Stereo, 3)).unwrap();
         let bytes = 6 * size_of::<Pcm>();
         let ledger = Ledger::new(bytes);
         let audio = s.audio(id, &ledger).unwrap().unwrap();
@@ -342,7 +324,7 @@ mod tests {
     fn over_budget_is_refused_with_nothing_allocated() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(Stereo, 3)).unwrap();
+        let id = s.add_sample(&SampleMetadata {}, &ramp(Stereo, 3)).unwrap();
         let bytes = 6 * size_of::<Pcm>();
         let ledger = Ledger::new(bytes - 1);
         assert!(matches!(
@@ -378,7 +360,7 @@ mod tests {
         let s = FileStorage::open(dir.path()).unwrap();
         assert!(dir.path().join(MANIFEST).exists());
         assert!(dir.path().join(SAMPLES_DIR).is_dir());
-        assert!(s.metadata(SampleId(0)).unwrap().is_none());
+        assert!(!s.has_sample(SampleId(0)).unwrap());
     }
 
     #[test]
@@ -405,33 +387,23 @@ mod tests {
     fn samples_and_audio_survive_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(Stereo, 16)).unwrap();
-        let rev = s.add_sample(Some(root), &ramp(Stereo, 8)).unwrap();
-        let back = s.add_sample(Some(rev), &ramp(Stereo, 16)).unwrap();
+        let a = s.add_sample(&SampleMetadata {}, &ramp(Stereo, 16)).unwrap();
+        let b = s.add_sample(&SampleMetadata {}, &ramp(Mono, 8)).unwrap();
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
-        assert_eq!(s.metadata(rev).unwrap().unwrap().parent, Some(root));
-        assert_eq!(s.metadata(back).unwrap().unwrap().parent, Some(rev));
         assert_same(
-            &s.audio(root, &unlimited()).unwrap().unwrap(),
+            &s.audio(a, &unlimited()).unwrap().unwrap(),
             &ramp(Stereo, 16),
         );
-        assert_same(
-            &s.audio(rev, &unlimited()).unwrap().unwrap(),
-            &ramp(Stereo, 8),
-        );
-        assert_same(
-            &s.audio(back, &unlimited()).unwrap().unwrap(),
-            &ramp(Stereo, 16),
-        );
+        assert_same(&s.audio(b, &unlimited()).unwrap().unwrap(), &ramp(Mono, 8));
     }
 
     #[test]
     fn unknown_id_is_none_for_sample_and_audio() {
         let dir = tempfile::tempdir().unwrap();
         let s = created(dir.path());
-        assert!(s.metadata(SampleId(9)).unwrap().is_none());
+        assert!(!s.has_sample(SampleId(9)).unwrap());
         assert!(s.audio(SampleId(9), &unlimited()).unwrap().is_none());
     }
 
@@ -439,11 +411,9 @@ mod tests {
     fn renamed_wav_is_an_error_for_the_audio_only() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
+        let id = s.add_sample(&SampleMetadata {}, &ramp(Mono, 4)).unwrap();
         fs::rename(s.wav_path(id), dir.path().join("samples/kick.wav")).unwrap();
-        // The record and existence come from the manifest; only the audio
-        // needs the file.
-        assert!(s.metadata(id).unwrap().is_some());
+        // Existence comes from the manifest; only the audio needs the file.
         assert!(matches!(
             s.audio(id, &unlimited()),
             Err(StorageError::Backend(_))
@@ -455,7 +425,7 @@ mod tests {
     fn wrong_sample_rate_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
+        let id = s.add_sample(&SampleMetadata {}, &ramp(Mono, 4)).unwrap();
         let spec = WavSpec {
             channels: 1,
             sample_rate: 44_100,
@@ -489,62 +459,36 @@ mod tests {
     fn open_accepts_a_whole_project() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(Stereo, 4)).unwrap();
-        s.add_sample(Some(root), &ramp(Mono, 4)).unwrap();
+        s.add_sample(&SampleMetadata {}, &ramp(Stereo, 4)).unwrap();
+        s.add_sample(&SampleMetadata {}, &ramp(Mono, 4)).unwrap();
         drop(s);
         reopen(dir.path()).unwrap();
     }
 
     #[test]
-    fn open_refuses_a_dangling_parent() {
+    fn a_manifest_with_old_fields_still_opens() {
+        // Manifests written while samples had a `parent` or a `loaded`
+        // flag carry them per entry. Nothing reads them now; they are
+        // ignored, not refused, so the format version does not move.
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(Mono, 1)).unwrap();
-        s.add_sample(Some(root), &ramp(Mono, 1)).unwrap();
-        // Forget the root but leave the child pointing at it.
-        let manifest = r#"{"version":1,"next_id":2,"samples":{"1":{"parent":0}}}"#;
-        fs::write(dir.path().join(MANIFEST), manifest).unwrap();
-        drop(s);
-        assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
-    }
-
-    #[test]
-    fn open_refuses_a_parent_minted_after_its_child() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        s.add_sample(None, &ramp(Mono, 1)).unwrap();
-        s.add_sample(None, &ramp(Mono, 1)).unwrap();
-        let manifest =
-            r#"{"version":1,"next_id":2,"samples":{"0":{"parent":1},"1":{"parent":null}}}"#;
-        fs::write(dir.path().join(MANIFEST), manifest).unwrap();
-        drop(s);
-        assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
-    }
-
-    #[test]
-    fn a_manifest_with_the_old_loaded_field_still_opens() {
-        // Manifests written while samples had a `loaded` flag carry it per
-        // entry. Nothing reads it now; it is ignored, not refused, so the
-        // format version does not move.
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        s.add_sample(None, &ramp(Mono, 1)).unwrap();
-        s.add_sample(None, &ramp(Mono, 1)).unwrap();
+        s.add_sample(&SampleMetadata {}, &ramp(Mono, 1)).unwrap();
+        s.add_sample(&SampleMetadata {}, &ramp(Mono, 1)).unwrap();
         let manifest = r#"{"version":1,"next_id":2,"samples":{"0":{"parent":null,"loaded":true},"1":{"parent":null}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
-        assert_eq!(s.metadata(SampleId(0)).unwrap().unwrap().parent, None);
-        assert_eq!(s.metadata(SampleId(1)).unwrap().unwrap().parent, None);
+        assert!(s.has_sample(SampleId(0)).unwrap());
+        assert!(s.has_sample(SampleId(1)).unwrap());
     }
 
     #[test]
     fn open_refuses_a_counter_that_is_behind() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        s.add_sample(None, &ramp(Mono, 1)).unwrap();
-        let manifest = r#"{"version":1,"next_id":0,"samples":{"0":{"parent":null}}}"#;
+        s.add_sample(&SampleMetadata {}, &ramp(Mono, 1)).unwrap();
+        let manifest = r#"{"version":1,"next_id":0,"samples":{"0":{}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
         assert!(matches!(reopen(dir.path()), Err(StorageError::Corrupt(_))));
@@ -554,7 +498,7 @@ mod tests {
     fn a_16_bit_wav_is_the_wrong_format() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
+        let id = s.add_sample(&SampleMetadata {}, &ramp(Mono, 4)).unwrap();
         let spec = WavSpec {
             channels: 1,
             sample_rate: SAMPLE_RATE,
@@ -574,7 +518,7 @@ mod tests {
     fn open_refuses_a_missing_or_wrong_format_wav() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
+        let id = s.add_sample(&SampleMetadata {}, &ramp(Mono, 4)).unwrap();
         let path = s.wav_path(id);
         fs::rename(&path, dir.path().join("samples/kick.wav")).unwrap();
         assert!(matches!(reopen(dir.path()), Err(StorageError::Backend(_))));
@@ -599,7 +543,7 @@ mod tests {
     fn no_temp_file_is_left_behind() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        s.add_sample(None, &ramp(Mono, 1)).unwrap();
+        s.add_sample(&SampleMetadata {}, &ramp(Mono, 1)).unwrap();
         assert!(!dir.path().join("project.json.tmp").exists());
     }
 }
