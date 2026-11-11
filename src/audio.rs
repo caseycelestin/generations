@@ -1,12 +1,17 @@
 //! Project audio over a `Block` from the memory ledger.
 //!
-//! An [`AudioBuffer`] is a block of [`Pcm`] samples with a channel count:
-//! immutable, interleaved, at the project's fixed rate, with no identity
-//! and no idea where it came from. The block is where the memory was paid
-//! for, so a buffer is never uncounted and cannot be copied without going
-//! back to the ledger for another block. The sample type is the one the
-//! render side mixes in, so a read is a slice and nothing converts.
+//! An [`AudioBuffer`] is a block of [`Pcm`] samples with a
+//! [`ChannelLayout`]: immutable, interleaved, at the project's fixed rate,
+//! with no identity and no idea where it came from. The block is where the
+//! memory was paid for, so a buffer is never uncounted and cannot be copied
+//! without going back to the ledger for another block. The sample type is
+//! the one the render side mixes in, so a read is a slice and nothing
+//! converts.
 //!
+//! Audio in this crate is mono or stereo, and [`ChannelLayout`] says
+//! which, for a buffer and for one source of an input alike. A raw channel
+//! count exists only where a file or a decoder hands one over, and becomes
+//! a layout there or is refused.
 
 use std::fmt;
 use std::ops::Range;
@@ -19,12 +24,54 @@ use crate::memory::Block;
 /// Reasons a buffer cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum AudioError {
-    /// `channels` was zero or above [`MAX_CHANNELS`].
+    /// A channel count was zero or above [`MAX_CHANNELS`]: no layout.
     #[error("channel count {0} is not in 1..={MAX_CHANNELS}")]
     BadChannelCount(u16),
     /// The sample count was not a whole number of frames.
     #[error("{samples} samples is not a whole number of {channels}-channel frames")]
     RaggedFrames { samples: usize, channels: u16 },
+}
+
+/// How many channels a frame holds and what they mean: one heard on both
+/// sides, or two heard left and right. Interleaved stereo is left then
+/// right everywhere, so a pair is always the two channels in that order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelLayout {
+    Mono,
+    Stereo,
+}
+
+impl ChannelLayout {
+    /// How many channels a frame of this layout holds.
+    pub fn count(self) -> usize {
+        match self {
+            ChannelLayout::Mono => 1,
+            ChannelLayout::Stereo => 2,
+        }
+    }
+}
+
+/// The layout of a raw channel count, as a file or decoder gives one.
+impl TryFrom<u16> for ChannelLayout {
+    type Error = AudioError;
+
+    fn try_from(channels: u16) -> Result<Self, AudioError> {
+        match channels {
+            1 => Ok(ChannelLayout::Mono),
+            2 => Ok(ChannelLayout::Stereo),
+            _ => Err(AudioError::BadChannelCount(channels)),
+        }
+    }
+}
+
+/// The raw channel count of a layout, as a file header wants one.
+impl From<ChannelLayout> for u16 {
+    fn from(layout: ChannelLayout) -> u16 {
+        match layout {
+            ChannelLayout::Mono => 1,
+            ChannelLayout::Stereo => 2,
+        }
+    }
 }
 
 /// Interleaved [`Pcm`] audio at the engine's fixed sample rate, in a block
@@ -35,41 +82,38 @@ pub enum AudioError {
 /// its block was full. Both stay as they are for the buffer's life: the
 /// audio never changes and the bytes return when the block drops.
 pub struct AudioBuffer {
-    channels: u16,
+    layout: ChannelLayout,
     data: Block<Pcm>,
 }
 
 impl AudioBuffer {
-    /// Wraps a block of interleaved samples, checking the channel count
-    /// and that the block holds whole frames.
+    /// Wraps a block of interleaved samples, checking that it holds whole
+    /// frames of `layout`.
     ///
     /// Refused audio hands the block back beside the error: nothing is
     /// freed here, so a caller that wants to try again with a different
-    /// channel count still holds the memory.
-    pub fn new(channels: u16, data: Block<Pcm>) -> Result<Self, (AudioError, Block<Pcm>)> {
-        if let Err(e) = check_channels(channels) {
-            return Err((e, data));
-        }
-        if !data.len().is_multiple_of(usize::from(channels)) {
+    /// layout still holds the memory.
+    pub fn new(layout: ChannelLayout, data: Block<Pcm>) -> Result<Self, (AudioError, Block<Pcm>)> {
+        if !data.len().is_multiple_of(layout.count()) {
             return Err((
                 AudioError::RaggedFrames {
                     samples: data.len(),
-                    channels,
+                    channels: layout.into(),
                 },
                 data,
             ));
         }
-        Ok(Self { channels, data })
+        Ok(Self { layout, data })
     }
 
-    /// Number of interleaved channels.
-    pub fn channels(&self) -> u16 {
-        self.channels
+    /// Mono or stereo.
+    pub fn layout(&self) -> ChannelLayout {
+        self.layout
     }
 
     /// Number of frames, where one frame holds one sample per channel.
     pub fn frames(&self) -> usize {
-        self.data.len() / usize::from(self.channels)
+        self.data.len() / self.layout.count()
     }
 
     /// The samples of frames `frames`, interleaved. This is how playback
@@ -77,7 +121,7 @@ impl AudioBuffer {
     ///
     /// Panics if the range runs past the end.
     pub fn frames_in(&self, frames: Range<usize>) -> &[Pcm] {
-        let c = usize::from(self.channels);
+        let c = self.layout.count();
         &self.data[frames.start * c..frames.end * c]
     }
 
@@ -87,18 +131,10 @@ impl AudioBuffer {
     }
 }
 
-/// Checks a channel count against what a buffer may hold.
-pub(crate) fn check_channels(channels: u16) -> Result<(), AudioError> {
-    if channels == 0 || channels > MAX_CHANNELS {
-        return Err(AudioError::BadChannelCount(channels));
-    }
-    Ok(())
-}
-
 impl fmt::Debug for AudioBuffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AudioBuffer")
-            .field("channels", &self.channels)
+            .field("layout", &self.layout)
             .field("frames", &self.frames())
             .finish_non_exhaustive()
     }
@@ -106,7 +142,7 @@ impl fmt::Debug for AudioBuffer {
 
 #[cfg(test)]
 mod tests {
-
+    use super::ChannelLayout::{Mono, Stereo};
     use super::*;
     use crate::memory::Ledger;
 
@@ -118,21 +154,21 @@ mod tests {
         (ledger, block)
     }
 
-    fn buffer(channels: u16, data: &[Pcm]) -> AudioBuffer {
-        AudioBuffer::new(channels, block(data).1).unwrap()
+    fn buffer(layout: ChannelLayout, data: &[Pcm]) -> AudioBuffer {
+        AudioBuffer::new(layout, block(data).1).unwrap()
     }
 
     #[test]
     fn frames_count_per_channel() {
-        let b = buffer(2, &[1.0, 2.0, 3.0, 4.0]);
+        let b = buffer(Stereo, &[1.0, 2.0, 3.0, 4.0]);
         assert_eq!(b.frames(), 2);
-        assert_eq!(b.channels(), 2);
+        assert_eq!(b.layout(), Stereo);
         assert_eq!(b.samples(), &[1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn frames_in_reads_a_range_of_frames() {
-        let b = buffer(2, &[0.0, 0.5, -0.5, 1.0, 0.0, 0.0]);
+        let b = buffer(Stereo, &[0.0, 0.5, -0.5, 1.0, 0.0, 0.0]);
         assert_eq!(b.frames_in(1..2), &[-0.5, 1.0]);
         assert_eq!(b.frames_in(0..3).len(), 6);
         assert_eq!(b.frames_in(3..3).len(), 0);
@@ -143,7 +179,7 @@ mod tests {
         let ledger = Ledger::new(usize::MAX);
         let mut block: Block<Pcm> = ledger.alloc(10).unwrap();
         block.extend([1.0, 2.0, 3.0, 4.0]);
-        let b = AudioBuffer::new(1, block).unwrap();
+        let b = AudioBuffer::new(Mono, block).unwrap();
         assert_eq!(b.frames(), 4);
         assert_eq!(ledger.in_use(), 10 * size_of::<Pcm>());
         drop(b);
@@ -151,19 +187,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_channel_counts_and_keeps_the_block() {
-        let (ledger, block) = block(&[]);
-        let (err, block) = AudioBuffer::new(0, block).unwrap_err();
-        assert_eq!(err, AudioError::BadChannelCount(0));
-        let (err, _block) = AudioBuffer::new(3, block).unwrap_err();
-        assert_eq!(err, AudioError::BadChannelCount(3));
-        assert_eq!(ledger.in_use(), 0);
+    fn a_channel_count_is_a_layout_or_refused() {
+        assert_eq!(ChannelLayout::try_from(1), Ok(Mono));
+        assert_eq!(ChannelLayout::try_from(2), Ok(Stereo));
+        assert_eq!(
+            ChannelLayout::try_from(0),
+            Err(AudioError::BadChannelCount(0))
+        );
+        assert_eq!(
+            ChannelLayout::try_from(3),
+            Err(AudioError::BadChannelCount(3))
+        );
+        assert_eq!(u16::from(Stereo), 2);
     }
 
     #[test]
     fn rejects_ragged_frames_and_keeps_the_block() {
         let (ledger, block) = block(&[0.0, 0.0, 0.0]);
-        let (err, block) = AudioBuffer::new(2, block).unwrap_err();
+        let (err, block) = AudioBuffer::new(Stereo, block).unwrap_err();
         assert_eq!(
             err,
             AudioError::RaggedFrames {
@@ -178,10 +219,10 @@ mod tests {
 
     #[test]
     fn debug_shows_shape_not_samples() {
-        let b = buffer(2, &[1.0, 2.0, 3.0, 4.0]);
+        let b = buffer(Stereo, &[1.0, 2.0, 3.0, 4.0]);
         assert_eq!(
             format!("{b:?}"),
-            "AudioBuffer { channels: 2, frames: 2, .. }"
+            "AudioBuffer { layout: Stereo, frames: 2, .. }"
         );
     }
 }

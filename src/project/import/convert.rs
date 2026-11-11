@@ -14,10 +14,9 @@ use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError};
 use thiserror::Error;
 
-use crate::audio::AudioBuffer;
-use crate::audio::{AudioError, check_channels};
+use crate::audio::{AudioBuffer, AudioError, ChannelLayout};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::memory::{Block, Ledger, OverBudget};
+use crate::memory::{Block, Ledger, OverBudgetError};
 use crate::project::import::decode::DecodedAudio;
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
@@ -36,7 +35,7 @@ pub enum ConvertError {
     /// The resampled clip would put audio memory over its budget.
     /// Nothing was allocated.
     #[error(transparent)]
-    OverBudget(#[from] OverBudget),
+    OverBudget(#[from] OverBudgetError),
     /// The resampler failed on the audio itself.
     #[error(transparent)]
     Resample(#[from] ResampleError),
@@ -59,10 +58,11 @@ pub enum ConvertError {
 /// new rate plus its own delay and one chunk, and is truncated to what
 /// came out; the capacity stays paid for while the buffer lives.
 pub fn convert(decoded: DecodedAudio, ledger: &Ledger) -> Result<AudioBuffer, ConvertError> {
-    let (channels, frames) = check_shape(&decoded)?;
+    let (layout, frames) = check_shape(&decoded)?;
     if decoded.rate == SAMPLE_RATE {
-        return AudioBuffer::new(decoded.channels, decoded.samples).map_err(|(e, _)| e.into());
+        return AudioBuffer::new(layout, decoded.samples).map_err(|(e, _)| e.into());
     }
+    let channels = layout.count();
     let mut resampler = resampler(decoded.rate, channels)?;
     let out_frames = resampler.process_all_needed_output_len(frames);
     // Saturates rather than refuses: the ledger turns a count it cannot
@@ -79,17 +79,17 @@ pub fn convert(decoded: DecodedAudio, ledger: &Ledger) -> Result<AudioBuffer, Co
         produced
     };
     out.truncate(produced * channels);
-    AudioBuffer::new(decoded.channels, out).map_err(|(e, _)| e.into())
+    AudioBuffer::new(layout, out).map_err(|(e, _)| e.into())
 }
 
-/// Refuses audio no [`AudioBuffer`] could hold, and returns its channel
-/// count and frame count. Checked before anything is allocated, so a bad
+/// Refuses audio no [`AudioBuffer`] could hold, and returns its layout
+/// and frame count. Checked before anything is allocated, so a bad
 /// shape costs nothing and the error names the real problem rather than
 /// a buffer-size mismatch inside the resampler. A bad rate is the
 /// resampler's to refuse.
-fn check_shape(decoded: &DecodedAudio) -> Result<(usize, usize), ConvertError> {
-    check_channels(decoded.channels)?;
-    let channels = usize::from(decoded.channels);
+fn check_shape(decoded: &DecodedAudio) -> Result<(ChannelLayout, usize), ConvertError> {
+    let layout = ChannelLayout::try_from(decoded.channels)?;
+    let channels = layout.count();
     if !decoded.samples.len().is_multiple_of(channels) {
         return Err(AudioError::RaggedFrames {
             samples: decoded.samples.len(),
@@ -97,7 +97,7 @@ fn check_shape(decoded: &DecodedAudio) -> Result<(usize, usize), ConvertError> {
         }
         .into());
     }
-    Ok((channels, decoded.samples.len() / channels))
+    Ok((layout, decoded.samples.len() / channels))
 }
 
 /// A resampler from `rate` to [`SAMPLE_RATE`] for `channels` channels:
@@ -165,7 +165,7 @@ mod tests {
         let before = d.samples.as_ptr();
         let in_use = ledger.in_use();
         let b = super::convert(d, &ledger).unwrap();
-        assert_eq!(b.channels(), 2);
+        assert_eq!(b.layout(), ChannelLayout::Stereo);
         assert_eq!(b.frames(), 2);
         assert_eq!(b.samples(), &[0.5, -0.5, 0.25, -0.25]);
         assert_eq!(b.samples().as_ptr(), before);
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn other_rate_is_resampled_to_the_engine_rate() {
         let b = convert(at(44_100, 1, &sine(44_100, 440.0, 1.0))).unwrap();
-        assert_eq!(b.channels(), 1);
+        assert_eq!(b.layout(), ChannelLayout::Mono);
         // One second in, one second out, within a frame or two of rounding.
         assert!(
             (b.frames() as i64 - SAMPLE_RATE as i64).abs() <= 2,
@@ -244,7 +244,7 @@ mod tests {
         let left = sine(96_000, 100.0, 0.5);
         let interleaved: Vec<Pcm> = left.iter().flat_map(|&l| [l, 0.0]).collect();
         let b = convert(at(96_000, 2, &interleaved)).unwrap();
-        assert_eq!(b.channels(), 2);
+        assert_eq!(b.layout(), ChannelLayout::Stereo);
         assert!((b.frames() as i64 - 24_000).abs() <= 2, "{}", b.frames());
         let out = b.samples();
         let right: Vec<Pcm> = out.iter().skip(1).step_by(2).copied().collect();
@@ -257,6 +257,6 @@ mod tests {
     fn resampling_an_empty_clip_is_empty() {
         let b = convert(at(44_100, 2, &[])).unwrap();
         assert_eq!(b.frames(), 0);
-        assert_eq!(b.channels(), 2);
+        assert_eq!(b.layout(), ChannelLayout::Stereo);
     }
 }

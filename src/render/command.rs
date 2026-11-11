@@ -4,74 +4,104 @@
 //! audio thread on the ring and be applied there at the next period. The
 //! renderer defines what it will accept; its handle builds and sends them.
 //!
-//! The renderer holds one mixer per kind of source, and a command is for
-//! exactly one of them, so the enum says which first and what second: a
-//! [`SampleCommand`] goes to the sample mixer, an [`InputCommand`] to the
-//! input mixer. A [`SoundId`] names one sound in one mixer or the other,
-//! a sample playing or one source of an input, never both, so a command
-//! meant for one side cannot land on the other.
+//! Commands are low level: operations on what the renderer holds, never
+//! intents. Add a source, remove it, set one of its parameters. What an
+//! operation means to a user (monitoring an input, muting a pad, a level)
+//! is the control side's, on its handles, which turn it into these. The
+//! audio thread applies values and decides nothing, so a new feature on a
+//! handle is rarely a new command here.
+//!
+//! The renderer holds samples and inputs apart, so the operations every
+//! sound has, [`SoundCommand`], say which kind first. A [`SoundId`] names
+//! one sound of one kind, so a command meant for one cannot land on the
+//! other. The rest are the few operations that need what only the render
+//! side knows, which sounds are still playing and what they play, and are
+//! for samples alone.
+//!
+//! The two sides name things to each other with the two ids here: a sound
+//! by its [`SoundId`], a buffer by its [`BufferAddress`].
 
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::render::dsp::{BufferAddress, InputReader, SoundId};
+use crate::render::dsp::{InputReader, SampleReader};
 
-/// What the handle can ask of the renderer: a command for one of its
-/// mixers.
+/// What the handle can ask of the renderer.
 ///
-/// An `Add` carries a whole `InputReader`, which is wide; every command
-/// is a slot of that size on a ring allocated once at open, so the size
-/// is paid there and nowhere else.
+/// An input `Add` carries a whole `InputReader`, which is wide; every
+/// command is a slot of that size on a ring allocated once at `new`, so
+/// the size is paid there and nothing else.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
-    /// For the sample mixer.
-    Sample(SampleCommand),
-    /// For the input mixer.
-    Input(InputCommand),
+    /// An operation on one sample sound.
+    Sample(SoundCommand<SampleReader>),
+    /// An operation on one input sound.
+    Input(SoundCommand<InputReader>),
+    /// Remove every sample sound. Inputs are left alone.
+    StopAllSamples,
+    /// Remove every sample sound playing the buffer at the address, so
+    /// the control side can let go of the last reference to it.
+    Evict(BufferAddress),
 }
 
-impl From<SampleCommand> for Command {
-    fn from(command: SampleCommand) -> Self {
+impl From<SoundCommand<SampleReader>> for Command {
+    fn from(command: SoundCommand<SampleReader>) -> Self {
         Self::Sample(command)
     }
 }
 
-impl From<InputCommand> for Command {
-    fn from(command: InputCommand) -> Self {
+impl From<SoundCommand<InputReader>> for Command {
+    fn from(command: SoundCommand<InputReader>) -> Self {
         Self::Input(command)
     }
 }
 
-/// What can be asked of the sample mixer.
+/// What every sound has done to it, whatever its source `S`.
 #[derive(Debug)]
-pub enum SampleCommand {
-    /// Start `audio` from its first frame as the sound `id`.
-    Play {
-        id: SoundId,
-        audio: Arc<AudioBuffer>,
-    },
-    /// Stop the sample `id` if it is still playing.
-    Stop(SoundId),
-    /// Stop every sample.
-    StopAll,
-    /// Stop every sound playing the buffer at `addr`, so the control side
-    /// can let go of the last reference to it.
-    Evict(BufferAddress),
+pub enum SoundCommand<S> {
+    /// Hold `source` as the sound `id`, heard from the start at `gain`,
+    /// a linear level. The source is built on the control side and ready
+    /// to run; this is its only crossing.
+    Add { id: SoundId, source: S, gain: f32 },
+    /// Let go of the sound `id`, if it is still held.
+    Remove(SoundId),
+    /// Change one parameter of the sound `id`, if it is still held.
+    Set { id: SoundId, param: SoundParam },
 }
 
-/// What can be asked of the input mixer.
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum InputCommand {
-    /// Add one source of an input, the sound `id`, whose ring `reader` is
-    /// the render side of, not yet heard. The ring was made for this source
-    /// and this is its reading end's only crossing.
-    Add { id: SoundId, reader: InputReader },
-    /// Remove the input sound `id`, dropping its reader.
-    Remove(SoundId),
-    /// Hear the input sound `id` through the output.
-    Monitor(SoundId),
-    /// Stop hearing the input sound `id`; it stays an input.
-    Unmonitor(SoundId),
+/// A parameter of a sound, with the value to move it to. The renderer
+/// moves to it smoothly, so a change never clicks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SoundParam {
+    /// Level as a linear factor: 0 is silent, 1 is as the source gives it.
+    Gain(f32),
+}
+
+/// Identity of one sound: one instance of something heard, a sample
+/// played once or one sound of an input. Minted by the control side, in order,
+/// so the lowest id among the sounds is the oldest.
+///
+/// Never reused, so a stop that arrives after its sound was stolen or
+/// finished names nothing and does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SoundId(pub u64);
+
+/// Where a resident buffer lives, as a number.
+///
+/// The render side never learns a sample id, and a raw pointer cannot
+/// cross to another thread, so a buffer is named to the renderer by its
+/// address. Two live `Arc<AudioBuffer>`s never share one, and the
+/// eviction is sent while the control side still holds the buffer, so
+/// the address is still that buffer's when the command is applied: any
+/// later buffer at the same address is started by a play that is behind
+/// it on the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BufferAddress(usize);
+
+impl BufferAddress {
+    /// The address of the buffer `audio` points at.
+    pub fn of(audio: &Arc<AudioBuffer>) -> Self {
+        Self(Arc::as_ptr(audio) as usize)
+    }
 }

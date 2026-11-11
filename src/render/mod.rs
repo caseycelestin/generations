@@ -3,12 +3,13 @@
 //!
 //! ```text
 //! control side                          render side
-//! (the handle)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
-//!                                         Mixer        the sources heard: start, stop, steal, add all
-//!                                           Playhead     a loaded sample, first frame to last
-//!                                           InputReader  one source's ring, a period at a time
-//!               ── a ring per source ─▶                 fed from the capture callback
-//!                                         math         stereo, add, hard_clip: the arithmetic they share
+//! (Control)     ── Command ring ──▶     Renderer       the wiring: commands in, a period out
+//!                                         Sounds       the places sounds are held, samples and inputs apart
+//!                                           Sound      a source and its gain
+//!                                             SampleReader  a loaded sample, first frame to last
+//!                                             InputReader   one input sound's ring, a period at a time
+//!               ── a ring per input sound ─▶              fed from the capture callback
+//!                                         math         add, hard_clip: the period summed and clipped
 //! ```
 //!
 //! The pieces come from [`dsp`](crate::render::dsp) and are generic; this
@@ -16,26 +17,27 @@
 //! order, and what the control side may ask of them. It defines the
 //! [`Command`]s it accepts and its handle builds them. Nothing here
 //! knows what a project, a device or resident audio is: audio arrives
-//! inside a command as an `Arc<AudioBuffer>`, and a playhead holds its
-//! clone until it finishes or is told to let go; each source of an input
+//! inside a command as an `Arc<AudioBuffer>`, and a sample reader holds its
+//! clone until it finishes or is told to let go; each sound of an input
 //! arrives as the reading end of its own ring the same way. The control
-//! side names a buffer
-//! to this side by its address, never by what it is.
+//! side names a sound to this side by its [`SoundId`](command::SoundId)
+//! and a buffer by its [`BufferAddress`], never by what it is.
 //!
 //! The [`Renderer`] is real-time safe, not real-time only. Each call to
-//! `render` is given a stereo `f32` slice; the renderer applies the
-//! commands that have arrived, then zeroes the slice, runs the path over
-//! it, and returns. Nothing in here allocates, locks, blocks, fails or
+//! `render` is given a stereo slice; the renderer applies the commands
+//! that have arrived, then zeroes the slice, adds every sound into it,
+//! clips it, and returns. Nothing in here allocates, locks, blocks, fails or
 //! reads a clock, so an audio device can call it from its callback with
 //! a hard deadline, and a bounce can call it in a loop as fast as the
 //! CPU goes and get the same frames.
 //!
 //! The renderer is the wiring: it owns every piece of state the path
-//! needs, says which functions run over it and in what order, and maps
-//! each command onto the mixer it is for. See the `dsp` module doc for
-//! the pieces and the convention they share. Today the path is: the
-//! samples heard add into the period, then the inputs heard, then a hard
-//! clip.
+//! needs, says what runs over it and in what order, and applies each
+//! command to the sounds it is for. What to do when the places are full
+//! is decided here too: a sample cuts the oldest, an input is refused.
+//! See the `dsp` module doc for the pieces. Today the path is: every
+//! sample sound adds into the period, then every input sound, then a
+//! hard clip.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
 //! end; its [`Control`] owns the producing end, and the two are
@@ -44,16 +46,91 @@
 
 pub mod command;
 pub(crate) mod dsp;
+pub(crate) mod sound;
+pub(crate) mod sounds;
 
 use rtrb::{Consumer, RingBuffer};
 
-use crate::config::{COMMAND_CAPACITY, MAX_INPUT_SOUNDS, MAX_SAMPLE_SOUNDS};
+use crate::config::{MAX_PERIOD_FRAMES, Pcm};
 use crate::control::Control;
+use crate::render::dsp::math::{add, hard_clip};
+use crate::render::dsp::{Gain, InputReader, SampleReader, Source};
 #[cfg(test)]
-use crate::render::dsp::SoundId;
-use crate::render::dsp::math::hard_clip;
-use crate::render::dsp::{InputReader, Mixer, Playhead, WhenFull};
-use command::{Command, InputCommand, SampleCommand};
+use command::SoundId;
+use command::{BufferAddress, Command, SoundCommand};
+use sound::Sound;
+use sounds::Sounds;
+
+/// How a renderer is sized, chosen per device: a laptop, a tablet and a
+/// CM4 each want their own period and polyphony. The period is the one
+/// thing every device must say, so [`RendererSettings::new`] takes it and
+/// defaults the rest; a caller names only what else it changes:
+///
+/// ```
+/// # use generations::{Renderer, RendererSettings};
+/// let (renderer, control) = Renderer::new(RendererSettings {
+///     sample_sounds: 24,
+///     ..RendererSettings::new(256)
+/// });
+/// ```
+///
+/// Each count is bounded by the matching `Renderer::MAX_*`, so any
+/// settings stay inside a worst case that has been thought about. All of
+/// it is allocated once, in [`Renderer::new`], on the control side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RendererSettings {
+    /// The most frames one call to [`Renderer::render`] is given: the
+    /// output device's period, or the largest piece a caller renders at
+    /// once. 1 to `MAX_PERIOD_FRAMES`, and no default: it is a fact of the
+    /// device, and what the render side sizes its buffers from.
+    pub period: usize,
+    /// How many commands the handle can send before the renderer has had
+    /// a period to take them. 1 to [`Renderer::MAX_COMMAND_CAPACITY`],
+    /// which is the default.
+    pub command_capacity: usize,
+    /// Sample sounds held at once. When every place is taken, a play
+    /// cuts the oldest. 1 to
+    /// [`Renderer::MAX_SAMPLE_SOUNDS`], which is the default.
+    pub sample_sounds: usize,
+    /// Input sounds held at once across every input, one per mono or
+    /// stereo entry of its layout. An input that would not fit is
+    /// refused. 1 to [`Renderer::MAX_INPUT_SOUNDS`], which is the default.
+    pub input_sounds: usize,
+}
+
+impl RendererSettings {
+    /// Settings for renders of up to `period` frames, with every other
+    /// field at its maximum.
+    pub const fn new(period: usize) -> Self {
+        Self {
+            period,
+            command_capacity: Renderer::MAX_COMMAND_CAPACITY,
+            sample_sounds: Renderer::MAX_SAMPLE_SOUNDS,
+            input_sounds: Renderer::MAX_INPUT_SOUNDS,
+        }
+    }
+
+    /// Checks each field against its bound. A debug check: settings are
+    /// written by the caller for a device, not taken from a user.
+    fn debug_check(&self) {
+        debug_assert!(
+            (1..=MAX_PERIOD_FRAMES).contains(&self.period),
+            "an output period is 1 to MAX_PERIOD_FRAMES frames"
+        );
+        debug_assert!(
+            (1..=Renderer::MAX_COMMAND_CAPACITY).contains(&self.command_capacity),
+            "a command capacity is 1 to MAX_COMMAND_CAPACITY"
+        );
+        debug_assert!(
+            (1..=Renderer::MAX_SAMPLE_SOUNDS).contains(&self.sample_sounds),
+            "sample sounds are 1 to MAX_SAMPLE_SOUNDS"
+        );
+        debug_assert!(
+            (1..=Renderer::MAX_INPUT_SOUNDS).contains(&self.input_sounds),
+            "input sounds are 1 to MAX_INPUT_SOUNDS"
+        );
+    }
+}
 
 /// The render side: turns commands and resident audio into periods of
 /// output.
@@ -64,91 +141,114 @@ use command::{Command, InputCommand, SampleCommand};
 ///
 /// **Drop whatever drives this before dropping the loaded samples it
 /// plays.** A sound still playing holds a reference to its audio; if the
-/// `LoadedSample` goes first, that reference is the last one and the
+/// `Sample` goes first, that reference is the last one and the
 /// buffer is freed on the audio thread when the sound ends.
 #[derive(Debug)]
 pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
-    /// The sounds playing.
-    samples: Mixer<Playhead, MAX_SAMPLE_SOUNDS>,
-    /// The input sounds, one per mono or stereo source of every input,
-    /// heard or not.
-    inputs: Mixer<InputReader, MAX_INPUT_SOUNDS>,
+    /// The most frames one call to `render` is given: the output period.
+    period: usize,
+    /// The samples playing, up to the settings' `sample_sounds`.
+    samples: Sounds<Sound<SampleReader>>,
+    /// The input sounds, one per mono or stereo entry of every input, up
+    /// to the settings' `input_sounds`.
+    inputs: Sounds<Sound<InputReader>>,
 }
 
 impl Renderer {
+    /// Channels in every frame the pipeline makes, from the sources through
+    /// to the slice `render` fills: always stereo. A mono source is heard on
+    /// both; effects, when they come, can count on two.
+    pub const CHANNELS: usize = 2;
+
+    /// The most sample sounds any settings may ask for, and the default.
+    /// A fixed count bounds the work in one audio callback; the cost per
+    /// sound grows as playback gains pitch and processing, so a slower
+    /// device asks for fewer.
+    pub const MAX_SAMPLE_SOUNDS: usize = 64;
+
+    /// The most input sounds any settings may ask for, and the default.
+    /// Unlike samples, an input sound is never cut: `Control::input`
+    /// refuses an input whose sounds would not all fit until one is
+    /// removed.
+    pub const MAX_INPUT_SOUNDS: usize = 8;
+
+    /// The largest command ring any settings may ask for, and the default.
+    /// A press that finds the ring full is dropped, which is the right
+    /// failure for a real-time system; with periods in the hundreds per
+    /// second and presses in the tens, it does not happen by hand.
+    pub const MAX_COMMAND_CAPACITY: usize = 64;
+
     /// A silent renderer and the handle that commands it, as a pair, the
     /// way a channel comes as two ends. The renderer goes to the audio
     /// thread; the handle stays on the control side and is where every
     /// sound starts. Commands sent before the renderer is driven are not
     /// lost: they wait in the ring and apply on the first render. No audio
     /// device is involved: a machine without one drives it in a loop.
-    pub fn new() -> (Renderer, Control) {
-        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
-        (Self::on(consumer), Control::new(producer))
+    ///
+    /// Sized by `settings`: the period, the command ring and the places
+    /// sounds are held in, all allocated here.
+    pub fn new(settings: RendererSettings) -> (Renderer, Control) {
+        let (producer, consumer) = RingBuffer::new(settings.command_capacity);
+        (
+            Self::on(consumer, settings),
+            Control::new(producer, settings.input_sounds),
+        )
     }
 
-    /// A silent renderer that takes its commands from `commands`.
-    pub(crate) fn on(commands: Consumer<Command>) -> Self {
+    /// A silent renderer sized by `settings` that takes its commands from
+    /// `commands`; the ring's capacity is the caller's.
+    pub(crate) fn on(commands: Consumer<Command>, settings: RendererSettings) -> Self {
+        settings.debug_check();
         Self {
             commands,
-            // A pad press always sounds, even if it cuts the oldest; an
-            // input already heard is never cut by another being added. The
-            // handle refuses first; this is the backstop.
-            samples: Mixer::empty(WhenFull::StealOldest),
-            inputs: Mixer::empty(WhenFull::Reject),
+            period: settings.period,
+            samples: Sounds::new(settings.sample_sounds),
+            inputs: Sounds::new(settings.input_sounds),
         }
     }
 
-    /// Renders one period into `out`, an interleaved stereo `f32` slice,
+    /// Renders one period into `out`, an interleaved stereo slice,
     /// replacing whatever it held.
     ///
     /// Commands the handle has sent since the last call are applied first,
-    /// so a play, stop or eviction lands at a period boundary. Then every
-    /// sample and every input heard adds into the zeroed slice, one that
-    /// reaches its end frees its slot, and the sum is clipped once to the
-    /// unit range.
-    pub fn render(&mut self, out: &mut [f32]) {
+    /// so a play, stop or level change lands at a period boundary. Then
+    /// every sample and every input adds into the zeroed slice at its
+    /// gain, one that has finished is let go, and the sum is clipped once
+    /// to the unit range. A sound at zero gain still runs, so an input
+    /// nobody hears keeps up with its ring.
+    pub fn render(&mut self, out: &mut [Pcm]) {
+        let frames = out.len() / Self::CHANNELS;
+        debug_assert!(frames <= self.period, "more frames than the period");
         self.apply_commands();
         out.fill(0.0);
-        self.samples.add(out);
-        self.inputs.add(out);
+        for sound in self.samples.iter_mut() {
+            add(out, sound.frames(frames));
+        }
+        for sound in self.inputs.iter_mut() {
+            add(out, sound.frames(frames));
+        }
+        // Dropped here, on the audio thread, until the retire ring.
+        self.samples.remove_where(|s| s.finished(), drop);
+        self.inputs.remove_where(|s| s.finished(), drop);
         hard_clip(out);
     }
 
-    /// Applies every command that has arrived, each to the mixer it is
-    /// for.
+    /// Applies every command that has arrived, in order.
     fn apply_commands(&mut self) {
         while let Ok(command) = self.commands.pop() {
             match command {
-                Command::Sample(command) => self.apply_sample(command),
-                Command::Input(command) => self.apply_input(command),
+                // A pad press always sounds, even if it cuts the oldest.
+                Command::Sample(command) => apply(&mut self.samples, command, true),
+                // An input already heard is never cut by another being
+                // added. The handle refuses first; this is the backstop.
+                Command::Input(command) => apply(&mut self.inputs, command, false),
+                Command::StopAllSamples => self.samples.remove_where(|_| true, drop),
+                Command::Evict(addr) => self
+                    .samples
+                    .remove_where(|s| BufferAddress::of(s.source().audio()) == addr, drop),
             }
-        }
-    }
-
-    /// Applies one command to the sample mixer.
-    fn apply_sample(&mut self, command: SampleCommand) {
-        match command {
-            SampleCommand::Play { id, audio } => {
-                self.samples.start(id, Playhead::new(audio), false)
-            }
-            SampleCommand::Stop(id) => self.samples.stop(id),
-            SampleCommand::StopAll => self.samples.stop_all(),
-            SampleCommand::Evict(addr) => self.samples.evict(addr),
-        }
-    }
-
-    /// Applies one command to the input mixer. An input sound is added
-    /// muted: it keeps up with its ring from the start and is heard once
-    /// monitored. The mixer's mute is the monitor switch.
-    fn apply_input(&mut self, command: InputCommand) {
-        match command {
-            InputCommand::Add { id, reader } => self.inputs.start(id, reader, true),
-            InputCommand::Remove(id) => self.inputs.stop(id),
-            InputCommand::Monitor(id) => self.inputs.set_muted(id, false),
-            InputCommand::Unmonitor(id) => self.inputs.set_muted(id, true),
         }
     }
 
@@ -156,13 +256,37 @@ impl Renderer {
     /// or not.
     #[cfg(test)]
     pub(crate) fn is_playing(&self, id: SoundId) -> bool {
-        self.samples.is_playing(id) || self.inputs.is_playing(id)
+        self.samples.contains(id) || self.inputs.contains(id)
     }
 
     /// How many sounds and inputs are heard.
     #[cfg(test)]
     pub(crate) fn playing(&self) -> usize {
-        self.samples.playing() + self.inputs.playing()
+        self.samples.len() + self.inputs.len()
+    }
+}
+
+/// Applies `command` to `sounds`. An add that finds every place taken
+/// cuts the oldest sound for it if `steal`, and is dropped if not. What
+/// leaves is dropped here, on the audio thread, until the retire ring.
+fn apply<S>(sounds: &mut Sounds<Sound<S>>, command: SoundCommand<S>, steal: bool) {
+    match command {
+        SoundCommand::Add { id, source, gain } => {
+            let sound = Sound::new(source, Gain::at(gain));
+            if let Err(sound) = sounds.insert(id, sound)
+                && steal
+                && let Some(oldest) = sounds.oldest()
+            {
+                drop(sounds.remove(oldest));
+                let _ = sounds.insert(id, sound);
+            }
+        }
+        SoundCommand::Remove(id) => drop(sounds.remove(id)),
+        SoundCommand::Set { id, param } => {
+            if let Some(sound) = sounds.get_mut(id) {
+                sound.set(param);
+            }
+        }
     }
 }
 
@@ -173,28 +297,62 @@ mod tests {
     use rtrb::{Producer, RingBuffer};
 
     use super::*;
-    use crate::audio::AudioBuffer;
-    use crate::config::Pcm;
-    use crate::render::dsp::BufferAddress;
+    use crate::audio::{AudioBuffer, ChannelLayout};
+    use crate::render::command::SoundParam;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
+    /// What these tests' renderers are sized with. The command ring is
+    /// made by `renderer()` itself, eight deep, whatever this says.
+    const SETTINGS: RendererSettings = RendererSettings::new(64);
     const FULL: Pcm = 1.0;
 
     fn renderer() -> (Producer<Command>, Renderer) {
+        renderer_with(SETTINGS)
+    }
+
+    fn renderer_with(settings: RendererSettings) -> (Producer<Command>, Renderer) {
         let (producer, consumer) = RingBuffer::new(8);
-        (producer, Renderer::on(consumer))
+        (producer, Renderer::on(consumer, settings))
     }
 
     fn mono(data: Vec<Pcm>) -> Arc<AudioBuffer> {
-        Arc::new(audio(1, &data))
+        Arc::new(audio(ChannelLayout::Mono, &data))
     }
 
     fn play(p: &mut Producer<Command>, id: u64, audio: &Arc<AudioBuffer>) {
         p.push(
-            SampleCommand::Play {
+            SoundCommand::Add {
                 id: SoundId(id),
-                audio: audio.clone(),
+                source: SampleReader::new(audio.clone()),
+                gain: 1.0,
+            }
+            .into(),
+        )
+        .unwrap();
+    }
+
+    /// Adds a stereo input sound `id` and hands back the writer that
+    /// feeds it.
+    fn add_input(p: &mut Producer<Command>, id: u64) -> Producer<Pcm> {
+        let (writer, reader) = RingBuffer::new(8 * 2);
+        p.push(
+            SoundCommand::Add {
+                id: SoundId(id),
+                source: InputReader::new(reader, ChannelLayout::Stereo),
+                gain: 0.0,
+            }
+            .into(),
+        )
+        .unwrap();
+        writer
+    }
+
+    fn set_input_gain(p: &mut Producer<Command>, id: u64, level: f32) {
+        p.push(
+            SoundCommand::<InputReader>::Set {
+                id: SoundId(id),
+                param: SoundParam::Gain(level),
             }
             .into(),
         )
@@ -238,15 +396,16 @@ mod tests {
     }
 
     #[test]
-    fn an_input_sound_is_silent_until_monitored_and_removed_by_its_own_command() {
+    fn an_input_at_zero_gain_is_silent_but_drained_and_a_gain_ramps_in() {
         let (mut p, mut r) = renderer();
         play(&mut p, 1, &mono(vec![HALF; 100]));
         // A stereo input sound over a ring of eight frames.
         let (mut writer, reader) = RingBuffer::new(8 * 2);
         p.push(
-            InputCommand::Add {
+            SoundCommand::Add {
                 id: SoundId(3),
-                reader: InputReader::new(reader, 2),
+                source: InputReader::new(reader, ChannelLayout::Stereo),
+                gain: 0.0,
             }
             .into(),
         )
@@ -254,29 +413,34 @@ mod tests {
         feed_two(&mut writer);
         let mut out = vec![0.0; 4];
         r.render(&mut out);
-        assert_eq!(out, vec![0.5; 4], "an input is not heard until monitored");
+        assert_eq!(out, vec![0.5; 4], "an input at zero gain is not heard");
         assert_eq!(r.playing(), 2);
         assert_eq!(writer.slots(), 8 * 2, "but it keeps up with its ring");
 
-        p.push(InputCommand::Monitor(SoundId(3)).into()).unwrap();
+        // Up to full over the two frames of the period: half, then all.
+        set_input_gain(&mut p, 3, 1.0);
         feed_two(&mut writer);
         r.render(&mut out);
-        assert_eq!(out, vec![0.75, 0.25, 0.75, 0.25]);
+        assert_eq!(out, vec![0.625, 0.375, 0.75, 0.25]);
 
-        // A sample stop and a stop-all leave the input alone.
-        p.push(SampleCommand::Stop(SoundId(3)).into()).unwrap();
-        p.push(SampleCommand::StopAll.into()).unwrap();
+        // A sample remove under the input's id and a stop-all leave the
+        // input alone.
+        p.push(SoundCommand::<SampleReader>::Remove(SoundId(3)).into())
+            .unwrap();
+        p.push(Command::StopAllSamples).unwrap();
         feed_two(&mut writer);
         r.render(&mut out);
         assert_eq!(out, vec![0.25, -0.25, 0.25, -0.25]);
 
-        p.push(InputCommand::Unmonitor(SoundId(3)).into()).unwrap();
+        // Down to nothing the same way.
+        set_input_gain(&mut p, 3, 0.0);
         feed_two(&mut writer);
         r.render(&mut out);
-        assert_eq!(out, vec![0.0; 4]);
-        assert!(r.is_playing(SoundId(3)), "unmonitored, still an input");
+        assert_eq!(out, vec![0.125, -0.125, 0.0, 0.0]);
+        assert!(r.is_playing(SoundId(3)), "silent, still an input");
 
-        p.push(InputCommand::Remove(SoundId(3)).into()).unwrap();
+        p.push(SoundCommand::<InputReader>::Remove(SoundId(3)).into())
+            .unwrap();
         r.render(&mut out);
         assert!(!r.is_playing(SoundId(3)));
         // The reader is gone, so the input's writer feeds nothing.
@@ -294,15 +458,66 @@ mod tests {
         r.render(&mut out);
         assert_eq!(r.playing(), 2);
 
-        p.push(SampleCommand::Stop(SoundId(1)).into()).unwrap();
+        p.push(SoundCommand::<SampleReader>::Remove(SoundId(1)).into())
+            .unwrap();
         r.render(&mut out);
         assert!(!r.is_playing(SoundId(1)));
         assert_eq!(out, vec![0.5; 4]);
 
-        p.push(SampleCommand::Evict(BufferAddress::of(&b)).into())
-            .unwrap();
+        p.push(Command::Evict(BufferAddress::of(&b))).unwrap();
         r.render(&mut out);
         assert_eq!(r.playing(), 0);
         assert_eq!(out, vec![0.0; 4]);
+    }
+
+    #[test]
+    fn a_sample_added_when_full_cuts_the_oldest() {
+        let (mut p, mut r) = renderer_with(RendererSettings {
+            sample_sounds: 2,
+            ..SETTINGS
+        });
+        let a = mono(vec![HALF; 100]);
+        play(&mut p, 1, &a);
+        play(&mut p, 2, &a);
+        play(&mut p, 3, &a);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert!(!r.is_playing(SoundId(1)), "the oldest is cut");
+        assert!(r.is_playing(SoundId(2)) && r.is_playing(SoundId(3)));
+    }
+
+    #[test]
+    fn a_freed_place_is_taken_before_anything_is_cut() {
+        let (mut p, mut r) = renderer_with(RendererSettings {
+            sample_sounds: 2,
+            ..SETTINGS
+        });
+        let a = mono(vec![HALF; 100]);
+        play(&mut p, 1, &a);
+        play(&mut p, 2, &a);
+        p.push(SoundCommand::<SampleReader>::Remove(SoundId(1)).into())
+            .unwrap();
+        play(&mut p, 3, &a);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert!(r.is_playing(SoundId(2)), "nothing playing was cut");
+        assert!(r.is_playing(SoundId(3)));
+        assert_eq!(r.playing(), 2);
+    }
+
+    #[test]
+    fn an_input_added_when_full_is_dropped_and_none_is_cut() {
+        let (mut p, mut r) = renderer_with(RendererSettings {
+            input_sounds: 1,
+            ..SETTINGS
+        });
+        let first = add_input(&mut p, 1);
+        let second = add_input(&mut p, 2);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert!(r.is_playing(SoundId(1)), "the input already held stays");
+        assert!(!r.is_playing(SoundId(2)));
+        assert!(!first.is_abandoned());
+        assert!(second.is_abandoned(), "the refused input's reader is gone");
     }
 }

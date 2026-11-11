@@ -1,7 +1,7 @@
 //! A loaded sample: its audio in RAM, owned by whoever holds it.
 //!
 //! [`Project::load`](crate::project::Project::load) reads a sample's audio
-//! into a block on the ledger and returns it as a [`LoadedSample`]. That
+//! into a block on the ledger and returns it as a [`Sample`]. That
 //! value is the audio's owner. Hold it and the sample is in RAM; drop it
 //! and the block repays the budget once the last sound playing it has let
 //! go. There is no list of loaded samples anywhere else: what is loaded is
@@ -25,18 +25,18 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::project::SampleId;
-use crate::render::dsp::BufferAddress;
+use crate::render::command::BufferAddress;
 
 /// A sample's audio in RAM. Owning this is what loaded means.
 #[derive(Debug)]
-pub struct LoadedSample {
+pub struct Sample {
     id: SampleId,
     /// Immutable behind an `Arc` so a sound can hold it while it plays;
     /// the render side only ever sees the clones it was handed.
     audio: Arc<AudioBuffer>,
 }
 
-impl LoadedSample {
+impl Sample {
     /// The sample `id`, whose audio is `audio`.
     pub(crate) fn new(id: SampleId, audio: AudioBuffer) -> Self {
         Self {

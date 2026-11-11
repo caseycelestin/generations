@@ -13,7 +13,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 5 | RAM ledger: one figure for everything the engine holds in memory | done |
 | 6 | Recording: audio input as a new root | built, then removed in the memory port; to be rebuilt |
 | 7 | Input monitoring: hear the input through the output | done |
-| 8 | Sequencing and mixing: the real-time side | |
+| 8 | Sequencing and mixing: the real-time side | mixing done; sequencing to come |
 | 9 | Arrangement and more effects | |
 
 ## Why this order
@@ -44,7 +44,7 @@ or rejected instead. The history of how a shape was reached is in git.
   stored, like a database insert returning the row id. The counter is on
   disk, only goes up, and never reuses an id.
 - **Generation is a relationship, not a type.** A sample is an id and an
-  optional parent id; lineage is the tree of parent pointers. `sample(id)`
+  optional parent id; lineage is the tree of parent pointers. `metadata(id)`
   returns what is stored about a sample except its audio; `load(id)`
   returns the audio. Metadata fields join the sample as steps need them,
   each with its own setter and rule. (A `loaded` flag was the first and
@@ -146,24 +146,24 @@ or rejected instead. The history of how a shape was reached is in git.
 ### The two sides
 
 - **The engine is two sides that never name each other.** The disk side is
-  `Project` (`open`, `import`, `load`, `sample`). The sound side is
+  `Project` (`open`, `import`, `load`, `metadata`). The sound side is
   `Renderer::new() -> (Renderer, Control)`: the renderer moves to the audio
   thread, `Control` stays (`play`, `stop`, `stop_all`, `input`). The only
-  thing that crosses is a `LoadedSample`, carried by the caller. Until
+  thing that crosses is a `Sample`, carried by the caller. Until
   2026-11-10 an `Engine` type was the only way in and every verb was an
   engine method taking an id; no method needed both sides, so it was
   dissolved, and a joint constructor was rejected as the engine again.
 - **A verb lives on the thing it acts on.** `sound.stop()`,
-  `source.monitor()`. What the renderer hands out carries a `Control`
+  `input_sound.monitor()`. What the renderer hands out carries a `Control`
   clone and acts on its own; what the project hands out is data the
   `Control` takes by reference. A sample carrying a handle and sending its
   eviction from `Drop` was tried and rejected as the wrong coupling.
 - **`Control` is the shared sending end.** A mutex around the command
-  ring's producer behind an `Arc`, with the sound id counter and the input
-  slot count. Control side only: nothing on the audio or capture thread
+  ring's producer behind an `Arc`, with the sound id counter and the count
+  of input sounds held. Control side only: nothing on the audio or capture thread
   holds one. It is the only code that builds a `Command`. Named for what it
   is to the caller; `RendererHandle`, `Link` and `Remote` were rejected.
-- **A loaded sample is plain data.** `LoadedSample` is an id and an
+- **A loaded sample is plain data.** `Sample` is an id and an
   `Arc<AudioBuffer>`. Hold it and the sample is in RAM; drop it and its
   sounds play out, the block repaying when the last one ends.
   `control.stop(&sample)` first cuts them. Each load is its own copy; no
@@ -179,12 +179,12 @@ or rejected instead. The history of how a shape was reached is in git.
   closures under the lock, and nothing reads the gaps.
 - **Drop is best effort.** A drop cannot fail, so an `Input` dropped onto
   a full ring leaves its readers to finish when the feed drops and keeps
-  its slots reserved. The command ring cannot be sized to make that
-  impossible (the control side is unbounded), so it is sized not to happen
-  in practice (`COMMAND_CAPACITY`).
+  its sounds counted as held. The command ring cannot be sized to make
+  that impossible (the control side is unbounded), so it is sized not to
+  happen in practice (`RendererSettings::command_capacity`).
 - **The source tree is the architecture.** `src/project/` (disk side:
-  `Project`, `LoadedSample`, `storage/`, `import/`), `src/control/` (the
-  control thread: `Control`, `Sound`, `Input`), `src/render/` (the audio
+  `Project`, `Sample`, `storage/`, `import/`), `src/control/` (the
+  control thread: `Control`, `SampleSound`, `Input`), `src/render/` (the audio
   thread: `Renderer`, `command.rs`, `dsp/`). Shared at the top: `config`,
   `audio`, `memory`. `render/` imports neither of the others.
 
@@ -199,67 +199,91 @@ or rejected instead. The history of how a shape was reached is in git.
   the same `render` drives a device callback live or a loop offline (the
   bounce).
 - **`dsp/` is generic pieces; the renderer is this product's pipeline.**
-  `dsp/` holds `math` (`stereo`, `add`, `hard_clip`), `Mixer<S, N>` over a
-  `Source` trait, `Playhead`, `InputReader`, and knows no commands. The
-  `Renderer` wires a sample mixer (`MAX_SAMPLE_SOUNDS`, steals the oldest:
-  a press must sound) and an input mixer (`MAX_INPUT_SOUNDS`, rejects: an
-  input must never be cut), zeroes the period, has each add into it, and
-  hard-clips once. The pipeline is hard-coded; no runtime graph. A
-  `Processor` trait with boxed chains and a plain-data-plus-free-functions
-  shape were both built and removed; a piece is a struct with the work as
-  a method, built whole on the control side.
-- **Commands are grouped by mixer.** `Command::Sample(Play | Stop | StopAll
-  | Evict)` and `Command::Input(Add | Remove | Monitor | Unmonitor)`. A
-  stop-all must not mute the microphone. A flat enum of eight came first.
-- **`SoundId` names one thing heard**, a sample played once or an input
-  source, minted by `Control` before the send because the ring is one way.
-  The lowest id is the oldest, which is what stealing needs. (Was
-  `VoiceId`; "voice" is gone from the code.)
+  `dsp/` holds the `Source` trait (`frames(n) -> impl Iterator<Item =
+  Frame>`, `finished()`), `SampleReader`, `InputReader`, `Gain`, and
+  `math` (`stereo`, `add`, `hard_clip`), and knows no commands. The
+  `Renderer` holds samples and inputs apart, each a `Sounds<Sound<_>>`,
+  where `render::Sound` is a source and its `Gain`. It zeroes the period,
+  adds every sound into it, and hard-clips once. The pipeline is
+  hard-coded; no runtime graph. A `Processor` trait with boxed chains, a
+  plain-data-plus-free-functions shape and a `Mixer<S, N>` that owned the
+  sources were all built and removed.
+- **Mix by accumulating into the caller's slice.** Each sound adds its
+  period straight into the output with `math::add`; nothing has a scratch
+  buffer and the iterators allocate nothing. The internal mix is always
+  stereo (`Renderer::CHANNELS`), so effects can count on two channels and
+  every device and bounce hears the same.
+- **The renderer is sized per device.** `RendererSettings` (period,
+  command capacity, sample sounds, input sounds) is given to
+  `Renderer::new`; `RendererSettings::new(period)` sets the rest to the
+  `Renderer::MAX_*` bounds. A laptop, a tablet and a CM4 each tune it.
+  `Sounds` is a boxed slice of places allocated once and never resized.
+- **What to do when full is the renderer's.** A sample add with every
+  place taken cuts the oldest (a press must sound); an input add is
+  refused by `Control` first and dropped by the renderer as a backstop (an
+  input must never be cut).
+- **Commands are low level.** Operations on what the renderer holds, never
+  intents: `SoundCommand<S>` is `Add { id, source, gain } | Remove(id) |
+  Set { id, param: SoundParam }`, wrapped as `Command::Sample` or
+  `Command::Input`, plus `StopAllSamples` and `Evict`. Meaning (monitoring,
+  a level) lives on the control-side handles. A stop-all must not mute
+  the microphone. High-level commands (`Monitor`, `Unmonitor`, `Play`)
+  came first.
+- **A level ramps.** `Gain` moves to a new level linearly over the next
+  period, so a change never clicks.
+- **`SoundId` names one thing heard**, a sample played once or one input
+  sound, minted by `Control` before the send because the ring is one way.
+  The lowest id is the oldest, which is what cutting needs. It and
+  `BufferAddress` live in `render/command.rs`: they are how the two sides
+  name things to each other. (Was `VoiceId`.)
+- **One concept, one name; the module says the side.** `SampleSound` and
+  `InputSound` are the handles, `render::Sound` the same sound on the
+  audio thread, as `io::Error` and `fmt::Error`. No `Handle` suffix;
+  "voice", "slot" and "strip" were rejected.
 - **Evict by buffer address.** Stopping every sound of a sample sends the
-  buffer's address; the renderer drops every playhead whose `Arc` points
-  at it and never learns a sample id. The caller still owns the buffer
-  when the command is sent, so the address cannot name a later buffer.
-- **Mix voice-major into the caller's slice.** Each source adds its whole
-  period in turn: contiguous, vectorisable. The renderer never allocates
-  a period buffer. Mixers are fixed arrays scanned per call; a `heapless`
-  deque came first and stopped fitting once removal from the middle was
-  needed.
+  buffer's address; the renderer drops every sample sound whose `Arc`
+  points at it and never learns a sample id, which would name every load
+  of a sample and collide across projects. The caller still owns the
+  buffer when the command is sent, so the address cannot name a later
+  buffer.
 - **Clip once, hard, last.** Same result on every device and offline; it is
   what hardware samplers do. A master gain or limiter goes before it.
-- **Fixed polyphony.** `MAX_SAMPLE_SOUNDS` is a guarantee of a known worst
-  case, chosen once by a person for the product; the RAM budget, by
-  contrast, is a parameter because it differs per machine.
+- **Bounded polyphony.** The sound counts are a CPU budget with a known
+  worst case (`Renderer::MAX_*`), tuned down per device; they are not on
+  the RAM ledger, which counts only audio-length memory.
 
 ### Input and monitoring
 
 - **An input is the ability to put audio in; monitoring is whether it is
   heard.** `control.input(layout, period) -> (Input, InputFeed)`. The
-  layout is the device's channels as `ChannelLayout::{Mono, Stereo}`
-  entries; each entry is a source with its own ring and mixer slot, silent
-  until `source.monitor()`. The first version added and heard in one call;
+  `InputLayout` is the device's channels as `ChannelLayout::{Mono,
+  Stereo}` entries; each entry is an `InputSound` with its own ring and
+  its own place in the renderer, silent until `monitor()`. The first version added and heard in one call;
   split because an input will also be recorded and routed.
 - **Shaped like the device, split on the capture side.** `InputFeed::feed`
-  takes the device's interleaved frames and splits them into the sources'
+  takes the device's interleaved frames and splits them into the sounds'
   rings in one pass, on the capture thread, with no lock. Five shapes came
   first, all on 2026-11-10: a fixed capture width, a width plus channel
   map, mono/stereo-only inputs with the caller splitting, and one ring per
   device with sources inside the reader (which hid a second monitor switch
-  the mixer could not see). A ring per source makes a source an ordinary
-  mixer slot.
-- **The mixer's mute is the monitor switch.** A muted source `skip`s its
-  period so an unheard input keeps up with its ring.
+  the renderer could not see). A ring per entry makes each an ordinary
+  sound.
+- **Monitoring is gain.** `monitor()` sets the sound's gain to 1,
+  `unmonitor()` to 0, ramped. A silent sound still runs, so an unheard
+  input keeps up with its ring. A mute that `skip`ped the period came
+  first.
 - **Two clocks, one ring, a lag rule.** cpal has no duplex stream, so the
   rings drift. The reader takes one period per render; an empty ring is a
   gap; more than `MAX_LAG_PERIODS` queued is skipped, oldest first. The
   ring depth is a few capture periods; the period is a parameter (bounded
   by `MAX_PERIOD_FRAMES`) because it is the device's to know. A fixed 4096
   frame depth came first and was right by luck.
-- **Dropping the `Input` removes it.** It sends the removes and frees the
-  slots. Drop the `Input` before the `InputFeed` so the rings are freed on
+- **Dropping the `Input` removes it.** It sends the removes and stops
+  counting its sounds as held. Drop the `Input` before the `InputFeed` so the rings are freed on
   the caller's thread. An `InputId` and `remove_input` existed until
   Handles.
-- **Numbered input slots are not the engine's.** The panel holds the
-  sources and labels them.
+- **Numbered inputs are not the engine's.** The panel holds the input
+  sounds and labels them.
 
 ### Devices and examples
 
@@ -311,24 +335,18 @@ the renderer. The decisions that stand:
 - **Nothing is settled by having been written.** New steps are designed
   from the decision, and existing code is changed to fit.
 
-## Step 8: the mixer rewrite
+## Step 8: the real-time side
 
-The plan, not built.
+The mixer rewrite is built (see the render side, above): accumulate
+mixing over a `Source` trait, a `Gain` per sound, low-level commands and
+per-device `RendererSettings`. What is left:
 
-- **Keep it stupid.** A `Node` trait, `process(frames)` in place and
-  `finished()`: a source fills the slice, an effect transforms it. The
-  mixer owns one period of scratch, fills it from each slot and sums it.
-  A mixer is itself a `Node`, so a bus is a mixer in a slot.
-- **Level and mute leave the mixer** for a `Gain<N>` node; monitoring an
-  input becomes turning its gain up, and `skip` goes. Stealing moves to a
-  voice table in front of the sample mixer.
-- **The renderer needs the output period** for its scratch, so the period
-  becomes a `Renderer::new` parameter.
-- **The retire ring.** Every place the mixer frees a source hands it to a
-  sink; the renderer pushes it onto a ring back to the control side, and
-  `Control` sweeps it on every send. Sized at slots plus
-  `COMMAND_CAPACITY`, it can never fill. This moves the last free of a
-  sample's buffer and an input's ring off the audio thread.
+- **The retire ring.** Every place the renderer lets go of a sound
+  (`Sounds::remove_where` already takes a sink) hands it to a ring back to
+  the control side, and `Control` sweeps it on every send. Sized at the
+  sound counts plus the command capacity, it can never fill. This moves
+  the last free of a sample's buffer and an input's ring off the audio
+  thread.
 - **Routing a source to two destinations** (a bus and a recorder) is open:
   a ring has one consumer, so either the reader fans out or the second
   destination taps after the first.
@@ -356,8 +374,6 @@ The storage layer does not know about tiers.
 - **Real-time rulebook** (a doc) and an **allocation-counting test
   allocator** asserting `Renderer::render` allocates nothing.
 - **Taps and busses** on the hard-coded path.
-- **Level per mixer slot** for samples and inputs alike (subsumed by
-  `Gain<N>` if step 8 lands as planned).
 - **Master gain and bus limiter** before the clip.
 - **Stream errors** reported to a front panel.
 - **Content-hash dedup** on import, also matching a renamed WAV back to

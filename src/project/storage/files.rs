@@ -35,11 +35,11 @@ use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::audio::AudioBuffer;
-use crate::config::{MAX_CHANNELS, Pcm, SAMPLE_RATE};
+use crate::audio::{AudioBuffer, ChannelLayout};
+use crate::config::{Pcm, SAMPLE_RATE};
 use crate::memory::Ledger;
 use crate::project::storage::{Storage, StorageError};
-use crate::project::{Sample, SampleId};
+use crate::project::{SampleId, SampleMetadata};
 
 /// Bits in one stored sample, as the WAV header counts them.
 const BITS_PER_SAMPLE: u16 = (size_of::<Pcm>() * 8) as u16;
@@ -202,7 +202,7 @@ impl FileStorage {
     fn write_wav(&self, id: SampleId, audio: &AudioBuffer) -> Result<(), StorageError> {
         let path = self.wav_path(id);
         let spec = WavSpec {
-            channels: audio.channels(),
+            channels: audio.layout().into(),
             sample_rate: SAMPLE_RATE,
             bits_per_sample: BITS_PER_SAMPLE,
             sample_format: SampleFormat::Float,
@@ -233,14 +233,14 @@ impl FileStorage {
     fn read_wav(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
-        let channels = reader.spec().channels;
+        let layout = ChannelLayout::try_from(reader.spec().channels).map_err(|e| at(&path, e))?;
         let mut data = ledger
             .alloc(reader.len() as usize)
             .map_err(|source| StorageError::OverBudget { id, source })?;
         for sample in reader.samples::<Pcm>() {
             data.push(sample.map_err(|e| at(&path, e))?);
         }
-        AudioBuffer::new(channels, data).map_err(|(e, _)| at(&path, e))
+        AudioBuffer::new(layout, data).map_err(|(e, _)| at(&path, e))
     }
 }
 
@@ -249,7 +249,7 @@ fn check_spec(id: SampleId, spec: WavSpec) -> Result<(), StorageError> {
     let expected = spec.sample_rate == SAMPLE_RATE
         && spec.bits_per_sample == BITS_PER_SAMPLE
         && spec.sample_format == SampleFormat::Float
-        && (1..=MAX_CHANNELS).contains(&spec.channels);
+        && ChannelLayout::try_from(spec.channels).is_ok();
     if expected {
         Ok(())
     } else {
@@ -281,12 +281,12 @@ impl Storage for FileStorage {
         Ok(self.read_manifest()?.samples.contains_key(&id.0))
     }
 
-    fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError> {
+    fn metadata(&self, id: SampleId) -> Result<Option<SampleMetadata>, StorageError> {
         let manifest = self.read_manifest()?;
         let Some(entry) = manifest.samples.get(&id.0) else {
             return Ok(None);
         };
-        Ok(Some(Sample {
+        Ok(Some(SampleMetadata {
             id,
             parent: entry.parent.map(SampleId),
         }))
@@ -322,13 +322,14 @@ impl Storage for FileStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::ChannelLayout::{Mono, Stereo};
     use crate::testing::unlimited;
 
     #[test]
     fn a_read_is_paid_for_exactly_and_returned_on_drop() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(2, 3)).unwrap();
+        let id = s.add_sample(None, &ramp(Stereo, 3)).unwrap();
         let bytes = 6 * size_of::<Pcm>();
         let ledger = Ledger::new(bytes);
         let audio = s.audio(id, &ledger).unwrap().unwrap();
@@ -341,7 +342,7 @@ mod tests {
     fn over_budget_is_refused_with_nothing_allocated() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(2, 3)).unwrap();
+        let id = s.add_sample(None, &ramp(Stereo, 3)).unwrap();
         let bytes = 6 * size_of::<Pcm>();
         let ledger = Ledger::new(bytes - 1);
         assert!(matches!(
@@ -351,14 +352,14 @@ mod tests {
         assert_eq!(ledger.in_use(), 0);
     }
 
-    fn ramp(channels: u16, frames: usize) -> AudioBuffer {
-        let mut block = unlimited().alloc(frames * usize::from(channels)).unwrap();
+    fn ramp(layout: ChannelLayout, frames: usize) -> AudioBuffer {
+        let mut block = unlimited().alloc(frames * layout.count()).unwrap();
         block.extend((0..block.capacity()).map(|i| i as Pcm * 0.101 - 0.7));
-        AudioBuffer::new(channels, block).unwrap()
+        AudioBuffer::new(layout, block).unwrap()
     }
 
     fn assert_same(a: &AudioBuffer, b: &AudioBuffer) {
-        assert_eq!(a.channels(), b.channels());
+        assert_eq!(a.layout(), b.layout());
         assert_eq!(a.samples(), b.samples());
     }
 
@@ -377,7 +378,7 @@ mod tests {
         let s = FileStorage::open(dir.path()).unwrap();
         assert!(dir.path().join(MANIFEST).exists());
         assert!(dir.path().join(SAMPLES_DIR).is_dir());
-        assert!(s.sample(SampleId(0)).unwrap().is_none());
+        assert!(s.metadata(SampleId(0)).unwrap().is_none());
     }
 
     #[test]
@@ -404,24 +405,33 @@ mod tests {
     fn samples_and_audio_survive_a_reopen() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(2, 16)).unwrap();
-        let rev = s.add_sample(Some(root), &ramp(2, 8)).unwrap();
-        let back = s.add_sample(Some(rev), &ramp(2, 16)).unwrap();
+        let root = s.add_sample(None, &ramp(Stereo, 16)).unwrap();
+        let rev = s.add_sample(Some(root), &ramp(Stereo, 8)).unwrap();
+        let back = s.add_sample(Some(rev), &ramp(Stereo, 16)).unwrap();
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
-        assert_eq!(s.sample(rev).unwrap().unwrap().parent, Some(root));
-        assert_eq!(s.sample(back).unwrap().unwrap().parent, Some(rev));
-        assert_same(&s.audio(root, &unlimited()).unwrap().unwrap(), &ramp(2, 16));
-        assert_same(&s.audio(rev, &unlimited()).unwrap().unwrap(), &ramp(2, 8));
-        assert_same(&s.audio(back, &unlimited()).unwrap().unwrap(), &ramp(2, 16));
+        assert_eq!(s.metadata(rev).unwrap().unwrap().parent, Some(root));
+        assert_eq!(s.metadata(back).unwrap().unwrap().parent, Some(rev));
+        assert_same(
+            &s.audio(root, &unlimited()).unwrap().unwrap(),
+            &ramp(Stereo, 16),
+        );
+        assert_same(
+            &s.audio(rev, &unlimited()).unwrap().unwrap(),
+            &ramp(Stereo, 8),
+        );
+        assert_same(
+            &s.audio(back, &unlimited()).unwrap().unwrap(),
+            &ramp(Stereo, 16),
+        );
     }
 
     #[test]
     fn unknown_id_is_none_for_sample_and_audio() {
         let dir = tempfile::tempdir().unwrap();
         let s = created(dir.path());
-        assert!(s.sample(SampleId(9)).unwrap().is_none());
+        assert!(s.metadata(SampleId(9)).unwrap().is_none());
         assert!(s.audio(SampleId(9), &unlimited()).unwrap().is_none());
     }
 
@@ -429,11 +439,11 @@ mod tests {
     fn renamed_wav_is_an_error_for_the_audio_only() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(1, 4)).unwrap();
+        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
         fs::rename(s.wav_path(id), dir.path().join("samples/kick.wav")).unwrap();
         // The record and existence come from the manifest; only the audio
         // needs the file.
-        assert!(s.sample(id).unwrap().is_some());
+        assert!(s.metadata(id).unwrap().is_some());
         assert!(matches!(
             s.audio(id, &unlimited()),
             Err(StorageError::Backend(_))
@@ -445,7 +455,7 @@ mod tests {
     fn wrong_sample_rate_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(1, 4)).unwrap();
+        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
         let spec = WavSpec {
             channels: 1,
             sample_rate: 44_100,
@@ -479,8 +489,8 @@ mod tests {
     fn open_accepts_a_whole_project() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(2, 4)).unwrap();
-        s.add_sample(Some(root), &ramp(1, 4)).unwrap();
+        let root = s.add_sample(None, &ramp(Stereo, 4)).unwrap();
+        s.add_sample(Some(root), &ramp(Mono, 4)).unwrap();
         drop(s);
         reopen(dir.path()).unwrap();
     }
@@ -489,8 +499,8 @@ mod tests {
     fn open_refuses_a_dangling_parent() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let root = s.add_sample(None, &ramp(1, 1)).unwrap();
-        s.add_sample(Some(root), &ramp(1, 1)).unwrap();
+        let root = s.add_sample(None, &ramp(Mono, 1)).unwrap();
+        s.add_sample(Some(root), &ramp(Mono, 1)).unwrap();
         // Forget the root but leave the child pointing at it.
         let manifest = r#"{"version":1,"next_id":2,"samples":{"1":{"parent":0}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
@@ -502,8 +512,8 @@ mod tests {
     fn open_refuses_a_parent_minted_after_its_child() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        s.add_sample(None, &ramp(1, 1)).unwrap();
-        s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.add_sample(None, &ramp(Mono, 1)).unwrap();
+        s.add_sample(None, &ramp(Mono, 1)).unwrap();
         let manifest =
             r#"{"version":1,"next_id":2,"samples":{"0":{"parent":1},"1":{"parent":null}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
@@ -518,22 +528,22 @@ mod tests {
         // format version does not move.
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        s.add_sample(None, &ramp(1, 1)).unwrap();
-        s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.add_sample(None, &ramp(Mono, 1)).unwrap();
+        s.add_sample(None, &ramp(Mono, 1)).unwrap();
         let manifest = r#"{"version":1,"next_id":2,"samples":{"0":{"parent":null,"loaded":true},"1":{"parent":null}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
-        assert_eq!(s.sample(SampleId(0)).unwrap().unwrap().parent, None);
-        assert_eq!(s.sample(SampleId(1)).unwrap().unwrap().parent, None);
+        assert_eq!(s.metadata(SampleId(0)).unwrap().unwrap().parent, None);
+        assert_eq!(s.metadata(SampleId(1)).unwrap().unwrap().parent, None);
     }
 
     #[test]
     fn open_refuses_a_counter_that_is_behind() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.add_sample(None, &ramp(Mono, 1)).unwrap();
         let manifest = r#"{"version":1,"next_id":0,"samples":{"0":{"parent":null}}}"#;
         fs::write(dir.path().join(MANIFEST), manifest).unwrap();
         drop(s);
@@ -544,7 +554,7 @@ mod tests {
     fn a_16_bit_wav_is_the_wrong_format() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(1, 4)).unwrap();
+        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
         let spec = WavSpec {
             channels: 1,
             sample_rate: SAMPLE_RATE,
@@ -564,7 +574,7 @@ mod tests {
     fn open_refuses_a_missing_or_wrong_format_wav() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(1, 4)).unwrap();
+        let id = s.add_sample(None, &ramp(Mono, 4)).unwrap();
         let path = s.wav_path(id);
         fs::rename(&path, dir.path().join("samples/kick.wav")).unwrap();
         assert!(matches!(reopen(dir.path()), Err(StorageError::Backend(_))));
@@ -589,7 +599,7 @@ mod tests {
     fn no_temp_file_is_left_behind() {
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
-        s.add_sample(None, &ramp(1, 1)).unwrap();
+        s.add_sample(None, &ramp(Mono, 1)).unwrap();
         assert!(!dir.path().join("project.json.tmp").exists());
     }
 }

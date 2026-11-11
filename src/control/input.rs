@@ -1,20 +1,20 @@
-//! The control side of an input: the handle you hold, the sources on it
+//! The control side of an input: the handle you hold, the sounds on it
 //! you monitor, and the feeder a device callback fills.
 //!
 //! An input is the ability to put audio into the renderer; whether it is
-//! heard is a separate switch, monitoring, which is the input mixer's
-//! mute. `Control::input` returns two things. The [`Input`] is the
-//! handle: it names the input's sources, each an [`InputSource`] with
+//! heard is a separate switch, monitoring, which sets each of its sounds'
+//! gain to full or to nothing. `Control::input` returns two things. The [`Input`] is the
+//! handle: it names the input's sounds, each an [`InputSound`] with
 //! `monitor` and `unmonitor` on it, and holding it is what keeps the input
 //! in the renderer; drop it and the input is removed. The [`InputFeed`] is
 //! the other end: it moves into the capture callback and has one method,
 //! `feed`, which takes the device's frames.
 //!
-//! An input is added in the shape of its device: one layout saying what
-//! each channel of the device's interleaved frames means, which are
-//! stereo pairs and which are mono. Each mono or stereo entry is a source
-//! of its own, with its own sound in the renderer, its own ring and its
-//! own slot in the input mixer, monitored on its own. The split from the
+//! An input is added in the shape of its device: an [`InputLayout`]
+//! saying what each channel of the device's interleaved frames means,
+//! which are stereo pairs and which are mono. Each mono or stereo entry
+//! is a sound of its own, with its own ring and its own place in the
+//! renderer, monitored on its own. The split from the
 //! device's frames into the sources happens in [`InputFeed::feed`], where
 //! the interleaved frame already is; the render side,
 //! [`InputReader`](crate::render::dsp::InputReader), sees only mono and stereo
@@ -32,23 +32,25 @@
 //! `Input` first and the `InputFeed` second, so the render side lets go
 //! of its end at the next render and the free happens on the caller's
 //! thread. Dropped the other way round, the readers finish on their own
-//! and the input mixer frees the rings on the audio thread.
+//! and the renderer frees the rings on the audio thread.
 
 use std::mem::size_of;
 
 use rtrb::Producer;
 
+use crate::audio::ChannelLayout;
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES, Pcm};
 use crate::control::Control;
 use crate::control::ControlError;
-use crate::render::dsp::{InputReader, SoundId};
+use crate::render::command::SoundId;
+use crate::render::dsp::InputReader;
 
 /// How many of the capture device's periods a source's ring holds: enough
 /// that the two clocks can disagree by [`MAX_LAG_PERIODS`] of output and
 /// a capture period can land on top before a frame is dropped. The ring
 /// is whole frames of the source's width, so a frame never wraps.
 ///
-/// [`MAX_LAG_PERIODS`]: crate::render::dsp::input::MAX_LAG_PERIODS
+/// [`MAX_LAG_PERIODS`]: crate::render::dsp::input_reader::MAX_LAG_PERIODS
 const RING_PERIODS: usize = 8;
 
 /// The most memory every input ring together can take: every source of
@@ -62,54 +64,55 @@ const _: () = assert!(
     "input rings are meant to be a few megabytes of fixed overhead"
 );
 
-/// What a run of a device's channels means: one channel heard on both
-/// sides, or two heard left and right. Interleaved stereo is left then
-/// right everywhere, so a pair is always the two channels in that order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelLayout {
-    Mono,
-    Stereo,
-}
+/// The shape of an input's device: what each channel of its interleaved
+/// frames is, in order. Each entry, one [`ChannelLayout`], is a mono
+/// channel or a stereo pair and becomes one [`InputSound`]; `[Stereo,
+/// Mono]` is a device of three channels, a pair on the first two and a
+/// microphone on the third.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputLayout(Vec<ChannelLayout>);
 
-impl ChannelLayout {
-    /// How many channels the source takes.
-    pub fn count(self) -> usize {
-        match self {
-            ChannelLayout::Mono => 1,
-            ChannelLayout::Stereo => 2,
-        }
+impl InputLayout {
+    /// A layout of `entries`, in device channel order.
+    pub fn new(entries: impl Into<Vec<ChannelLayout>>) -> Self {
+        Self(entries.into())
+    }
+
+    /// The entries, in device channel order: one per sound.
+    pub fn entries(&self) -> &[ChannelLayout] {
+        &self.0
+    }
+
+    /// How many channels wide the device frames are: the entries' widths
+    /// added up.
+    pub fn width(&self) -> usize {
+        self.0.iter().map(|c| c.count()).sum()
     }
 }
 
-/// How many channels wide `layout` is: the width of the device frames an
-/// input laid out that way is fed.
-pub fn width(layout: &[ChannelLayout]) -> usize {
-    layout.iter().map(|c| c.count()).sum()
-}
-
-/// One source of an input, a mono channel or a stereo pair of the device,
-/// as a sound in the renderer. From [`Input::sources`], in layout order.
+/// One sound of an input, a mono channel or a stereo pair of the device,
+/// as a sound in the renderer. From [`Input::sounds`], in layout order.
 /// Not heard until monitored.
 #[derive(Debug)]
-pub struct InputSource {
+pub struct InputSound {
     id: SoundId,
     control: Control,
 }
 
-impl InputSource {
-    /// The id the renderer knows this source's sound by.
+impl InputSound {
+    /// The id the renderer knows this sound by.
     #[cfg(test)]
     pub(crate) fn id(&self) -> SoundId {
         self.id
     }
 
-    /// Hears the source through the output from the next period. Refused
+    /// Hears the sound through the output from the next period. Refused
     /// as `CommandsFull` if the ring has no room.
     pub fn monitor(&self) -> Result<(), ControlError> {
         self.control.set_monitored(self.id, true)
     }
 
-    /// Stops hearing the source. It stays an input and keeps up with the
+    /// Stops hearing the sound. It stays part of the input and keeps up with the
     /// device; `monitor` hears it again. Refused as `CommandsFull` if the
     /// ring has no room.
     pub fn unmonitor(&self) -> Result<(), ControlError> {
@@ -118,44 +121,44 @@ impl InputSource {
 }
 
 /// An input the renderer holds: the handle from `Control::input`. Its
-/// sources are what you monitor; dropping it removes the input.
+/// sounds are what you monitor; dropping it removes the input.
 #[derive(Debug)]
 pub struct Input {
     /// One per entry of the layout, in order.
-    sources: Vec<InputSource>,
+    sounds: Vec<InputSound>,
     control: Control,
 }
 
 impl Input {
-    /// The input whose sources are the sounds `sounds`, in layout order,
-    /// on `control`.
-    pub(crate) fn new(sounds: &[SoundId], control: Control) -> Self {
-        let sources = sounds
+    /// The input whose sounds are named `ids`, in layout order, on
+    /// `control`.
+    pub(crate) fn new(ids: &[SoundId], control: Control) -> Self {
+        let sounds = ids
             .iter()
-            .map(|&id| InputSource {
+            .map(|&id| InputSound {
                 id,
                 control: control.clone(),
             })
             .collect();
-        Self { sources, control }
+        Self { sounds, control }
     }
 
-    /// The input's sources, one per entry of the layout it was added
+    /// The input's sounds, one per entry of the layout it was added
     /// with, in order.
-    pub fn sources(&self) -> &[InputSource] {
-        &self.sources
+    pub fn sounds(&self) -> &[InputSound] {
+        &self.sounds
     }
 }
 
 impl Drop for Input {
-    /// Removes the input: tells the renderer to drop every source's reader
-    /// at its next render and gives the sources' slots back. Best effort:
+    /// Removes the input: tells the renderer to drop every sound's reader
+    /// at its next render and stops counting them as held. Best effort:
     /// a drop cannot fail, so if the ring has no room for the removes the
     /// readers stay until the `InputFeed` is dropped, when they finish on
-    /// their own, and their slots stay spoken for.
+    /// their own, and they stay counted as held.
     fn drop(&mut self) {
-        let sounds: Vec<SoundId> = self.sources.iter().map(|s| s.id).collect();
-        let _ = self.control.remove_input(&sounds);
+        let ids: Vec<SoundId> = self.sounds.iter().map(|s| s.id).collect();
+        let _ = self.control.remove_input(&ids);
     }
 }
 
@@ -190,7 +193,7 @@ impl InputFeed {
     /// to the capture callback; each [`InputReader`], one per entry of
     /// `layout` in order, crosses to the render side on the command that
     /// adds its source.
-    pub(crate) fn new(layout: &[ChannelLayout], period: usize) -> (InputFeed, Vec<InputReader>) {
+    pub(crate) fn new(layout: &InputLayout, period: usize) -> (InputFeed, Vec<InputReader>) {
         debug_assert!(
             (1..=MAX_PERIOD_FRAMES).contains(&period),
             "the engine checks the period"
@@ -199,25 +202,25 @@ impl InputFeed {
     }
 
     /// [`new`](Self::new) with rings of `frames` frames.
-    fn with_ring(layout: &[ChannelLayout], frames: usize) -> (InputFeed, Vec<InputReader>) {
-        let mut sources = Vec::with_capacity(layout.len());
-        let mut readers = Vec::with_capacity(layout.len());
+    fn with_ring(layout: &InputLayout, frames: usize) -> (InputFeed, Vec<InputReader>) {
+        let mut sources = Vec::with_capacity(layout.entries().len());
+        let mut readers = Vec::with_capacity(layout.entries().len());
         let mut first = 0;
-        for &channels in layout {
+        for &source in layout.entries() {
             // This allocation is seen and deliberately not on the ledger.
             // `rtrb` allocates the ring itself, so it could only be counted
             // beside the buffer, not as one; and it does not scale with
             // the audio held, only with the period and the layout, both
             // bounded, so its worst case is `MAX_RING_BYTES` and it is
             // taken as part of the renderer's fixed overhead.
-            let (writer, reader) = rtrb::RingBuffer::new(frames * channels.count());
+            let (writer, reader) = rtrb::RingBuffer::new(frames * source.count());
             sources.push(InputWriter {
                 frames: writer,
                 first,
-                channels: channels.count(),
+                channels: source.count(),
             });
-            readers.push(InputReader::new(reader, channels.count() as u16));
-            first += channels.count();
+            readers.push(InputReader::new(reader, source));
+            first += source.count();
         }
         let feed = InputFeed {
             sources,
@@ -260,21 +263,22 @@ impl InputFeed {
 
 #[cfg(test)]
 mod tests {
-    use super::ChannelLayout::{Mono, Stereo};
     use super::*;
+    use crate::audio::ChannelLayout::{Mono, Stereo};
     use crate::render::dsp::Source;
+    use crate::testing::hear;
 
     /// A feed laid out as `layout` over rings of `frames` frames, and its
     /// readers.
     fn feed(layout: &[ChannelLayout], frames: usize) -> (InputFeed, Vec<InputReader>) {
-        InputFeed::with_ring(layout, frames)
+        InputFeed::with_ring(&InputLayout::new(layout), frames)
     }
 
     #[test]
     fn a_layout_is_as_wide_as_its_sources() {
-        assert_eq!(width(&[]), 0);
-        assert_eq!(width(&[Mono]), 1);
-        assert_eq!(width(&[Stereo, Mono, Mono]), 4);
+        assert_eq!(InputLayout::new([]).width(), 0);
+        assert_eq!(InputLayout::new([Mono]).width(), 1);
+        assert_eq!(InputLayout::new([Stereo, Mono, Mono]).width(), 4);
     }
 
     #[test]
@@ -286,13 +290,13 @@ mod tests {
         f.feed(&[0.1, 0.2, 0.4, 0.8, 0.11, 0.22, 0.44, 0.88]);
 
         let mut out = vec![0.0; 4];
-        readers[0].add(&mut out);
+        hear(&mut readers[0], &mut out);
         assert_eq!(out, vec![0.1, 0.2, 0.11, 0.22], "the pair, left and right");
         let mut out = vec![0.0; 4];
-        readers[1].add(&mut out);
+        hear(&mut readers[1], &mut out);
         assert_eq!(out, vec![0.4, 0.4, 0.44, 0.44], "the first microphone");
         let mut out = vec![0.0; 4];
-        readers[2].add(&mut out);
+        hear(&mut readers[2], &mut out);
         assert_eq!(out, vec![0.8, 0.8, 0.88, 0.88], "the second");
     }
 
@@ -302,10 +306,10 @@ mod tests {
         // One frame fits in each ring; the second frame finds both full.
         f.feed(&[0.1, 0.5, 0.9, 0.2, 0.6, 0.8]);
         let mut out = vec![0.0; 4];
-        readers[0].add(&mut out);
+        hear(&mut readers[0], &mut out);
         assert_eq!(out, vec![0.1, 0.5, 0.0, 0.0]);
         let mut out = vec![0.0; 4];
-        readers[1].add(&mut out);
+        hear(&mut readers[1], &mut out);
         assert_eq!(out, vec![0.9, 0.9, 0.0, 0.0]);
     }
 
@@ -319,13 +323,13 @@ mod tests {
 
     #[test]
     fn new_sizes_each_ring_from_the_period_in_whole_frames_of_its_width() {
-        let (mut f, mut readers) = InputFeed::new(&[Mono, Stereo], 4);
+        let (mut f, mut readers) = InputFeed::new(&InputLayout::new([Mono, Stereo]), 4);
         assert_eq!(readers[0].capacity(), 4 * RING_PERIODS);
         assert_eq!(readers[1].capacity(), 4 * RING_PERIODS * 2);
         assert_eq!(f.channels(), 3);
         f.feed(&[0.9, 0.1, 0.5]);
         let mut out = vec![0.0; 2];
-        readers[1].add(&mut out);
+        hear(&mut readers[1], &mut out);
         assert_eq!(out, vec![0.1, 0.5]);
     }
 }
@@ -337,7 +341,7 @@ mod worst_case {
     #[test]
     fn the_widest_input_at_the_longest_period_takes_exactly_the_worst_case() {
         let widest = [ChannelLayout::Stereo; MAX_INPUT_CHANNELS / 2];
-        let (_f, readers) = InputFeed::new(&widest, MAX_PERIOD_FRAMES);
+        let (_f, readers) = InputFeed::new(&InputLayout::new(widest), MAX_PERIOD_FRAMES);
         let bytes: usize = readers
             .iter()
             .map(|r| r.capacity() * size_of::<Pcm>())

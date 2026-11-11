@@ -39,7 +39,8 @@ use cpal::{
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use generations::config::{OUTPUT_CHANNELS, SAMPLE_RATE};
+use generations::Renderer;
+use generations::config::SAMPLE_RATE;
 
 /// Frames per period the capture device is asked for, so the period is
 /// known before the stream runs and the engine can size its rings from
@@ -96,7 +97,7 @@ impl Device {
     /// size is the backend's default for now; a fixed size for the Pi
     /// would be set on the config here.
     pub fn default_output() -> Result<Self, DeviceError> {
-        let channels = OUTPUT_CHANNELS as u16;
+        let channels = Renderer::CHANNELS as u16;
         let device = cpal::default_host()
             .default_output_device()
             .ok_or(DeviceError::NoOutputDevice)?;
