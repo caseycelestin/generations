@@ -18,8 +18,9 @@
 //! side knows, which sounds are still playing and what they play, and are
 //! for samples alone.
 //!
-//! The two sides name things to each other with the two ids here: a sound
-//! by its [`SoundId`], a buffer by its [`BufferAddress`].
+//! The two sides name things to each other with the ids here: a sound by
+//! its [`SoundId`], a take by its [`TakeId`], a buffer by its
+//! [`BufferAddress`].
 //!
 //! One thing goes the other way: every sound the renderer lets go of
 //! comes back as a [`Released`], so its last free happens on the control
@@ -48,6 +49,18 @@ pub enum Command {
     /// Remove every sample sound playing the buffer at the address, so
     /// the control side can let go of the last reference to it.
     Evict(BufferAddress),
+    /// Record what passes `tap` into `audio` from the next period on, as
+    /// the take `id`. The buffer is paid for on the control side and
+    /// moves here for the take; whatever it held is forgotten. A take
+    /// already running at that tap ends and goes back.
+    Record {
+        id: TakeId,
+        tap: Tap,
+        audio: AudioBuffer,
+    },
+    /// Let go of the take `id` with what it has kept so far, if it
+    /// is still held. One that has already filled names nothing.
+    StopRecording(TakeId),
 }
 
 impl From<SoundCommand<SampleReader>> for Command {
@@ -62,11 +75,12 @@ impl From<SoundCommand<InputReader>> for Command {
     }
 }
 
-/// A sound the renderer has let go of, on its way back to the control
-/// side to be dropped there. It may hold the last reference to a sample's
-/// audio or the last end of an input's ring, and freeing either is a call
-/// into the allocator, and for a large buffer into the kernel, that has
-/// no bound on how long it takes. Nothing reads it; arriving is its job.
+/// What the renderer has let go of, on its way back to the control side.
+/// A sound goes back to be dropped there: it may hold the last reference
+/// to a sample's audio or the last end of an input's ring, and freeing
+/// either is a call into the allocator, and for a large buffer into the
+/// kernel, that has no bound on how long it takes. Nothing reads it;
+/// arriving is its job. A take goes back to its owner.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 #[expect(dead_code, reason = "held only to be dropped on the control side")]
@@ -75,6 +89,10 @@ pub enum Released {
     Sample(Sound<SampleReader>),
     /// An input sound: finished, removed, or refused for want of room.
     Input(Sound<InputReader>),
+    /// The take of the take `id`: the buffer it was recorded into,
+    /// holding what it kept. Full, stopped, or ended by another take at
+    /// its tap.
+    Take { id: TakeId, audio: AudioBuffer },
 }
 
 impl From<Sound<SampleReader>> for Released {
@@ -109,6 +127,24 @@ pub enum SoundParam {
     /// Level as a linear factor: 0 is silent, 1 is as the source gives it.
     Gain(f32),
 }
+
+/// A point in the signal path where a recorder records: what passes
+/// there is kept, and goes on where it was going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tap {
+    /// The main out after the clip: exactly what is heard.
+    MainOut,
+}
+
+/// Identity of one take: one use of a recorder's buffer, from the
+/// command that starts it to the take that comes back. Minted by the
+/// control side, so it knows whose take it is when it returns; the
+/// renderer carries it and never reads it.
+///
+/// Never reused, so a take that comes back after its owner has gone names
+/// no one and can be dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TakeId(pub u64);
 
 /// Identity of one sound: one instance of something heard, a sample
 /// played once or one sound of an input. Minted by the control side, in order,

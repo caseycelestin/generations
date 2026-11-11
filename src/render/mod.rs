@@ -4,13 +4,15 @@
 //! ```text
 //! control side                          render side
 //! (Control)     ── Command ring ──▶     Renderer       the wiring: commands in, a period out
-//!               ◀── Released ring ──      every sound let go of, to be dropped there
+//!               ◀── Released ring ──      every sound let go of, to be dropped there, and every recorder
 //!                                         Sounds       the places sounds are held, samples and inputs apart
 //!                                           Sound      a source and its gain
 //!                                             SampleReader  a loaded sample, first frame to last
 //!                                             InputReader   one input sound's ring, a period at a time
 //!               ── a ring per input sound ─▶              fed from the capture callback
 //!                                         math         add, hard_clip: the period summed and clipped
+//!               ── Record ──▶             Recorders    one place per tap, each recorder read where its tap is
+//!                                           Recorder   what passes the tap, kept until full or stopped
 //! ```
 //!
 //! The pieces come from [`dsp`](crate::render::dsp) and are generic; this
@@ -38,7 +40,8 @@
 //! is decided here too: a sample cuts the oldest, an input is refused.
 //! See the `dsp` module doc for the pieces. Today the path is: every
 //! sample sound adds into the period, then every input sound, then a
-//! hard clip.
+//! hard clip, then the recorder, if one is held, keeps the period as
+//! heard.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
 //! end; its [`Control`] owns the producing end, and the two are
@@ -55,6 +58,7 @@
 
 pub mod command;
 pub(crate) mod dsp;
+pub(crate) mod recorders;
 pub(crate) mod sound;
 pub(crate) mod sounds;
 
@@ -62,11 +66,13 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::config::{MAX_PERIOD_FRAMES, Pcm};
 use crate::control::Control;
-use crate::render::dsp::math::{add, hard_clip};
-use crate::render::dsp::{Gain, InputReader, SampleReader, Source};
+use crate::memory::Ledger;
+use crate::render::dsp::math::{add, as_frames, hard_clip};
+use crate::render::dsp::{Gain, InputReader, Recorder, SampleReader, Source};
 #[cfg(test)]
 use command::SoundId;
-use command::{BufferAddress, Command, Released, SoundCommand};
+use command::{BufferAddress, Command, Released, SoundCommand, TakeId, Tap};
+use recorders::Recorders;
 use sound::Sound;
 use sounds::Sounds;
 
@@ -76,11 +82,13 @@ use sounds::Sounds;
 /// defaults the rest; a caller names only what else it changes:
 ///
 /// ```
-/// # use generations::{Renderer, RendererSettings};
-/// let (renderer, control) = Renderer::new(RendererSettings {
+/// # use generations::{Ledger, Renderer, RendererSettings};
+/// # let ledger = Ledger::new(1 << 20);
+/// let settings = RendererSettings {
 ///     sample_sounds: 24,
 ///     ..RendererSettings::new(256)
-/// });
+/// };
+/// let (renderer, control) = Renderer::new(settings, ledger);
 /// ```
 ///
 /// Each count is bounded by the matching `Renderer::MAX_*`, so any
@@ -165,6 +173,8 @@ pub struct Renderer {
     /// The input sounds, one per mono or stereo entry of every input, up
     /// to the settings' `input_sounds`.
     inputs: Sounds<Sound<InputReader>>,
+    /// The recorders, one place per tap, each read where its tap is.
+    recorders: Recorders,
 }
 
 impl Renderer {
@@ -200,21 +210,27 @@ impl Renderer {
     ///
     /// Sized by `settings`: the period, the command ring and the places
     /// sounds are held in, all allocated here.
-    pub fn new(settings: RendererSettings) -> (Renderer, Control) {
+    ///
+    /// `ledger` goes to the control, which pays from it for what it builds
+    /// and sends over, such as a recorder. The renderer never holds it, so
+    /// the render side still cannot allocate. Pass a clone of the ledger
+    /// the project was opened with: one ledger per machine.
+    pub fn new(settings: RendererSettings, ledger: Ledger) -> (Renderer, Control) {
         let (commands_in, commands) = RingBuffer::new(settings.command_capacity);
         let (released_in, released) = RingBuffer::new(Self::released_capacity(&settings));
         (
             Self::on(commands, released_in, settings),
-            Control::new(commands_in, released, settings.input_sounds),
+            Control::new(commands_in, released, settings.input_sounds, ledger),
         )
     }
 
-    /// How many sounds can be let go of between two sends of the control,
+    /// How many things can be let go of between two sends of the control,
     /// which empties the release ring before it pushes: every sound held,
-    /// and one for every command that can be waiting, since each adds at
-    /// most one sound and an add refused is let go of at once.
+    /// the one recorder, and one for every command that can be waiting,
+    /// since each adds at most one sound or recorder and an add refused
+    /// or a recorder replaced is let go of at once.
     fn released_capacity(settings: &RendererSettings) -> usize {
-        settings.sample_sounds + settings.input_sounds + settings.command_capacity
+        settings.sample_sounds + settings.input_sounds + 1 + settings.command_capacity
     }
 
     /// A silent renderer sized by `settings` that takes its commands from
@@ -232,6 +248,7 @@ impl Renderer {
             period: settings.period,
             samples: Sounds::new(settings.sample_sounds),
             inputs: Sounds::new(settings.input_sounds),
+            recorders: Recorders::new(),
         }
     }
 
@@ -242,7 +259,8 @@ impl Renderer {
     /// so a play, stop or level change lands at a period boundary. Then
     /// every sample and every input adds into the zeroed slice at its
     /// gain, one that has finished is let go, and the sum is clipped once
-    /// to the unit range. A sound at zero gain still runs, so an input
+    /// to the unit range. A recorder, if one is held, keeps the clipped
+    /// period, and goes back once it is full. A sound at zero gain still runs, so an input
     /// nobody hears keeps up with its ring.
     pub fn render(&mut self, out: &mut [Pcm]) {
         let frames = out.len() / Self::CHANNELS;
@@ -261,6 +279,14 @@ impl Renderer {
         self.inputs
             .remove_where(|s| s.finished(), |s| release(released, s));
         hard_clip(out);
+        if let Some(recorder) = self.recorders.get_mut(Tap::MainOut) {
+            recorder.record(as_frames(out));
+            if recorder.full()
+                && let Some((id, recorder)) = self.recorders.remove(Tap::MainOut)
+            {
+                release_recorder(&mut self.released, id, recorder);
+            }
+        }
     }
 
     /// Applies every command that has arrived, in order.
@@ -280,6 +306,20 @@ impl Renderer {
                     |s| BufferAddress::of(s.source().audio()) == addr,
                     |s| release(released, s),
                 ),
+                Command::StopRecording(id) => {
+                    if let Some((id, recorder)) = self.recorders.remove_take(id) {
+                        release_recorder(released, id, recorder);
+                    }
+                }
+                Command::Record { id, tap, audio } => {
+                    // A take already at this tap ends; Control prevents it,
+                    // so this is the backstop.
+                    if let Some((old, recorder)) =
+                        self.recorders.insert(tap, id, Recorder::new(audio))
+                    {
+                        release_recorder(released, old, recorder);
+                    }
+                }
             }
         }
     }
@@ -338,6 +378,14 @@ fn apply<S>(
     }
 }
 
+/// Lets go of the recorder making the take `id`: takes it apart and
+/// sends its buffer, holding the take, back to the control side, where
+/// its owner picks it up.
+fn release_recorder(released: &mut Producer<Released>, id: TakeId, recorder: Recorder) {
+    let audio = recorder.into_audio();
+    release(released, Released::Take { id, audio });
+}
+
 /// Sends `sound` back to the control side to be dropped. The ring is
 /// sized so it cannot be full; if it ever is, the sound is dropped here,
 /// which is late but not wrong.
@@ -355,7 +403,7 @@ mod tests {
     use super::*;
     use crate::audio::{AudioBuffer, ChannelLayout};
     use crate::render::command::SoundParam;
-    use crate::testing::audio;
+    use crate::testing::{audio, take_buffer};
 
     const HALF: Pcm = 0.5;
     /// What these tests' renderers are sized with. The command ring is
@@ -421,6 +469,26 @@ mod tests {
         )
         .unwrap();
         writer
+    }
+
+    /// Starts the take `id` of the main out, with room for `frames`
+    /// frames.
+    fn record(p: &mut Producer<Command>, id: u64, frames: usize) {
+        let audio = take_buffer(frames);
+        let id = TakeId(id);
+        let tap = Tap::MainOut;
+        p.push(Command::Record { id, tap, audio }).unwrap();
+    }
+
+    /// The id and samples of the next take sent back, or `None` if
+    /// nothing on the release ring is a take.
+    fn released_take(released: &mut Consumer<Released>) -> Option<(u64, Vec<Pcm>)> {
+        while let Ok(item) = released.pop() {
+            if let Released::Take { id, audio } = item {
+                return Some((id.0, audio.samples().to_vec()));
+            }
+        }
+        None
     }
 
     fn set_input_gain(p: &mut Producer<Command>, id: u64, level: f32) {
@@ -633,5 +701,78 @@ mod tests {
         assert!(!first.is_abandoned());
         assert_eq!(collect(&mut released), 1, "the refused input came back");
         assert!(second.is_abandoned(), "and its reader is gone");
+    }
+
+    #[test]
+    fn a_recorder_keeps_the_main_out_as_heard_and_comes_back_when_full() {
+        let (mut p, mut released, mut r) = renderer();
+        let loud = mono(vec![FULL, -FULL, HALF]);
+        play(&mut p, 1, &loud);
+        play(&mut p, 2, &loud);
+        record(&mut p, 1, 3);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), None);
+        r.render(&mut out[..2]);
+        assert_eq!(
+            released_take(&mut released),
+            Some((1, vec![1.0, 1.0, -1.0, -1.0, 1.0, 1.0]))
+        );
+    }
+
+    #[test]
+    fn a_full_recorder_keeps_no_more_and_the_renderer_holds_none() {
+        let (mut p, mut released, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 8]));
+        record(&mut p, 1, 1);
+        let mut out = vec![0.0; 4];
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), Some((1, vec![0.5, 0.5])));
+        r.render(&mut out);
+        assert_eq!(collect(&mut released), 0);
+    }
+
+    #[test]
+    fn a_new_recorder_lets_the_old_one_go_with_what_it_kept() {
+        let (mut p, mut released, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 4]));
+        record(&mut p, 1, 8);
+        let mut out = vec![0.0; 2];
+        r.render(&mut out);
+        record(&mut p, 2, 8);
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), Some((1, vec![0.5, 0.5])));
+    }
+
+    fn stop_recording(p: &mut Producer<Command>, id: u64) {
+        p.push(Command::StopRecording(TakeId(id))).unwrap();
+    }
+
+    #[test]
+    fn a_stopped_recording_comes_back_with_what_it_kept_so_far() {
+        let (mut p, mut released, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 8]));
+        record(&mut p, 1, 8);
+        let mut out = vec![0.0; 2];
+        r.render(&mut out);
+        stop_recording(&mut p, 1);
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), Some((1, vec![0.5, 0.5])));
+    }
+
+    #[test]
+    fn a_stop_for_another_recording_leaves_the_held_one_recording() {
+        let (mut p, mut released, mut r) = renderer();
+        play(&mut p, 1, &mono(vec![HALF; 8]));
+        record(&mut p, 2, 2);
+        stop_recording(&mut p, 1);
+        let mut out = vec![0.0; 2];
+        r.render(&mut out);
+        assert_eq!(released_take(&mut released), None);
+        r.render(&mut out);
+        assert_eq!(
+            released_take(&mut released),
+            Some((2, vec![0.5, 0.5, 0.5, 0.5]))
+        );
     }
 }

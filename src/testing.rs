@@ -5,8 +5,8 @@ use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::Pcm;
 use crate::memory::Ledger;
 use crate::render::Renderer;
-use crate::render::dsp::Source;
 use crate::render::dsp::math::add;
+use crate::render::dsp::{Recorder, Source};
 
 /// Adds one period of `source` into `out`, an interleaved stereo slice,
 /// the period being as many frames as `out` holds: what the renderer
@@ -26,4 +26,16 @@ pub(crate) fn audio(layout: ChannelLayout, samples: &[Pcm]) -> AudioBuffer {
     let mut block = unlimited().alloc(samples.len()).unwrap();
     block.extend(samples.iter().copied());
     AudioBuffer::new(layout, block).unwrap()
+}
+
+/// An empty stereo buffer with room for `frames` frames, paid for on a
+/// throwaway ledger, for a take in tests not about the budget.
+pub(crate) fn take_buffer(frames: usize) -> AudioBuffer {
+    let block = unlimited().alloc(frames * Renderer::CHANNELS).unwrap();
+    AudioBuffer::new(ChannelLayout::Stereo, block).unwrap()
+}
+
+/// A recorder starting a take in `take_buffer(frames)`.
+pub(crate) fn recorder(frames: usize) -> Recorder {
+    Recorder::new(take_buffer(frames))
 }

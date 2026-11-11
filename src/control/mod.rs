@@ -8,8 +8,8 @@
 //! `stop_all`. What those return, a [`SampleSound`], an [`Input`] and its
 //! sounds, carries a clone of the `Control` so its own verbs work without
 //! the parent. It is cheap to clone and holds nothing but the two rings'
-//! ends, the sound id counter and the count of input sounds held, behind
-//! one `Arc`.
+//! ends, the sound id counter, the count of input sounds held and a clone
+//! of the ledger, behind one `Arc`.
 //!
 //! Building the [`Command`] that carries each verb is this type's job and
 //! nobody else's, so the command vocabulary is private between here and
@@ -19,9 +19,10 @@
 //! or capture thread may hold one of these: it has a mutex.
 //!
 //! The renderer sends back every sound it lets go of, and the control
-//! drops them here, on the control side: whenever the rings' lock is
-//! taken, so at the start of every send, and whenever
-//! [`collect`](Control::collect) is called. A sample's audio the
+//! drops them here, on the control side; a take it sends back is kept,
+//! by its take, for its owner to take back. This happens
+//! whenever the rings' lock is taken, so at the start of every send, and
+//! whenever [`collect`](Control::collect) is called. A sample's audio the
 //! caller has already dropped is freed then. The ring cannot fill,
 //! because nothing reaches the renderer except through a send, and every
 //! send empties it first.
@@ -40,23 +41,29 @@
 //! [`Renderer`]: crate::render::Renderer
 
 pub(crate) mod input;
+pub(crate) mod recorder;
 pub(crate) mod sample_sound;
 
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
+use crate::audio::{AudioBuffer, ChannelLayout, Take};
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
+use crate::memory::{Ledger, OverBudgetError};
 use crate::project::sample::Sample;
-use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam};
+use crate::render::Renderer;
+use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap};
 use crate::render::dsp::{InputReader, SampleReader};
 use input::{Input, InputFeed, InputLayout};
+use recorder::Recorder;
 
 /// Reasons the control side can refuse what it is asked: the ring is full,
-/// or an input would not fit.
+/// an input would not fit, or a recorder cannot be had or started.
 #[derive(Debug, Error)]
 pub enum ControlError {
     /// The command ring was full; the command was dropped.
@@ -74,6 +81,15 @@ pub enum ControlError {
     /// already held. Drop an input before adding another.
     #[error("the renderer holds as many input sounds as it can")]
     InputsFull,
+    /// The tap already has a recorder. Drop it before making another.
+    #[error("the tap already has a recorder")]
+    TapInUse,
+    /// A recorder's buffer would put audio memory over its budget.
+    #[error(transparent)]
+    OverBudget(#[from] OverBudgetError),
+    /// A take is already running on this recorder. Stop it first.
+    #[error("the recorder is already recording")]
+    Recording,
 }
 
 /// The control side's end of the renderer, from
@@ -96,6 +112,13 @@ struct Shared {
     input_sounds: AtomicUsize,
     /// How many input sounds the renderer holds at once.
     input_capacity: usize,
+    /// The next take id. Only goes up.
+    next_take: AtomicU64,
+    /// The taps that have a recorder: one each.
+    taps: Mutex<HashSet<Tap>>,
+    /// What the control pays from for what it builds and sends to the
+    /// renderer. The render side never holds one.
+    ledger: Ledger,
 }
 
 /// The control's ends of the two rings, locked together so a send
@@ -105,32 +128,54 @@ struct Rings {
     /// The sending end of the command ring.
     commands: Producer<Command>,
     /// The receiving end of the ring the renderer sends back every sound
-    /// it lets go of on.
+    /// and recorder it lets go of on.
     released: Consumer<Released>,
+    /// Takes the renderer has sent back, each in the buffer it was
+    /// recorded into, by take, until their owner takes them back.
+    takes: HashMap<TakeId, AudioBuffer>,
+    /// Recordings whose owner is gone: their take is dropped when it
+    /// comes back instead of kept.
+    abandoned: HashSet<TakeId>,
 }
 
 impl Rings {
-    /// Drops every sound the renderer has let go of since the last
-    /// collect.
+    /// Takes everything the renderer has let go of since the last
+    /// collect: drops every sound, and keeps every take for its owner
+    /// unless the owner is gone.
     fn collect(&mut self) {
-        while self.released.pop().is_ok() {}
+        while let Ok(released) = self.released.pop() {
+            if let Released::Take { id, audio } = released
+                && !self.abandoned.remove(&id)
+            {
+                self.takes.insert(id, audio);
+            }
+        }
     }
 }
 
 impl Control {
     /// A control sending over `commands` and dropping what comes back on
     /// `released`, minting sound ids from zero, for a renderer that holds
-    /// `input_capacity` input sounds.
+    /// `input_capacity` input sounds, paying from `ledger`.
     pub(crate) fn new(
         commands: Producer<Command>,
         released: Consumer<Released>,
         input_capacity: usize,
+        ledger: Ledger,
     ) -> Self {
         Self(Arc::new(Shared {
-            rings: Mutex::new(Rings { commands, released }),
+            rings: Mutex::new(Rings {
+                commands,
+                released,
+                takes: HashMap::new(),
+                abandoned: HashSet::new(),
+            }),
             next_sound: AtomicU64::new(0),
             input_sounds: AtomicUsize::new(0),
             input_capacity,
+            next_take: AtomicU64::new(0),
+            taps: Mutex::new(HashSet::new()),
+            ledger,
         }))
     }
 
@@ -172,7 +217,8 @@ impl Control {
     /// Frees, here on the control side, every sound the renderer has let
     /// go of since the last send or collect: the audio of a sample dropped
     /// while it played, once that sound has ended, and the rings of an
-    /// input removed. Every send does this first, so only an owner that
+    /// input removed. A recorder let go of, full or stopped, is kept
+    /// with its take for its owner instead. Every send does this first, so only an owner that
     /// can go quiet needs it: call it from a UI or event loop tick, or
     /// before a load that needs the budget back. Never on the audio
     /// thread: it is where the freeing happens.
@@ -180,6 +226,29 @@ impl Control {
         // Taking the lock is the collect (see `lock`), so take it and let
         // it go: there is nothing to send.
         drop(self.lock());
+    }
+
+    /// A recorder at `tap` with room for `frames` stereo frames, paid for
+    /// now from the ledger, so no take ever allocates, and every page of
+    /// it touched now, so recording never waits on the OS. That costs a
+    /// pass over the buffer here, on the control side. One recorder makes
+    /// many takes: [`record`](Recorder::record) one, [`stop`](Recorder::stop)
+    /// it or let it fill, and ask [`is_recording`](Recorder::is_recording)
+    /// to find out it has ended. Refused as `TapInUse` if the tap already
+    /// has a recorder, and as `OverBudget` if the ledger cannot afford it.
+    pub fn recorder(&self, tap: Tap, frames: usize) -> Result<Recorder, ControlError> {
+        let mut taps = self.taps();
+        if taps.contains(&tap) {
+            return Err(ControlError::TapInUse);
+        }
+        let samples = frames.saturating_mul(Renderer::CHANNELS);
+        let mut block = self.0.ledger.alloc(samples)?;
+        // The renderer writes it; touch every page here so it never waits.
+        block.prefault();
+        let audio =
+            AudioBuffer::new(ChannelLayout::Stereo, block).expect("an empty block is whole frames");
+        taps.insert(tap);
+        Ok(Recorder::new(self.clone(), tap, Take::new(audio)))
     }
 
     /// Adds an input: the ability to put audio into the renderer. Mints a
@@ -344,6 +413,63 @@ impl Control {
         Ok(())
     }
 
+    /// The take of the take `id`, in the buffer it was recorded
+    /// into, once the renderer has sent it back: full or stopped. `None`
+    /// while it is still recording, or once it has been taken.
+    pub(crate) fn take_back(&self, id: TakeId) -> Option<AudioBuffer> {
+        self.lock().takes.remove(&id)
+    }
+
+    /// Moves `audio` to the renderer to record what passes `tap` as a new
+    /// take, and returns its id. Refused as `CommandsFull` if the
+    /// ring has no room, with the buffer handed back.
+    pub(crate) fn start_recording(
+        &self,
+        tap: Tap,
+        audio: AudioBuffer,
+    ) -> Result<TakeId, (ControlError, AudioBuffer)> {
+        let mut rings = self.lock();
+        if rings.commands.slots() == 0 {
+            return Err((ControlError::CommandsFull, audio));
+        }
+        let id = TakeId(self.0.next_take.fetch_add(1, Ordering::Relaxed));
+        let record = Command::Record { id, tap, audio };
+        rings
+            .commands
+            .push(record)
+            .expect("room was checked under the lock");
+        Ok(id)
+    }
+
+    /// Stops the take `id` at the renderer's next period. Refused as
+    /// `CommandsFull` if the ring has no room.
+    pub(crate) fn stop_recording(&self, id: TakeId) -> Result<(), ControlError> {
+        self.send(Command::StopRecording(id))
+    }
+
+    /// Gives up the take `id`: its take is dropped here if it is
+    /// already back, or when it comes back if not, and the renderer is
+    /// told to stop it. If the ring has no room for the stop, it runs
+    /// until full and is dropped then.
+    pub(crate) fn abandon_take(&self, id: TakeId) {
+        let mut rings = self.lock();
+        if rings.takes.remove(&id).is_none() {
+            rings.abandoned.insert(id);
+            let _ = rings.commands.push(Command::StopRecording(id));
+        }
+    }
+
+    /// Lets `tap` have a recorder again.
+    pub(crate) fn free_tap(&self, tap: Tap) {
+        self.taps().remove(&tap);
+    }
+
+    /// The taps with a recorder. A panic while holding the lock leaves
+    /// the set intact, so a poisoned lock is taken anyway.
+    fn taps(&self) -> MutexGuard<'_, HashSet<Tap>> {
+        self.0.taps.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The rings, with everything the renderer has let go of already
     /// dropped. Every way to the rings comes through here, so every send
     /// collects first and no path can forget to: that is what keeps the
@@ -366,7 +492,7 @@ mod tests {
     use crate::project::tests::memory_project;
     use crate::project::{Project, SampleId};
     use crate::render::{Renderer, RendererSettings};
-    use crate::testing::audio;
+    use crate::testing::{audio, unlimited};
 
     /// What these tests' renderers are made with: a small period and
     /// ring, every slot.
@@ -407,7 +533,7 @@ mod tests {
     fn commands_sent_before_the_renderer_is_driven_wait_for_it() {
         let (p, id) = project_with(2);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         control.play(&loaded).unwrap();
 
         let out = period(&mut r, 2);
@@ -419,7 +545,7 @@ mod tests {
     fn play_is_heard_from_the_renderers_next_period() {
         let (p, id) = project_with(2);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
 
         let play = control.play(&loaded).unwrap();
         let out = period(&mut r, 2);
@@ -433,7 +559,7 @@ mod tests {
     fn each_play_is_its_own_sound() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
 
         let a = control.play(&loaded).unwrap();
         let b = control.play(&loaded).unwrap();
@@ -456,7 +582,7 @@ mod tests {
     fn a_full_ring_refuses_the_command_and_the_next_play_is_a_new_sound() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let mut last = None;
         for _ in 0..SETTINGS.command_capacity {
             last = Some(control.play(&loaded).unwrap());
@@ -480,7 +606,7 @@ mod tests {
 
     #[test]
     fn an_input_is_one_to_max_channels_wide_and_has_a_period() {
-        let (_r, control) = Renderer::new(SETTINGS);
+        let (_r, control) = Renderer::new(SETTINGS, unlimited());
         let too_wide = [ChannelLayout::Mono; MAX_INPUT_CHANNELS + 1];
         for bad in [&[][..], &too_wide[..]] {
             assert!(matches!(
@@ -499,7 +625,7 @@ mod tests {
 
     #[test]
     fn each_sound_of_an_input_is_heard_on_its_own_and_all_go_when_it_is_dropped() {
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         // A device of four channels: a stereo pair, then two microphones.
         let (input, mut feed) = control
             .input(
@@ -553,7 +679,7 @@ mod tests {
 
     #[test]
     fn more_input_sounds_than_slots_are_refused_until_an_input_is_dropped() {
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         // One stereo input, then mono inputs up to the capacity.
         let (first, _first_feed) = control
             .input(
@@ -606,7 +732,7 @@ mod tests {
     fn a_full_ring_refuses_an_input_and_holds_no_slot() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         for _ in 0..SETTINGS.command_capacity {
             control.play(&loaded).unwrap();
         }
@@ -633,7 +759,7 @@ mod tests {
 
     #[test]
     fn an_input_dropped_onto_a_full_ring_keeps_its_slots_until_its_feed_goes() {
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let (input, feed) = control
             .input(&InputLayout::new([ChannelLayout::Mono]), 64)
             .unwrap();
@@ -661,7 +787,7 @@ mod tests {
         let kept = p.add_sample(&ramp(100)).unwrap();
         let gone = p.load(gone).unwrap();
         let kept = p.load(kept).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let a = control.play(&gone).unwrap();
         let b = control.play(&kept).unwrap();
         period(&mut r, 4);
@@ -677,7 +803,7 @@ mod tests {
     fn stop_then_drop_frees_the_audio_once_the_sounds_are_cut() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let play = control.play(&loaded).unwrap();
         period(&mut r, 4);
 
@@ -702,7 +828,7 @@ mod tests {
     fn stop_on_a_full_ring_is_refused_and_the_sample_is_untouched() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (_r, control) = Renderer::new(SETTINGS);
+        let (_r, control) = Renderer::new(SETTINGS, unlimited());
         for _ in 0..SETTINGS.command_capacity {
             control.play(&loaded).unwrap();
         }
@@ -719,7 +845,7 @@ mod tests {
     fn a_dropped_sample_lets_its_sounds_play_out() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let play = control.play(&loaded).unwrap();
         period(&mut r, 4);
 
@@ -735,5 +861,20 @@ mod tests {
         assert_eq!(p.ledger().in_use(), ramp_bytes(100));
         control.stop_all().unwrap();
         assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn a_take_sent_back_is_kept_for_its_owner_by_take() {
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
+        let id = TakeId(7);
+        let audio = crate::testing::take_buffer(1);
+        let tap = Tap::MainOut;
+        control.send(Command::Record { id, tap, audio }).unwrap();
+        assert!(control.take_back(id).is_none(), "not sent back yet");
+
+        period(&mut r, 1);
+        let take = control.take_back(id).expect("full, so sent back");
+        assert_eq!(take.samples(), &[0.0, 0.0]);
+        assert!(control.take_back(id).is_none(), "taken once");
     }
 }

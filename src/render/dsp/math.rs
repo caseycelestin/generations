@@ -1,10 +1,11 @@
 //! The arithmetic every piece shares: frames to stereo, stereo into the
-//! period, the period into range.
+//! period, the period into range, and the period back out as frames.
 //!
-//! Three free functions over slices, with no state. A producer piece
-//! turns what it holds into stereo frames with [`stereo`] and sums them
-//! into the period with [`add`]; the renderer ends the period with
-//! [`hard_clip`]. Whether the frames came from a loaded sample or the
+//! Free functions over slices, with no state. A producer piece turns
+//! what it holds into stereo frames with [`stereo`] and sums them into
+//! the period with [`add`]; the renderer ends the period with
+//! [`hard_clip`], and reads it back as frames with [`as_frames`] for
+//! whatever keeps it. Whether the frames came from a loaded sample or the
 //! capture device makes no difference here.
 
 use crate::audio::ChannelLayout;
@@ -59,6 +60,19 @@ pub fn add(out: &mut [Pcm], frames: impl IntoIterator<Item = Frame>) {
             *o += s;
         }
     }
+}
+
+/// The frames of `period`, an interleaved stereo slice, in order: the
+/// way back from what [`add`] sums into, for whatever keeps the period
+/// once it is made.
+pub fn as_frames(period: &[Pcm]) -> impl Iterator<Item = Frame> {
+    debug_assert_eq!(
+        period.len() % Renderer::CHANNELS,
+        0,
+        "the period is not whole frames"
+    );
+    let (frames, _) = period.as_chunks::<{ Renderer::CHANNELS }>();
+    frames.iter().copied()
 }
 
 /// Clamps every sample to `-1.0..=1.0`. The last thing before the
@@ -120,6 +134,12 @@ mod tests {
         let mut out = vec![0.0; 2];
         add(&mut out, [[1.0, 1.0], [2.0, 2.0]]);
         assert_eq!(out, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_period_reads_back_as_its_frames() {
+        let frames: Vec<Frame> = as_frames(&[0.1, 0.2, 0.3, 0.4]).collect();
+        assert_eq!(frames, vec![[0.1, 0.2], [0.3, 0.4]]);
     }
 
     #[test]

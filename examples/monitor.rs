@@ -21,7 +21,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::MAX_PERIOD_FRAMES;
-use generations::{ChannelLayout, InputLayout, Renderer, RendererSettings};
+use generations::{ChannelLayout, InputLayout, Ledger, Renderer, RendererSettings};
 
 mod device;
 use device::{Capture, Device};
@@ -44,9 +44,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         layout
     });
 
-    // No project: monitoring an input needs no samples and no disk.
+    // No project: monitoring an input needs no samples and no disk, and
+    // no audio-length memory, so the ledger has nothing to give.
+    let ledger = Ledger::new(0);
     // The output device renders in pieces of at most this many frames.
-    let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES));
+    let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES), ledger);
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.
     let capture = Capture::default_input()?;

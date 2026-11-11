@@ -30,6 +30,7 @@
 //!   mod.rs                  Control: the end of the command ring you hold.
 //!   │                       play a Sample, stop its sounds, add an input
 //!   sample_sound.rs         SampleSound: one play, stop it
+//!   recorder.rs             Recorder: a buffer at a tap, its takes
 //!   input.rs                Input you hold, shaped by an InputLayout, its
 //!                           InputSounds you monitor; InputFeed a capture
 //!                           callback fills, one ring per sound
@@ -134,7 +135,8 @@
 //! Project::open(dir, ledger)   the disk side: import and load
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!
-//! Renderer::new(settings)      the sound side: the Renderer and its Control,
+//! Renderer::new(settings, ledger)
+//!                              the sound side: the Renderer and its Control,
 //!                              which plays, adds inputs, stops all
 //! device.start(move |out| renderer.render(out))
 //!                              the caller's own device, whatever it is
@@ -161,8 +163,9 @@ pub(crate) mod render;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioError, ChannelLayout};
+pub use audio::{AudioError, ChannelLayout, Take};
 pub use control::input::{Input, InputFeed, InputLayout, InputSound};
+pub use control::recorder::Recorder;
 pub use control::sample_sound::SampleSound;
 pub use control::{Control, ControlError};
 pub use memory::{Ledger, OverBudgetError};
@@ -170,4 +173,5 @@ pub use project::import::{ConvertError, DecodeError, ImportError};
 pub use project::sample::Sample;
 pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};
+pub use render::command::Tap;
 pub use render::{Renderer, RendererSettings};

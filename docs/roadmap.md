@@ -11,9 +11,9 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM ledger: one figure for everything the engine holds in memory | done |
-| 6 | Recording: audio input as a new root | built, then removed in the memory port; to be rebuilt |
+| 6 | Recording: audio input as a new root | built, then removed in the memory port; main out rebuilt on the renderer in step 8, inputs to come |
 | 7 | Input monitoring: hear the input through the output | done |
-| 8 | Sequencing and mixing: the real-time side | mixing done; sequencing to come |
+| 8 | Sequencing and mixing: the real-time side | mixing and main-out recording done; sequencing to come |
 | 9 | Arrangement and more effects | |
 
 ## Why this order
@@ -150,18 +150,33 @@ or rejected instead. The history of how a shape was reached is in git.
   guarantee is a cgroup reservation, no swap, and a budget set below what
   is free. The ledger makes sure the engine never asks for more than that
   one number. A locked arena was considered and left for later.
+- **`Control` holds a ledger too.** `Renderer::new(settings, ledger)`
+  hands a clone to `Control`, which pays for what it builds and sends to
+  the renderer: a recorder's buffer now, effect state later. The renderer
+  only passes it on. Held, not passed per call, as `Project` holds its
+  own and as an allocator is held by what allocates from it.
 - **Live effects will allocate on the control side** at instantiation and
   move to the renderer by command.
+- **Prefault what the audio thread writes first.** A fresh block is
+  reserved, not backed: the first write to each page stops the thread
+  while the kernel finds one. Memory the control side fills (a loaded
+  sample, the renderer's places) is backed before the audio thread sees
+  it; memory the audio thread is first to write (a recorder's buffer,
+  later a delay line) is written once at allocation with
+  `Block::prefault`, on the control side. Prefaulting everything was
+  rejected as work with nothing to gain.
 - **Review rule:** every new audio-length allocation goes through
-  `Ledger::alloc`, or the figure is a lie.
+  `Ledger::alloc`, or the figure is a lie; one the audio thread fills
+  is prefaulted.
 
 ### The two sides
 
 - **The engine is two sides that never name each other.** The disk side is
-  `Project` (`open`, `import`, `load`). The sound side is
-  `Renderer::new() -> (Renderer, Control)`: the renderer moves to the audio
-  thread, `Control` stays (`play`, `stop`, `stop_all`, `input`). The only
-  thing that crosses is a `Sample`, carried by the caller. Until
+  `Project` (`open`, `import`, `load`, `save_take`). The sound side is
+  `Renderer::new(settings, ledger) -> (Renderer, Control)`: the renderer
+  moves to the audio thread, `Control` stays (`play`, `stop`, `stop_all`,
+  `input`, `recorder`). What crosses is a `Sample` one way and a `Take`
+  the other, carried by the caller. Until
   2026-11-10 an `Engine` type was the only way in and every verb was an
   engine method taking an id; no method needed both sides, so it was
   dissolved, and a joint constructor was rejected as the engine again.
@@ -171,8 +186,9 @@ or rejected instead. The history of how a shape was reached is in git.
   `Control` takes by reference. A sample carrying a handle and sending its
   eviction from `Drop` was tried and rejected as the wrong coupling.
 - **`Control` is the shared sending end.** A mutex around the command
-  ring's producer behind an `Arc`, with the sound id counter and the count
-  of input sounds held. Control side only: nothing on the audio or capture thread
+  ring's producer behind an `Arc`, with the sound and take id counters,
+  the count of input sounds held, the taps that have a recorder, and the
+  ledger. Control side only: nothing on the audio or capture thread
   holds one. It is the only code that builds a `Command`. Named for what it
   is to the caller; `RendererHandle`, `Link` and `Remote` were rejected.
 - **A loaded sample is plain data.** `Sample` is an id and an
@@ -196,8 +212,9 @@ or rejected instead. The history of how a shape was reached is in git.
   happen in practice (`RendererSettings::command_capacity`).
 - **The source tree is the architecture.** `src/project/` (disk side:
   `Project`, `Sample`, `storage/`, `import/`), `src/control/` (the
-  control thread: `Control`, `SampleSound`, `Input`), `src/render/` (the audio
-  thread: `Renderer`, `command.rs`, `dsp/`). Shared at the top: `config`,
+  control thread: `Control`, `SampleSound`, `Input`, `Recorder`),
+  `src/render/` (the audio thread: `Renderer`, `command.rs`, `Sounds`,
+  `Recorders`, `dsp/`). Shared at the top: `config`,
   `audio`, `memory`. `render/` imports neither of the others.
 
 ### The render side
@@ -212,8 +229,9 @@ or rejected instead. The history of how a shape was reached is in git.
   bounce).
 - **`dsp/` is generic pieces; the renderer is this product's pipeline.**
   `dsp/` holds the `Source` trait (`frames(n) -> impl Iterator<Item =
-  Frame>`, `finished()`), `SampleReader`, `InputReader`, `Gain`, and
-  `math` (`stereo`, `add`, `hard_clip`), and knows no commands. The
+  Frame>`, `finished()`), `SampleReader`, `InputReader`, `Gain`, a
+  `Recorder` that keeps frames, and `math` (`stereo`, `add`,
+  `hard_clip`, `as_frames`), and knows no commands. The
   `Renderer` holds samples and inputs apart, each a `Sounds<Sound<_>>`,
   where `render::Sound` is a source and its `Gain`. It zeroes the period,
   adds every sound into it, and hard-clips once. The pipeline is
@@ -237,7 +255,8 @@ or rejected instead. The history of how a shape was reached is in git.
 - **Commands are low level.** Operations on what the renderer holds, never
   intents: `SoundCommand<S>` is `Add { id, source, gain } | Remove(id) |
   Set { id, param: SoundParam }`, wrapped as `Command::Sample` or
-  `Command::Input`, plus `StopAllSamples` and `Evict`. Meaning (monitoring,
+  `Command::Input`, plus `StopAllSamples`, `Evict`, and for recording
+  `Record { id, tap, audio }` and `StopRecording(id)`. Meaning (monitoring,
   a level) lives on the control-side handles. A stop-all must not mute
   the microphone. High-level commands (`Monitor`, `Unmonitor`, `Play`)
   came first.
@@ -312,25 +331,68 @@ or rejected instead. The history of how a shape was reached is in git.
   milliseconds, so it renders silence when idle. Samples can be dropped
   in any order: a sound holding the last `Arc` goes back on the release
   ring to be freed on the control side.
-- **The examples are `first_sound` and `monitor`**, and are plain
+- **The examples are `first_sound`, `monitor` and `resample`**, and are plain
   demonstration code: no hardening or shared abstractions there. When the
   device exists, they move into a binary crate.
 
-### Recording (not built)
+### Recording
 
-Built in step 6 and removed in the memory port (PR #40) to be rebuilt on
-the renderer. The decisions that stand:
+Built in step 6, removed in the memory port (PR #40), and rebuilt on the
+renderer in step 8 for the main out. Recording an input is next.
 
-- A recorder is sized and allocated once, from the ledger, on the control
-  side; a take is one use of it and never allocates. Growing a buffer per
-  take was the earlier plan.
-- One take at a time; a new take overwrites the last unless it was saved.
-- A full take is not an error: it stops and hands the buffer back.
-- The take has no error path; device failures are the device's to report.
-- Saving stores the take as a new root through the same crate-private add
-  as import.
-- Where recording taps the signal (input, bus, main out) is decided with
-  step 8's routing.
+- **A tap is where a recorder records:** a point in the signal path whose
+  frames are kept as they go on to where they were going. `Tap::MainOut`
+  is after the clip, exactly what is heard, which is resampling. An
+  input, before or after its gain, and a bus come later as more variants.
+  Where to record is data on one `Record` command, not a command per
+  place.
+- **One recorder, many takes.** `control.recorder(tap, max_frames)` pays
+  for one stereo buffer from the ledger and returns a `Recorder` handle;
+  starting a take allocates nothing, so a press records at once. Every
+  page is written when the recorder is made (`Block::prefault`), because
+  a fresh block is only reserved and the first write to each page would
+  otherwise fault on the audio thread. The buffer is held for as long as the handle
+  is, even between takes. A buffer per take was the earlier plan, and
+  was rejected because the allocation sat between the press and the
+  first frame.
+- **The length is a maximum.** `stop()` ends a take; reaching the end of
+  the buffer is a normal end too, not an error. Lengths are frames: the
+  panel converts from seconds or bars, and only it knows the tempo.
+- **One recorder per tap, one take at a time.** `Control` refuses a
+  second recorder on a tap (`TapInUse`) and a second take on a recorder
+  (`Recording`); the renderer ending the take already at a tap is the
+  backstop.
+- **The buffer moves, it is not shared.** `record()` moves the
+  `AudioBuffer` into `Record`, so while the renderer writes, nothing else
+  can see it, without `unsafe` or a lock; an `Arc` would have made it
+  read-only. `AudioBuffer` gained crate-private whole-frame writes for
+  its owner; shared, as a loaded sample is, it never changes.
+- **The renderer builds the `dsp::Recorder`** around the buffer when the
+  take starts, and takes it apart when the take ends, so the control side
+  never names a `dsp` type. It holds recorders in `Recorders`, a fixed
+  array with one place per tap that exists (`std::HashMap` was rejected:
+  its insert and remove can rehash). Sample and input sources are still
+  built by `Control`; moving them to the renderer the same way is a
+  backfill.
+- **A take comes back, not a recorder.** When it ends, the buffer goes
+  back on the release ring as `Released::Take { id, audio }`; `Control`'s
+  collect keeps takes by `TakeId` for their owner instead of dropping
+  them. The audio thread cannot call anyone, so the owner finds out by
+  asking: `is_recording()` and `last_take()` poll, from a panel's tick.
+  Dropping the handle mid-take marks the take abandoned, and collect
+  drops it on arrival.
+- **No handle per take.** The recorder holds one take at a time, so its
+  state is the take's; a `Take` handle borrowing the recorder would make
+  the panel's state self-referential.
+- **A take is not a sample until it is saved.** `last_take()` lends the
+  finished `Take`, which lasts until the next `record()`, and
+  `project.save_take(&take)` stores the frames it kept as a new root
+  through the same crate-private add as import. To play it, load the id:
+  playing shares a buffer, and the recorder's must stay its own.
+  Returning a loaded `Sample` from the save was considered and left until
+  a caller needs it.
+- **A take has no error path;** device failures are the device's to
+  report.
 
 ### Process
 
@@ -355,21 +417,27 @@ per-device `RendererSettings`.
 
 The release ring is built. Every sound the renderer lets go of
 (finished, removed, stolen, evicted, or an add refused) goes back over a
-second ring as a `Released`, and `Control` drops what is there at the
-start of every send, or when its owner calls `Control::collect`, for
-when it has gone quiet or before a load that needs the budget back.
-Sized at the sound counts plus the command capacity, it cannot fill
-between two sends. Freeing a large buffer is a trip into the allocator
+second ring as a `Released`, and `Control` drops what is there whenever
+its lock is taken, so at every send, or when its owner calls
+`Control::collect`, for when it has gone quiet or before a load that
+needs the budget back. Sized at the sound counts, one recorder and the
+command capacity, it cannot fill between two sends. Freeing a large buffer is a trip into the allocator
 and the kernel with no bound on its time, so the last free of a sample's
 buffer and an input's ring is off the audio thread. Dropping a `Sample`
 while it plays still lets the sound ring out; the audio is freed at the
 first send or collect after it ends, and the ledger counts it until
 then.
 
+Recording the main out is built (see Recording, above). The routing
+worry that came before it, that a ring has one consumer, went away with
+the mixer rewrite: the renderer reads each source once a period and can
+send the frames wherever it likes, so routing is where the renderer puts
+frames it already has.
+
 What is left:
-- **Routing a source to two destinations** (a bus and a recorder) is open:
-  a ring has one consumer, so either the reader fans out or the second
-  destination taps after the first.
+- **Recording an input:** a `Tap::Input` variant, a place in `Recorders`
+  per input sound, and reading the frames before the gain, so an
+  unmonitored input still records.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on
   the command.
 
@@ -411,6 +479,20 @@ The storage layer does not know about tiers.
 - **An `i16` build** for low-power hardware, chosen at build time.
 - **Projects in another stored format** than the engine's, converted on
   load and saved in the engine's.
-- **A level meter on a take**, an atomic the panel reads.
+- **Warming the small rings.** The release ring's slots are first
+  written by the renderer and an input ring's by the capture thread, so
+  each faults a few pages on its first pushes. rtrb has no hook to
+  prefault; pushing and popping a value through every slot at creation
+  would do it.
+- **`mlockall` on the device.** `mlockall(MCL_CURRENT | MCL_FUTURE)`
+  backs and locks every page the process has or will have, the blanket
+  form of prefaulting, and guarantees nothing is paged out later. It
+  needs `CAP_IPC_LOCK` or a raised `RLIMIT_MEMLOCK` and is a
+  process-wide choice, so it is the caller's, beside the cgroup
+  reservation and no swap; the crate does not own the process.
+- **A level meter on a take**, an atomic the panel reads; the same
+  atomic could report a take's progress.
+- **Saving a take as a loaded sample**, a copy into a right-sized block,
+  for playing a resample at once without reading it back from disk.
 - **A `stereo` fast path** for stereo-as-stored, after a measurement.
 - **Hardware monitoring** on the target's codec, if it has it.
