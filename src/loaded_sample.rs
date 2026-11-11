@@ -1,17 +1,20 @@
-//! A loaded sample: its audio in RAM, owned by whoever holds the handle.
+//! A loaded sample: its audio in RAM, owned by whoever holds it.
 //!
-//! `Engine::load` reads a sample's audio into a block on the ledger and
-//! returns it as a [`LoadedSample`]. The handle is the audio's owner.
-//! Hold it and the sample is in RAM; drop it and the sample is unloaded:
-//! every sound playing it is cut at the output's next render and the
-//! block repays the budget once the last of them has let go. There is no
-//! list of loaded samples anywhere else and no unload call: what is
-//! loaded is what is held, which is how Rust says it, a `File` is open
-//! while you hold it.
+//! [`Project::load`](crate::project::Project::load) reads a sample's audio
+//! into a block on the ledger and returns it as a [`LoadedSample`]. That
+//! value is the audio's owner. Hold it and the sample is in RAM; drop it
+//! and the block repays the budget once the last sound playing it has let
+//! go. There is no list of loaded samples anywhere else: what is loaded is
+//! what is held, which is how Rust says it, a `File` is open while you
+//! hold it.
 //!
-//! Playing is a verb on the loaded sample, because it needs nothing but
-//! the audio, a fresh sound id and the command ring, and the handle
-//! carries all three.
+//! It is data, not a handle on anything: it knows nothing about the
+//! renderer or whether it is playing. Hearing it is the renderer's verb,
+//! which takes it by reference and shares the audio with the sound it
+//! starts; cutting those sounds and letting the audio go at once is the
+//! renderer's too, taking it by value. So a loaded sample made by one
+//! project can be heard on any renderer, and the project and the renderer
+//! never name each other.
 //!
 //! The project records nothing about what is loaded. What to load when a
 //! project is opened is the caller's to remember, until there is a panel
@@ -21,10 +24,7 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::dsp::BufferAddr;
-use crate::engine::EngineError;
 use crate::project::SampleId;
-use crate::renderer_handle::RendererHandle;
-use crate::sound::Sound;
 
 /// A sample's audio in RAM. Owning this is what loaded means.
 #[derive(Debug)]
@@ -33,16 +33,14 @@ pub struct LoadedSample {
     /// Immutable behind an `Arc` so a sound can hold it while it plays;
     /// the render side only ever sees the clones it was handed.
     audio: Arc<AudioBuffer>,
-    renderer: RendererHandle,
 }
 
 impl LoadedSample {
-    /// The sample `id`, whose audio is `audio`, playing on `renderer`.
-    pub(crate) fn new(id: SampleId, audio: AudioBuffer, renderer: RendererHandle) -> Self {
+    /// The sample `id`, whose audio is `audio`.
+    pub(crate) fn new(id: SampleId, audio: AudioBuffer) -> Self {
         Self {
             id,
             audio: Arc::new(audio),
-            renderer,
         }
     }
 
@@ -51,33 +49,13 @@ impl LoadedSample {
         self.id
     }
 
-    /// The audio, for tests.
-    #[cfg(test)]
+    /// The audio, shared: what a sound playing it holds.
     pub(crate) fn audio(&self) -> &Arc<AudioBuffer> {
         &self.audio
     }
 
-    /// Starts playing the sample from its first frame and returns the
-    /// sound, which is how it is stopped: [`Sound::stop`].
-    ///
-    /// Nothing is read from disk here, so a press costs the same every
-    /// time. Sound starts at the output's next render. A play never fails
-    /// for want of a free slot: the renderer steals the oldest. Refused as
-    /// `CommandsFull` if the ring has no room, and then no id is minted.
-    pub fn play(&self) -> Result<Sound, EngineError> {
-        let id = self.renderer.play(Arc::clone(&self.audio))?;
-        Ok(Sound::new(id, self.renderer.clone()))
-    }
-}
-
-impl Drop for LoadedSample {
-    /// Unloads the sample: tells the renderer to stop every sound playing
-    /// it, then lets the audio go. The eviction goes out before the
-    /// reference does, which is what makes the address a safe key; see
-    /// `BufferAddr`. Best effort: a drop cannot fail, so if the ring has
-    /// no room for the eviction the sounds play out to their end instead,
-    /// and the block repays the budget when the last of them lets go.
-    fn drop(&mut self) {
-        let _ = self.renderer.evict(BufferAddr::of(&self.audio));
+    /// Where the audio lives, the key an eviction names it by.
+    pub(crate) fn addr(&self) -> BufferAddr {
+        BufferAddr::of(&self.audio)
     }
 }

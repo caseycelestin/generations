@@ -105,7 +105,7 @@
 //!   value (rate, channels, interleaved samples); `convert` resamples that
 //!   into a buffer. Formats are added by writing a decoder;
 //!   nothing about the project format moves, and the caller never sees
-//!   either: it hands [`Engine::import`] a path.
+//!   either: it hands [`Project::import`] a path.
 //! - **`audio`** and **[`config`]** hold the one fixed format every buffer
 //!   uses: 48 kHz, `f32`, 1 or 2 channels, on disk, in RAM and on the
 //!   render path alike.
@@ -113,11 +113,11 @@
 //! # Opening a project, and hearing it
 //!
 //! ```text
-//! Ledger::new(budget)          the caller knows the machine's RAM; the engine does not
-//! Engine::open(dir, ledger)
+//! Ledger::new(budget)          the caller knows the machine's RAM; the crate does not
+//! Project::open(dir, ledger)   the disk side: import and load
 //!   └─ storage::open(dir)      the one place that knows what a path means
-//!   └─ Project::new(storage)   plain constructor; nothing left to check
 //!
+//! Engine::new()                the sound side: play, input, stop_all
 //! engine.output()              the renderer, taken once
 //! device.start(move |out| output.render(out))
 //!                              the caller's own device, whatever it is

@@ -1,15 +1,14 @@
 //! A sound the caller holds: one play of a sample, and what can be done
 //! to it while it plays.
 //!
-//! [`LoadedSample::play`] returns a [`Sound`]. The sound's verbs are on
-//! the sound: `stop` is `sound.stop()`, not an engine method that takes
-//! an id. The id the renderer knows the sound by is inside the handle and
+//! Playing a [`LoadedSample`] returns a [`Sound`]. The sound's verbs are
+//! on the sound: `stop` is `sound.stop()`, not a method elsewhere that
+//! takes an id. The id the renderer knows the sound by is inside the handle and
 //! never leaves it; the only way to get a `Sound` is to play one, so a
 //! `Sound` always names a sound that was started. Dropping the handle
 //! changes nothing: the sound plays to its end. It owns nothing; the
 //! audio is the [`LoadedSample`]'s and the slot is the mixer's.
 //!
-//! [`LoadedSample::play`]: crate::loaded_sample::LoadedSample::play
 //!
 //! [`LoadedSample`]: crate::loaded_sample::LoadedSample
 

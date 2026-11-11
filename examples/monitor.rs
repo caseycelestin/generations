@@ -20,13 +20,10 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Channels, Engine, Ledger};
+use generations::{Channels, Engine};
 
 mod device;
 use device::{Capture, Device};
-
-/// RAM for loaded audio; nothing is loaded here, so any figure does.
-const SAMPLE_RAM_BUDGET: usize = 64 * 1024 * 1024;
 
 /// How long to listen.
 const LISTEN: Duration = Duration::from_secs(10);
@@ -46,8 +43,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         layout
     };
 
-    let project = tempfile::tempdir()?;
-    let mut engine = Engine::open(project.path(), Ledger::new(SAMPLE_RAM_BUDGET))?;
+    // No project: monitoring an input needs no samples and no disk.
+    let mut engine = Engine::new();
     let mut output = engine.output().ok_or("output already taken")?;
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.

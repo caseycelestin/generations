@@ -1,15 +1,28 @@
 //! A project: everything the device keeps for one piece of work.
 //!
-//! A [`Project`] is the rules over a `Storage`. It keeps no copy of the
-//! data: every read and write goes to storage, so changing the project is
-//! changing the disk and there is no save step. Today a project holds
-//! samples; patterns and settings arrive as their steps come.
+//! A [`Project`] is the rules over a `Storage`, and the one way audio
+//! moves between the disk and RAM. It keeps no copy of the data: every
+//! read and write goes to storage, so changing the project is changing
+//! the disk and there is no save step. Today a project holds samples;
+//! patterns and settings arrive as their steps come.
+//!
+//! The project holds the [`Ledger`] it was opened with, because every
+//! byte of audio it brings into RAM, an import on its way to disk or a
+//! sample loaded for playback, is a block on it. What it hands out is a
+//! [`LoadedSample`], plain audio owned by whoever holds it; the project
+//! knows nothing about sound, and the renderer that plays the sample
+//! knows nothing about the project. The caller carries the sample from
+//! one to the other.
+
+use std::path::Path;
 
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
+use crate::import::{self as import, ImportError};
+use crate::loaded_sample::LoadedSample;
 use crate::memory::Ledger;
-use crate::storage::{Storage, StorageError};
+use crate::storage::{self as storage, Storage, StorageError};
 
 /// Identity of a sample within one project.
 ///
@@ -41,22 +54,73 @@ pub enum ProjectError {
     UnknownSample(SampleId),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Import(#[from] ImportError),
 }
 
-/// One project, live on its storage.
-///
-/// A caller reaches it read-only through `Engine::project()`. Everything
-/// that changes it is an engine method, so the engine can keep the other
-/// roles in step (an import passes through the ledger on its way here).
+/// One project, live on its storage, allocating from one ledger.
 pub struct Project {
     storage: Box<dyn Storage>,
+    /// Where every buffer this project brings into RAM is charged.
+    ledger: Ledger,
 }
 
 impl Project {
+    /// The project at `dir`, created there if none exists, allocating
+    /// everything it brings into RAM from `ledger`.
+    ///
+    /// The ledger is the caller's to make, because its budget is the
+    /// machine's to know; one ledger is meant to be shared by everything
+    /// on the machine that holds audio in RAM. Nothing is loaded here:
+    /// what to load is the caller's to remember.
+    ///
+    /// `storage::open` creates an empty project if the directory is empty
+    /// or missing, validates the whole project it finds otherwise, and
+    /// refuses a directory holding anything else. From then on every
+    /// change is durable by the time the call that made it returns.
+    pub fn open(dir: &Path, ledger: Ledger) -> Result<Self, ProjectError> {
+        Ok(Self::on(storage::open(dir)?, ledger))
+    }
+
     /// The project in `storage`. A storage that exists holds a whole,
     /// valid project, so there is nothing to check here.
-    pub(crate) fn new(storage: Box<dyn Storage>) -> Self {
-        Self { storage }
+    pub(crate) fn on(storage: Box<dyn Storage>, ledger: Ledger) -> Self {
+        Self { storage, ledger }
+    }
+
+    /// Imports an audio file as a new root.
+    ///
+    /// The file is read in whatever format it is in, converted to the
+    /// project format and stored. The file itself is not kept or
+    /// referenced: the project holds its own copy. The new sample is not
+    /// loaded; that is a separate decision, so an import lands on disk
+    /// whether or not it fits in RAM. The add itself is
+    /// `add_sample`; a finished recording will make
+    /// the same call with its own buffer, and once in, the two are
+    /// indistinguishable.
+    ///
+    /// The import passes through the budget on its way to disk; a file
+    /// too large to pass through RAM beside what is loaded is refused,
+    /// and nothing is stored.
+    pub fn import(&mut self, file: &Path) -> Result<SampleId, ProjectError> {
+        let audio = import::import(file, &self.ledger)?;
+        self.add_sample(None, &audio)
+    }
+
+    /// Loads `id`: brings its audio into RAM and returns it as a
+    /// [`LoadedSample`], whose holder owns it. Drop it and the sample is
+    /// unloaded, its block repaying the budget once the last sound playing
+    /// it has let go.
+    ///
+    /// Storage allocates the block from the budget before it reads the
+    /// audio, from the size it stores, so a refused load reads nothing. A
+    /// sample that does not fit the budget is refused and nothing changes.
+    ///
+    /// Each load is its own copy: the project keeps no list of what is in
+    /// RAM, so loading a sample twice costs its memory twice. Hold one
+    /// per sample.
+    pub fn load(&self, id: SampleId) -> Result<LoadedSample, ProjectError> {
+        Ok(LoadedSample::new(id, self.audio(id)?))
     }
 
     /// Adds audio as a sample and returns its id.
@@ -94,15 +158,19 @@ impl Project {
             .ok_or(ProjectError::UnknownSample(id))
     }
 
-    /// The audio of the sample with this id, read from storage.
-    ///
-    /// Crate-private because reading allocates the whole buffer against
-    /// `ledger`; the engine holds that and is the one place a caller gets
-    /// audio from.
-    pub(crate) fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, ProjectError> {
+    /// The audio of the sample with this id, read from storage into a
+    /// block on the ledger. [`load`](Self::load) is the public face of
+    /// it; tests read through here.
+    pub(crate) fn audio(&self, id: SampleId) -> Result<AudioBuffer, ProjectError> {
         self.storage
-            .audio(id, ledger)?
+            .audio(id, &self.ledger)?
             .ok_or(ProjectError::UnknownSample(id))
+    }
+
+    /// The ledger this project allocates from.
+    #[cfg(test)]
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.ledger
     }
 }
 
@@ -111,8 +179,12 @@ pub(crate) mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    use std::mem::size_of;
+    use std::path::Path;
+
     use super::*;
     use crate::config::Pcm;
+    use crate::import::DecodeError;
     use crate::testing::{audio, unlimited};
 
     /// What the stub storage remembers.
@@ -188,9 +260,15 @@ pub(crate) mod tests {
     /// A project on in-memory storage, and the storage's state so the test
     /// can look at what the project did to it.
     pub(crate) fn project() -> (Project, Rc<RefCell<State>>) {
+        let (state, storage) = memory_storage();
+        (Project::on(storage, unlimited()), state)
+    }
+
+    /// In-memory storage and its state, for a project on a ledger of the
+    /// test's choosing.
+    fn memory_storage() -> (Rc<RefCell<State>>, Box<dyn Storage>) {
         let state = Rc::new(RefCell::new(State::default()));
-        let p = Project::new(Box::new(Memory(state.clone())));
-        (p, state)
+        (state.clone(), Box::new(Memory(state)))
     }
 
     fn tone() -> AudioBuffer {
@@ -234,10 +312,7 @@ pub(crate) mod tests {
                 parent: Some(root),
             }
         );
-        assert_eq!(
-            p.audio(child, &unlimited()).unwrap().samples(),
-            tone().samples()
-        );
+        assert_eq!(p.audio(child).unwrap().samples(), tone().samples());
     }
 
     #[test]
@@ -246,7 +321,7 @@ pub(crate) mod tests {
         let bogus = SampleId(7);
         assert!(matches!(p.sample(bogus), Err(ProjectError::UnknownSample(id)) if id == bogus));
         assert!(matches!(
-            p.audio(bogus, &unlimited()),
+            p.audio(bogus),
             Err(ProjectError::UnknownSample(id)) if id == bogus
         ));
     }
@@ -260,5 +335,183 @@ pub(crate) mod tests {
             Err(ProjectError::UnknownSample(id)) if id == bogus
         ));
         assert!(structure(&state).is_empty());
+    }
+
+    /// A mono buffer of `n` frames, no two alike.
+    fn ramp(n: usize) -> AudioBuffer {
+        audio(1, &(0..n).map(|i| i as Pcm * 0.01).collect::<Vec<_>>())
+    }
+
+    /// What `ramp(n)` costs the budget.
+    fn ramp_bytes(n: usize) -> usize {
+        n * size_of::<Pcm>()
+    }
+
+    fn wav(dir: &Path, name: &str, rate: u32, samples: &[i16]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&path, spec).unwrap();
+        for &s in samples {
+            w.write_sample(s).unwrap();
+        }
+        w.finalize().unwrap();
+        path
+    }
+
+    #[test]
+    fn import_of_a_wav_in_the_project_format_is_exact() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "a.wav", 48_000, &[0, 1000, -1000, 32_767]);
+        let mut p = memory_project();
+        let id = p.import(&path).unwrap();
+        let audio = p.audio(id).unwrap();
+        assert_eq!(audio.channels(), 1);
+        assert_eq!(audio.frames(), 4);
+        // Already the project rate: each sample scaled by its width, no
+        // resampling.
+        let scaled = |s: i16| Pcm::from(s) / 32_768.0;
+        assert_eq!(
+            audio.samples(),
+            &[scaled(0), scaled(1000), scaled(-1000), scaled(32_767)]
+        );
+        assert_eq!(p.sample(id).unwrap().parent, None, "an import is a root");
+    }
+
+    #[test]
+    fn import_resamples_a_wav_at_another_rate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "b.wav", 44_100, &[0; 44_100]);
+        let mut p = memory_project();
+        let id = p.import(&path).unwrap();
+        let frames = p.audio(id).unwrap().frames() as i64;
+        assert!((frames - 48_000).abs() <= 2, "{frames}");
+    }
+
+    #[test]
+    fn import_of_a_file_that_is_not_audio_adds_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        std::fs::write(&path, "not audio").unwrap();
+        let (mut p, state) = project();
+        assert!(matches!(
+            p.import(&path),
+            Err(ProjectError::Import(ImportError::Decode(
+                DecodeError::Malformed { .. }
+            )))
+        ));
+        assert!(structure(&state).is_empty());
+    }
+
+    #[test]
+    fn import_releases_its_working_memory_and_loads_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "c.wav", 44_100, &[0; 4410]);
+        let mut p = memory_project();
+        p.import(&path).unwrap();
+        assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn import_that_does_not_fit_beside_loaded_audio_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = wav(dir.path(), "d.wav", 48_000, &[0; 100]);
+        // Room for the loaded ramp and nothing else.
+        let (state, storage) = memory_storage();
+        let mut p = Project::on(storage, Ledger::new(ramp_bytes(4)));
+        let root = p.add_sample(None, &ramp(4)).unwrap();
+        let _held = p.load(root).unwrap();
+
+        assert!(matches!(
+            p.import(&path),
+            Err(ProjectError::Import(ImportError::Decode(
+                DecodeError::OverBudget { .. }
+            )))
+        ));
+        assert_eq!(structure(&state).len(), 1, "nothing was stored");
+        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+    }
+
+    #[test]
+    fn load_returns_the_audio() {
+        let mut p = memory_project();
+        let id = p.add_sample(None, &ramp(4)).unwrap();
+
+        let loaded = p.load(id).unwrap();
+        assert_eq!(loaded.id(), id);
+        assert_eq!(loaded.audio().samples(), ramp(4).samples());
+        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+    }
+
+    #[test]
+    fn dropping_a_loaded_sample_unloads_it() {
+        let mut p = memory_project();
+        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let loaded = p.load(id).unwrap();
+
+        drop(loaded);
+        assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn each_load_is_its_own_copy() {
+        let mut p = memory_project();
+        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let a = p.load(id).unwrap();
+        let b = p.load(id).unwrap();
+        assert_eq!(p.ledger().in_use(), 2 * ramp_bytes(4));
+        drop(a);
+        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+        drop(b);
+        assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn load_over_budget_is_refused() {
+        let (_state, storage) = memory_storage();
+        let mut p = Project::on(storage, Ledger::new(ramp_bytes(4)));
+        let a = p.add_sample(None, &ramp(4)).unwrap();
+        let b = p.add_sample(None, &ramp(4)).unwrap();
+        let _held = p.load(a).unwrap();
+
+        assert!(matches!(
+            p.load(b),
+            Err(ProjectError::Storage(StorageError::OverBudget { .. }))
+        ));
+        // Refused at the allocation: nothing was brought in and let go.
+        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+    }
+
+    #[test]
+    fn load_of_an_unknown_sample_is_refused() {
+        let mut p = memory_project();
+        let root = p.add_sample(None, &ramp(4)).unwrap();
+        let bogus = SampleId(root.0 + 1);
+        assert!(matches!(
+            p.load(bogus),
+            Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn open_loads_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = Project::open(dir.path(), unlimited()).unwrap();
+        let id = p.add_sample(None, &ramp(4)).unwrap();
+        let _held = p.load(id).unwrap();
+        drop(p);
+
+        let p = Project::open(dir.path(), unlimited()).unwrap();
+        assert_eq!(p.ledger().in_use(), 0, "nothing is in RAM");
+        assert_eq!(
+            p.sample(id).unwrap().parent,
+            None,
+            "the sample is still there"
+        );
     }
 }
