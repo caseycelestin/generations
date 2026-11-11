@@ -18,8 +18,9 @@
 //! side knows, which sounds are still playing and what they play, and are
 //! for samples alone.
 //!
-//! The two sides name things to each other with the two ids here: a sound
-//! by its [`SoundId`], a buffer by its [`BufferAddress`].
+//! The two sides name things to each other with the ids here: a sound by
+//! its [`SoundId`], a recording by its [`RecordingId`], a buffer by its
+//! [`BufferAddress`].
 //!
 //! One thing goes the other way: every sound the renderer lets go of
 //! comes back as a [`Released`], so its last free happens on the control
@@ -28,7 +29,7 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::render::dsp::{InputReader, SampleReader};
+use crate::render::dsp::{InputReader, Recorder, SampleReader};
 use crate::render::sound::Sound;
 
 /// What the handle can ask of the renderer.
@@ -48,6 +49,10 @@ pub enum Command {
     /// Remove every sample sound playing the buffer at the address, so
     /// the control side can let go of the last reference to it.
     Evict(BufferAddress),
+    /// Keep the main out, as heard, in `recorder` from the next period
+    /// on, as the recording `id`. A recorder already held is let go of.
+    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side sender yet"))]
+    Record { id: RecordingId, recorder: Recorder },
 }
 
 impl From<SoundCommand<SampleReader>> for Command {
@@ -75,6 +80,9 @@ pub enum Released {
     Sample(Sound<SampleReader>),
     /// An input sound: finished, removed, or refused for want of room.
     Input(Sound<InputReader>),
+    /// The recorder of the recording `id`, with what it kept: full, or
+    /// replaced by another.
+    Recorder { id: RecordingId, recorder: Recorder },
 }
 
 impl From<Sound<SampleReader>> for Released {
@@ -109,6 +117,16 @@ pub enum SoundParam {
     /// Level as a linear factor: 0 is silent, 1 is as the source gives it.
     Gain(f32),
 }
+
+/// Identity of one recording: one use of a recorder, from the command
+/// that starts it to the take that comes back. Minted by the control side,
+/// so it knows whose take it is when the recorder returns; the renderer
+/// carries it and never reads it.
+///
+/// Never reused, so a take that comes back after its owner has gone names
+/// no one and can be dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RecordingId(pub u64);
 
 /// Identity of one sound: one instance of something heard, a sample
 /// played once or one sound of an input. Minted by the control side, in order,

@@ -134,7 +134,8 @@
 //! Project::open(dir, ledger)   the disk side: import and load
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!
-//! Renderer::new(settings)      the sound side: the Renderer and its Control,
+//! Renderer::new(settings, ledger)
+//!                              the sound side: the Renderer and its Control,
 //!                              which plays, adds inputs, stops all
 //! device.start(move |out| renderer.render(out))
 //!                              the caller's own device, whatever it is

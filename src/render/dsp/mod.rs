@@ -4,8 +4,8 @@
 //! [`Renderer`](crate::render::Renderer) wires into this crate's
 //! pipeline, and that any other pipeline could wire differently: the
 //! [`Source`] trait, a [`SampleReader`] over a loaded sample, an
-//! [`InputReader`] over a capture ring, a [`Gain`], and the arithmetic
-//! they share in [`math`]. None of them knows about commands, sounds by
+//! [`InputReader`] over a capture ring, a [`Gain`], a [`Recorder`] that
+//! keeps frames, and the arithmetic they share in [`math`]. None of them knows about commands, sounds by
 //! id, the control side or the device; a piece is given frames and its
 //! own state and nothing else.
 //!
@@ -46,10 +46,12 @@
 mod gain;
 pub mod input_reader;
 pub mod math;
+mod recorder;
 mod sample_reader;
 mod source;
 
 pub use gain::Gain;
 pub use input_reader::InputReader;
+pub use recorder::Recorder;
 pub use sample_reader::SampleReader;
 pub use source::Source;

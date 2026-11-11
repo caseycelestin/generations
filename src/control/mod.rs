@@ -8,8 +8,8 @@
 //! `stop_all`. What those return, a [`SampleSound`], an [`Input`] and its
 //! sounds, carries a clone of the `Control` so its own verbs work without
 //! the parent. It is cheap to clone and holds nothing but the two rings'
-//! ends, the sound id counter and the count of input sounds held, behind
-//! one `Arc`.
+//! ends, the sound id counter, the count of input sounds held and a clone
+//! of the ledger, behind one `Arc`.
 //!
 //! Building the [`Command`] that carries each verb is this type's job and
 //! nobody else's, so the command vocabulary is private between here and
@@ -50,6 +50,7 @@ use thiserror::Error;
 
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
+use crate::memory::Ledger;
 use crate::project::sample::Sample;
 use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam};
 use crate::render::dsp::{InputReader, SampleReader};
@@ -96,6 +97,10 @@ struct Shared {
     input_sounds: AtomicUsize,
     /// How many input sounds the renderer holds at once.
     input_capacity: usize,
+    /// What the control pays from for what it builds and sends to the
+    /// renderer. The render side never holds one.
+    #[expect(dead_code, reason = "nothing the control builds allocates yet")]
+    ledger: Ledger,
 }
 
 /// The control's ends of the two rings, locked together so a send
@@ -120,17 +125,19 @@ impl Rings {
 impl Control {
     /// A control sending over `commands` and dropping what comes back on
     /// `released`, minting sound ids from zero, for a renderer that holds
-    /// `input_capacity` input sounds.
+    /// `input_capacity` input sounds, paying from `ledger`.
     pub(crate) fn new(
         commands: Producer<Command>,
         released: Consumer<Released>,
         input_capacity: usize,
+        ledger: Ledger,
     ) -> Self {
         Self(Arc::new(Shared {
             rings: Mutex::new(Rings { commands, released }),
             next_sound: AtomicU64::new(0),
             input_sounds: AtomicUsize::new(0),
             input_capacity,
+            ledger,
         }))
     }
 
@@ -366,7 +373,7 @@ mod tests {
     use crate::project::tests::memory_project;
     use crate::project::{Project, SampleId};
     use crate::render::{Renderer, RendererSettings};
-    use crate::testing::audio;
+    use crate::testing::{audio, unlimited};
 
     /// What these tests' renderers are made with: a small period and
     /// ring, every slot.
@@ -407,7 +414,7 @@ mod tests {
     fn commands_sent_before_the_renderer_is_driven_wait_for_it() {
         let (p, id) = project_with(2);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         control.play(&loaded).unwrap();
 
         let out = period(&mut r, 2);
@@ -419,7 +426,7 @@ mod tests {
     fn play_is_heard_from_the_renderers_next_period() {
         let (p, id) = project_with(2);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
 
         let play = control.play(&loaded).unwrap();
         let out = period(&mut r, 2);
@@ -433,7 +440,7 @@ mod tests {
     fn each_play_is_its_own_sound() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
 
         let a = control.play(&loaded).unwrap();
         let b = control.play(&loaded).unwrap();
@@ -456,7 +463,7 @@ mod tests {
     fn a_full_ring_refuses_the_command_and_the_next_play_is_a_new_sound() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let mut last = None;
         for _ in 0..SETTINGS.command_capacity {
             last = Some(control.play(&loaded).unwrap());
@@ -480,7 +487,7 @@ mod tests {
 
     #[test]
     fn an_input_is_one_to_max_channels_wide_and_has_a_period() {
-        let (_r, control) = Renderer::new(SETTINGS);
+        let (_r, control) = Renderer::new(SETTINGS, unlimited());
         let too_wide = [ChannelLayout::Mono; MAX_INPUT_CHANNELS + 1];
         for bad in [&[][..], &too_wide[..]] {
             assert!(matches!(
@@ -499,7 +506,7 @@ mod tests {
 
     #[test]
     fn each_sound_of_an_input_is_heard_on_its_own_and_all_go_when_it_is_dropped() {
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         // A device of four channels: a stereo pair, then two microphones.
         let (input, mut feed) = control
             .input(
@@ -553,7 +560,7 @@ mod tests {
 
     #[test]
     fn more_input_sounds_than_slots_are_refused_until_an_input_is_dropped() {
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         // One stereo input, then mono inputs up to the capacity.
         let (first, _first_feed) = control
             .input(
@@ -606,7 +613,7 @@ mod tests {
     fn a_full_ring_refuses_an_input_and_holds_no_slot() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         for _ in 0..SETTINGS.command_capacity {
             control.play(&loaded).unwrap();
         }
@@ -633,7 +640,7 @@ mod tests {
 
     #[test]
     fn an_input_dropped_onto_a_full_ring_keeps_its_slots_until_its_feed_goes() {
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let (input, feed) = control
             .input(&InputLayout::new([ChannelLayout::Mono]), 64)
             .unwrap();
@@ -661,7 +668,7 @@ mod tests {
         let kept = p.add_sample(&ramp(100)).unwrap();
         let gone = p.load(gone).unwrap();
         let kept = p.load(kept).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let a = control.play(&gone).unwrap();
         let b = control.play(&kept).unwrap();
         period(&mut r, 4);
@@ -677,7 +684,7 @@ mod tests {
     fn stop_then_drop_frees_the_audio_once_the_sounds_are_cut() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let play = control.play(&loaded).unwrap();
         period(&mut r, 4);
 
@@ -702,7 +709,7 @@ mod tests {
     fn stop_on_a_full_ring_is_refused_and_the_sample_is_untouched() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (_r, control) = Renderer::new(SETTINGS);
+        let (_r, control) = Renderer::new(SETTINGS, unlimited());
         for _ in 0..SETTINGS.command_capacity {
             control.play(&loaded).unwrap();
         }
@@ -719,7 +726,7 @@ mod tests {
     fn a_dropped_sample_lets_its_sounds_play_out() {
         let (p, id) = project_with(100);
         let loaded = p.load(id).unwrap();
-        let (mut r, control) = Renderer::new(SETTINGS);
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
         let play = control.play(&loaded).unwrap();
         period(&mut r, 4);
 
