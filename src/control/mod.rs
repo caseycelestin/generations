@@ -19,8 +19,8 @@
 //! or capture thread may hold one of these: it has a mutex.
 //!
 //! The renderer sends back every sound it lets go of, and the control
-//! drops them here, on the control side; a recorder it sends back is
-//! kept, by its recording, for its owner to take back. This happens
+//! drops them here, on the control side; a take it sends back is kept,
+//! by its take, for its owner to take back. This happens
 //! whenever the rings' lock is taken, so at the start of every send, and
 //! whenever [`collect`](Control::collect) is called. A sample's audio the
 //! caller has already dropped is freed then. The ring cannot fill,
@@ -41,25 +41,29 @@
 //! [`Renderer`]: crate::render::Renderer
 
 pub(crate) mod input;
+pub(crate) mod recorder;
 pub(crate) mod sample_sound;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
+use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
-use crate::memory::Ledger;
+use crate::memory::{Ledger, OverBudgetError};
 use crate::project::sample::Sample;
-use crate::render::command::{Command, RecordingId, Released, SoundCommand, SoundId, SoundParam};
-use crate::render::dsp::{InputReader, Recorder, SampleReader};
+use crate::render::Renderer;
+use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap};
+use crate::render::dsp::{InputReader, SampleReader};
 use input::{Input, InputFeed, InputLayout};
+use recorder::Recorder;
 
 /// Reasons the control side can refuse what it is asked: the ring is full,
-/// or an input would not fit.
+/// an input would not fit, or a recorder cannot be had or started.
 #[derive(Debug, Error)]
 pub enum ControlError {
     /// The command ring was full; the command was dropped.
@@ -77,6 +81,15 @@ pub enum ControlError {
     /// already held. Drop an input before adding another.
     #[error("the renderer holds as many input sounds as it can")]
     InputsFull,
+    /// The tap already has a recorder. Drop it before making another.
+    #[error("the tap already has a recorder")]
+    TapInUse,
+    /// A recorder's buffer would put audio memory over its budget.
+    #[error(transparent)]
+    OverBudget(#[from] OverBudgetError),
+    /// A take is already running on this recorder. Stop it first.
+    #[error("the recorder is already recording")]
+    Recording,
 }
 
 /// The control side's end of the renderer, from
@@ -99,9 +112,12 @@ struct Shared {
     input_sounds: AtomicUsize,
     /// How many input sounds the renderer holds at once.
     input_capacity: usize,
+    /// The next take id. Only goes up.
+    next_take: AtomicU64,
+    /// The taps that have a recorder: one each.
+    taps: Mutex<HashSet<Tap>>,
     /// What the control pays from for what it builds and sends to the
     /// renderer. The render side never holds one.
-    #[expect(dead_code, reason = "nothing the control builds allocates yet")]
     ledger: Ledger,
 }
 
@@ -114,18 +130,24 @@ struct Rings {
     /// The receiving end of the ring the renderer sends back every sound
     /// and recorder it lets go of on.
     released: Consumer<Released>,
-    /// Recorders the renderer has let go of, with their takes, by the
-    /// recording they made, until their owner takes them back.
-    recorders: HashMap<RecordingId, Recorder>,
+    /// Takes the renderer has sent back, each in the buffer it was
+    /// recorded into, by take, until their owner takes them back.
+    takes: HashMap<TakeId, AudioBuffer>,
+    /// Recordings whose owner is gone: their take is dropped when it
+    /// comes back instead of kept.
+    abandoned: HashSet<TakeId>,
 }
 
 impl Rings {
     /// Takes everything the renderer has let go of since the last
-    /// collect: drops every sound, and keeps every recorder for its owner.
+    /// collect: drops every sound, and keeps every take for its owner
+    /// unless the owner is gone.
     fn collect(&mut self) {
         while let Ok(released) = self.released.pop() {
-            if let Released::Recorder { id, recorder } = released {
-                self.recorders.insert(id, recorder);
+            if let Released::Take { id, audio } = released
+                && !self.abandoned.remove(&id)
+            {
+                self.takes.insert(id, audio);
             }
         }
     }
@@ -145,11 +167,14 @@ impl Control {
             rings: Mutex::new(Rings {
                 commands,
                 released,
-                recorders: HashMap::new(),
+                takes: HashMap::new(),
+                abandoned: HashSet::new(),
             }),
             next_sound: AtomicU64::new(0),
             input_sounds: AtomicUsize::new(0),
             input_capacity,
+            next_take: AtomicU64::new(0),
+            taps: Mutex::new(HashSet::new()),
             ledger,
         }))
     }
@@ -201,6 +226,25 @@ impl Control {
         // Taking the lock is the collect (see `lock`), so take it and let
         // it go: there is nothing to send.
         drop(self.lock());
+    }
+
+    /// A recorder at `tap` with room for `frames` stereo frames, paid for
+    /// now from the ledger, so no take ever allocates. One recorder makes
+    /// many takes: [`record`](Recorder::record) one, [`stop`](Recorder::stop)
+    /// it or let it fill, and ask [`is_recording`](Recorder::is_recording)
+    /// to find out it has ended. Refused as `TapInUse` if the tap already
+    /// has a recorder, and as `OverBudget` if the ledger cannot afford it.
+    pub fn recorder(&self, tap: Tap, frames: usize) -> Result<Recorder, ControlError> {
+        let mut taps = self.taps();
+        if taps.contains(&tap) {
+            return Err(ControlError::TapInUse);
+        }
+        let samples = frames.saturating_mul(Renderer::CHANNELS);
+        let block = self.0.ledger.alloc(samples)?;
+        let audio =
+            AudioBuffer::new(ChannelLayout::Stereo, block).expect("an empty block is whole frames");
+        taps.insert(tap);
+        Ok(Recorder::new(self.clone(), tap, audio))
     }
 
     /// Adds an input: the ability to put audio into the renderer. Mints a
@@ -365,12 +409,61 @@ impl Control {
         Ok(())
     }
 
-    /// The recorder of the recording `id`, with its take, once the
-    /// renderer has let it go: full or stopped. `None` while it is still
-    /// recording, or once it has been taken.
-    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side owner yet"))]
-    pub(crate) fn take_recorder(&self, id: RecordingId) -> Option<Recorder> {
-        self.lock().recorders.remove(&id)
+    /// The take of the take `id`, in the buffer it was recorded
+    /// into, once the renderer has sent it back: full or stopped. `None`
+    /// while it is still recording, or once it has been taken.
+    pub(crate) fn take_back(&self, id: TakeId) -> Option<AudioBuffer> {
+        self.lock().takes.remove(&id)
+    }
+
+    /// Moves `audio` to the renderer to record what passes `tap` as a new
+    /// take, and returns its id. Refused as `CommandsFull` if the
+    /// ring has no room, with the buffer handed back.
+    pub(crate) fn start_recording(
+        &self,
+        tap: Tap,
+        audio: AudioBuffer,
+    ) -> Result<TakeId, (ControlError, AudioBuffer)> {
+        let mut rings = self.lock();
+        if rings.commands.slots() == 0 {
+            return Err((ControlError::CommandsFull, audio));
+        }
+        let id = TakeId(self.0.next_take.fetch_add(1, Ordering::Relaxed));
+        let record = Command::Record { id, tap, audio };
+        rings
+            .commands
+            .push(record)
+            .expect("room was checked under the lock");
+        Ok(id)
+    }
+
+    /// Stops the take `id` at the renderer's next period. Refused as
+    /// `CommandsFull` if the ring has no room.
+    pub(crate) fn stop_recording(&self, id: TakeId) -> Result<(), ControlError> {
+        self.send(Command::StopRecording(id))
+    }
+
+    /// Gives up the take `id`: its take is dropped here if it is
+    /// already back, or when it comes back if not, and the renderer is
+    /// told to stop it. If the ring has no room for the stop, it runs
+    /// until full and is dropped then.
+    pub(crate) fn abandon_take(&self, id: TakeId) {
+        let mut rings = self.lock();
+        if rings.takes.remove(&id).is_none() {
+            rings.abandoned.insert(id);
+            let _ = rings.commands.push(Command::StopRecording(id));
+        }
+    }
+
+    /// Lets `tap` have a recorder again.
+    pub(crate) fn free_tap(&self, tap: Tap) {
+        self.taps().remove(&tap);
+    }
+
+    /// The taps with a recorder. A panic while holding the lock leaves
+    /// the set intact, so a poisoned lock is taken anyway.
+    fn taps(&self) -> MutexGuard<'_, HashSet<Tap>> {
+        self.0.taps.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The rings, with everything the renderer has let go of already
@@ -767,17 +860,17 @@ mod tests {
     }
 
     #[test]
-    fn a_recorder_let_go_of_is_kept_for_its_owner_by_recording() {
-        let ledger = unlimited();
-        let (mut r, control) = Renderer::new(SETTINGS, ledger.clone());
-        let id = RecordingId(7);
-        let recorder = Recorder::new(&ledger, 1).unwrap();
-        control.send(Command::Record { id, recorder }).unwrap();
-        assert!(control.take_recorder(id).is_none(), "not sent back yet");
+    fn a_take_sent_back_is_kept_for_its_owner_by_take() {
+        let (mut r, control) = Renderer::new(SETTINGS, unlimited());
+        let id = TakeId(7);
+        let audio = crate::testing::take_buffer(1);
+        let tap = Tap::MainOut;
+        control.send(Command::Record { id, tap, audio }).unwrap();
+        assert!(control.take_back(id).is_none(), "not sent back yet");
 
         period(&mut r, 1);
-        let recorder = control.take_recorder(id).expect("full, so let go of");
-        assert_eq!(recorder.recorded(), &[0.0, 0.0]);
-        assert!(control.take_recorder(id).is_none(), "taken once");
+        let take = control.take_back(id).expect("full, so sent back");
+        assert_eq!(take.samples(), &[0.0, 0.0]);
+        assert!(control.take_back(id).is_none(), "taken once");
     }
 }

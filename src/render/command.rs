@@ -19,7 +19,7 @@
 //! for samples alone.
 //!
 //! The two sides name things to each other with the ids here: a sound by
-//! its [`SoundId`], a recording by its [`RecordingId`], a buffer by its
+//! its [`SoundId`], a take by its [`TakeId`], a buffer by its
 //! [`BufferAddress`].
 //!
 //! One thing goes the other way: every sound the renderer lets go of
@@ -29,7 +29,7 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::render::dsp::{InputReader, Recorder, SampleReader};
+use crate::render::dsp::{InputReader, SampleReader};
 use crate::render::sound::Sound;
 
 /// What the handle can ask of the renderer.
@@ -49,14 +49,18 @@ pub enum Command {
     /// Remove every sample sound playing the buffer at the address, so
     /// the control side can let go of the last reference to it.
     Evict(BufferAddress),
-    /// Keep the main out, as heard, in `recorder` from the next period
-    /// on, as the recording `id`. A recorder already held is let go of.
-    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side sender yet"))]
-    Record { id: RecordingId, recorder: Recorder },
-    /// Let go of the recording `id` with what it has kept so far, if it
+    /// Record what passes `tap` into `audio` from the next period on, as
+    /// the take `id`. The buffer is paid for on the control side and
+    /// moves here for the take; whatever it held is forgotten. A take
+    /// already running at that tap ends and goes back.
+    Record {
+        id: TakeId,
+        tap: Tap,
+        audio: AudioBuffer,
+    },
+    /// Let go of the take `id` with what it has kept so far, if it
     /// is still held. One that has already filled names nothing.
-    #[cfg_attr(not(test), expect(dead_code, reason = "no control-side sender yet"))]
-    StopRecording(RecordingId),
+    StopRecording(TakeId),
 }
 
 impl From<SoundCommand<SampleReader>> for Command {
@@ -71,11 +75,12 @@ impl From<SoundCommand<InputReader>> for Command {
     }
 }
 
-/// A sound the renderer has let go of, on its way back to the control
-/// side to be dropped there. It may hold the last reference to a sample's
-/// audio or the last end of an input's ring, and freeing either is a call
-/// into the allocator, and for a large buffer into the kernel, that has
-/// no bound on how long it takes. Nothing reads it; arriving is its job.
+/// What the renderer has let go of, on its way back to the control side.
+/// A sound goes back to be dropped there: it may hold the last reference
+/// to a sample's audio or the last end of an input's ring, and freeing
+/// either is a call into the allocator, and for a large buffer into the
+/// kernel, that has no bound on how long it takes. Nothing reads it;
+/// arriving is its job. A take goes back to its owner.
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 #[expect(dead_code, reason = "held only to be dropped on the control side")]
@@ -84,9 +89,10 @@ pub enum Released {
     Sample(Sound<SampleReader>),
     /// An input sound: finished, removed, or refused for want of room.
     Input(Sound<InputReader>),
-    /// The recorder of the recording `id`, with what it kept: full,
-    /// stopped, or replaced by another.
-    Recorder { id: RecordingId, recorder: Recorder },
+    /// The take of the take `id`: the buffer it was recorded into,
+    /// holding what it kept. Full, stopped, or ended by another take at
+    /// its tap.
+    Take { id: TakeId, audio: AudioBuffer },
 }
 
 impl From<Sound<SampleReader>> for Released {
@@ -122,15 +128,23 @@ pub enum SoundParam {
     Gain(f32),
 }
 
-/// Identity of one recording: one use of a recorder, from the command
-/// that starts it to the take that comes back. Minted by the control side,
-/// so it knows whose take it is when the recorder returns; the renderer
-/// carries it and never reads it.
+/// A point in the signal path where a recorder records: what passes
+/// there is kept, and goes on where it was going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Tap {
+    /// The main out after the clip: exactly what is heard.
+    MainOut,
+}
+
+/// Identity of one take: one use of a recorder's buffer, from the
+/// command that starts it to the take that comes back. Minted by the
+/// control side, so it knows whose take it is when it returns; the
+/// renderer carries it and never reads it.
 ///
 /// Never reused, so a take that comes back after its owner has gone names
 /// no one and can be dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RecordingId(pub u64);
+pub struct TakeId(pub u64);
 
 /// Identity of one sound: one instance of something heard, a sample
 /// played once or one sound of an input. Minted by the control side, in order,
