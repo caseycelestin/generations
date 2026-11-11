@@ -38,12 +38,12 @@ the hardware unit all sit on top of. It is responsible for:
 
 ## Status
 
-Early. The engine opens a project on disk, imports audio, keeps the project
-durable across a power-down, holds loaded samples in RAM under one memory
-budget, and plays them through whatever output the caller gives it; the
-engine itself needs no audio device. The generation model is in place;
-the effects that will print new generations arrive with the real-time
-side.
+Early. A project opens on disk, imports audio, keeps itself durable across
+a power-down and loads samples into RAM under one memory budget; a renderer
+plays them, and hears a microphone, through whatever device the caller
+gives it. The crate itself needs no audio device. The generation model is
+in place; the effects that will print new generations arrive with the
+real-time side.
 See [docs/roadmap.md](docs/roadmap.md) for
 the plan and the decisions behind it, and `cargo doc --open` for the
 architecture.
@@ -56,10 +56,11 @@ audio dependency; the demos are examples.
 ```sh
 cargo test
 cargo run --example first_sound -- /tmp/myproject   # needs an output device
+cargo run --example monitor -- mono                 # needs a capture device too
 ```
 
-`first_sound` builds against ALSA through `cpal`, a dev-dependency, so it
-needs the ALSA headers (`libasound2-dev` on Debian, `alsa-lib-devel` on
+The examples build against ALSA through `cpal`, a dev-dependency, so they
+need the ALSA headers (`libasound2-dev` on Debian, `alsa-lib-devel` on
 Fedora). The library itself does not.
 
 ## License

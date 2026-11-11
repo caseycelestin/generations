@@ -1,6 +1,6 @@
 //! Conversion of decoded audio into the engine format.
 //!
-//! A decoder produces a [`Decoded`]: the engine's sample type at the
+//! A decoder produces a [`DecodedAudio`]: the engine's sample type at the
 //! file's own rate. [`convert`] takes that to an [`AudioBuffer`] at the
 //! engine's rate, and is the only place that decides whether anything
 //! needs doing. A clip already at the rate is wrapped as it is, in the
@@ -9,7 +9,6 @@
 //! block is freed on the way out.
 
 use std::iter::repeat_n;
-use std::sync::Arc;
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, ResampleError, Resampler, ResamplerConstructionError};
@@ -18,8 +17,8 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::audio::{AudioError, check_channels};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::import::decode::Decoded;
 use crate::memory::{Block, Ledger, OverBudget};
+use crate::project::import::decode::DecodedAudio;
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
 /// not the result: the whole clip goes through in one call.
@@ -34,7 +33,7 @@ pub enum ConvertError {
         rate: u32,
         source: ResamplerConstructionError,
     },
-    /// The resampled clip would put the engine's memory over its budget.
+    /// The resampled clip would put audio memory over its budget.
     /// Nothing was allocated.
     #[error(transparent)]
     OverBudget(#[from] OverBudget),
@@ -59,7 +58,7 @@ pub enum ConvertError {
 /// result's block is sized by the resampler's worst case, the clip at the
 /// new rate plus its own delay and one chunk, and is truncated to what
 /// came out; the capacity stays paid for while the buffer lives.
-pub fn convert(decoded: Decoded, ledger: &Arc<Ledger>) -> Result<AudioBuffer, ConvertError> {
+pub fn convert(decoded: DecodedAudio, ledger: &Ledger) -> Result<AudioBuffer, ConvertError> {
     let (channels, frames) = check_shape(&decoded)?;
     if decoded.rate == SAMPLE_RATE {
         return AudioBuffer::new(decoded.channels, decoded.samples).map_err(|(e, _)| e.into());
@@ -88,7 +87,7 @@ pub fn convert(decoded: Decoded, ledger: &Arc<Ledger>) -> Result<AudioBuffer, Co
 /// shape costs nothing and the error names the real problem rather than
 /// a buffer-size mismatch inside the resampler. A bad rate is the
 /// resampler's to refuse.
-fn check_shape(decoded: &Decoded) -> Result<(usize, usize), ConvertError> {
+fn check_shape(decoded: &DecodedAudio) -> Result<(usize, usize), ConvertError> {
     check_channels(decoded.channels)?;
     let channels = usize::from(decoded.channels);
     if !decoded.samples.len().is_multiple_of(channels) {
@@ -121,16 +120,16 @@ fn resampler(rate: u32, channels: usize) -> Result<Fft<Pcm>, ConvertError> {
 mod tests {
     use super::*;
 
-    /// Decoded audio at `rate`, in a block from a ledger that refuses
+    /// DecodedAudio audio at `rate`, in a block from a ledger that refuses
     /// nothing.
-    fn at(rate: u32, channels: u16, samples: &[Pcm]) -> Decoded {
+    fn at(rate: u32, channels: u16, samples: &[Pcm]) -> DecodedAudio {
         at_on(&Ledger::new(usize::MAX), rate, channels, samples)
     }
 
-    fn at_on(ledger: &Arc<Ledger>, rate: u32, channels: u16, samples: &[Pcm]) -> Decoded {
+    fn at_on(ledger: &Ledger, rate: u32, channels: u16, samples: &[Pcm]) -> DecodedAudio {
         let mut block = ledger.alloc(samples.len()).unwrap();
         block.extend(samples.iter().copied());
-        Decoded {
+        DecodedAudio {
             rate,
             channels,
             samples: block,
@@ -138,7 +137,7 @@ mod tests {
     }
 
     /// Converts against a ledger that refuses nothing.
-    fn convert(decoded: Decoded) -> Result<AudioBuffer, ConvertError> {
+    fn convert(decoded: DecodedAudio) -> Result<AudioBuffer, ConvertError> {
         super::convert(decoded, &Ledger::new(usize::MAX))
     }
 

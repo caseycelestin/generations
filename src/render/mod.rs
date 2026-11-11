@@ -1,9 +1,9 @@
-//! This engine's pipeline: commands and resident audio in, a period of
+//! This crate's pipeline: commands and resident audio in, a period of
 //! output out.
 //!
 //! ```text
 //! control side                          render side
-//! (the engine)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
+//! (the handle)  ── Command ring ──▶     Renderer     the wiring: commands in, a period out
 //!                                         Mixer        the sources heard: start, stop, steal, add all
 //!                                           Playhead     a loaded sample, first frame to last
 //!                                           InputReader  one source's ring, a period at a time
@@ -11,10 +11,10 @@
 //!                                         math         stereo, add, hard_clip: the arithmetic they share
 //! ```
 //!
-//! The pieces come from [`dsp`](crate::dsp) and are generic; this module
-//! is the one place that picks which of them this engine runs, in what
+//! The pieces come from [`dsp`](crate::render::dsp) and are generic; this
+//! module is the one place that picks which of them this crate runs, in what
 //! order, and what the control side may ask of them. It defines the
-//! [`Command`]s it accepts and the engine imports them. Nothing here
+//! [`Command`]s it accepts and its handle builds them. Nothing here
 //! knows what a project, a device or resident audio is: audio arrives
 //! inside a command as an `Arc<AudioBuffer>`, and a playhead holds its
 //! clone until it finishes or is told to let go; each source of an input
@@ -38,51 +38,64 @@
 //! clip.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
-//! end; the engine owns the producing end. The engine mints one renderer
-//! and hands it out as its output; outside the crate, all of this is one
-//! type with one method, `render`.
+//! end; its [`Control`] owns the producing end, and the two are
+//! made together by [`Renderer::new`]. Outside the crate the render side
+//! is one type with one method, `render`.
 
 pub mod command;
+pub(crate) mod dsp;
 
-use rtrb::Consumer;
+use rtrb::{Consumer, RingBuffer};
 
-use crate::config::{MAX_INPUT_SOUNDS, SAMPLE_PLAYBACK_COUNT};
+use crate::config::{COMMAND_CAPACITY, MAX_INPUT_SOUNDS, MAX_SAMPLE_SOUNDS};
+use crate::control::Control;
 #[cfg(test)]
-use crate::dsp::SoundId;
-use crate::dsp::math::hard_clip;
-use crate::dsp::{InputReader, Mixer, Playhead, WhenFull};
+use crate::render::dsp::SoundId;
+use crate::render::dsp::math::hard_clip;
+use crate::render::dsp::{InputReader, Mixer, Playhead, WhenFull};
 use command::{Command, InputCommand, SampleCommand};
 
-/// The render side of an engine: turns commands and resident audio into
-/// periods of output.
+/// The render side: turns commands and resident audio into periods of
+/// output.
 ///
-/// Taken once from `Engine::output` and moved to whoever owns the audio
-/// thread: into a device callback for live sound, or a loop for the same
-/// frames offline.
+/// Made by [`Renderer::new`] together with its [`Control`], and
+/// moved to whoever owns the audio thread: into a device callback for
+/// live sound, or a loop for the same frames offline.
 ///
-/// **Drop whatever drives this before dropping the engine.** A sound
-/// still playing holds a reference to its audio; if the engine goes
-/// first, that reference is the last one and the buffer is freed on the
-/// audio thread when the sound ends.
+/// **Drop whatever drives this before dropping the loaded samples it
+/// plays.** A sound still playing holds a reference to its audio; if the
+/// `LoadedSample` goes first, that reference is the last one and the
+/// buffer is freed on the audio thread when the sound ends.
 #[derive(Debug)]
 pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
     /// The sounds playing.
-    samples: Mixer<Playhead, SAMPLE_PLAYBACK_COUNT>,
+    samples: Mixer<Playhead, MAX_SAMPLE_SOUNDS>,
     /// The input sounds, one per mono or stereo source of every input,
     /// heard or not.
     inputs: Mixer<InputReader, MAX_INPUT_SOUNDS>,
 }
 
 impl Renderer {
+    /// A silent renderer and the handle that commands it, as a pair, the
+    /// way a channel comes as two ends. The renderer goes to the audio
+    /// thread; the handle stays on the control side and is where every
+    /// sound starts. Commands sent before the renderer is driven are not
+    /// lost: they wait in the ring and apply on the first render. No audio
+    /// device is involved: a machine without one drives it in a loop.
+    pub fn new() -> (Renderer, Control) {
+        let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
+        (Self::on(consumer), Control::new(producer))
+    }
+
     /// A silent renderer that takes its commands from `commands`.
-    pub(crate) fn new(commands: Consumer<Command>) -> Self {
+    pub(crate) fn on(commands: Consumer<Command>) -> Self {
         Self {
             commands,
             // A pad press always sounds, even if it cuts the oldest; an
             // input already heard is never cut by another being added. The
-            // engine refuses first; this is the backstop.
+            // handle refuses first; this is the backstop.
             samples: Mixer::empty(WhenFull::StealOldest),
             inputs: Mixer::empty(WhenFull::Reject),
         }
@@ -91,7 +104,7 @@ impl Renderer {
     /// Renders one period into `out`, an interleaved stereo `f32` slice,
     /// replacing whatever it held.
     ///
-    /// Commands the engine has sent since the last call are applied first,
+    /// Commands the handle has sent since the last call are applied first,
     /// so a play, stop or eviction lands at a period boundary. Then every
     /// sample and every input heard adds into the zeroed slice, one that
     /// reaches its end frees its slot, and the sum is clipped once to the
@@ -162,7 +175,7 @@ mod tests {
     use super::*;
     use crate::audio::AudioBuffer;
     use crate::config::Pcm;
-    use crate::dsp::BufferAddr;
+    use crate::render::dsp::BufferAddress;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
@@ -170,7 +183,7 @@ mod tests {
 
     fn renderer() -> (Producer<Command>, Renderer) {
         let (producer, consumer) = RingBuffer::new(8);
-        (producer, Renderer::new(consumer))
+        (producer, Renderer::on(consumer))
     }
 
     fn mono(data: Vec<Pcm>) -> Arc<AudioBuffer> {
@@ -286,7 +299,7 @@ mod tests {
         assert!(!r.is_playing(SoundId(1)));
         assert_eq!(out, vec![0.5; 4]);
 
-        p.push(SampleCommand::Evict(BufferAddr::of(&b)).into())
+        p.push(SampleCommand::Evict(BufferAddress::of(&b)).into())
             .unwrap();
         r.render(&mut out);
         assert_eq!(r.playing(), 0);

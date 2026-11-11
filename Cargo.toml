@@ -6,7 +6,6 @@ edition = "2024"
 rust-version = "1.95"
 
 [dependencies]
-heapless = { version = "0.9.3", default-features = false }
 hound = "3.5.1"
 rtrb = "0.4.1"
 rubato = "5.0.1"

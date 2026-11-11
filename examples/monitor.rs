@@ -20,13 +20,10 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Channels, Engine};
+use generations::{ChannelLayout, Renderer};
 
 mod device;
 use device::{Capture, Device};
-
-/// RAM for loaded audio; nothing is loaded here, so any figure does.
-const SAMPLE_RAM_BUDGET: usize = 64 * 1024 * 1024;
 
 /// How long to listen.
 const LISTEN: Duration = Duration::from_secs(10);
@@ -35,48 +32,45 @@ fn main() -> Result<(), Box<dyn Error>> {
     let layout = std::env::args()
         .skip(1)
         .map(|word| match word.as_str() {
-            "mono" => Ok(Channels::Mono),
-            "stereo" => Ok(Channels::Stereo),
+            "mono" => Ok(ChannelLayout::Mono),
+            "stereo" => Ok(ChannelLayout::Stereo),
             other => Err(format!("{other}: expected mono or stereo")),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let layout = if layout.is_empty() {
-        vec![Channels::Mono]
+        vec![ChannelLayout::Mono]
     } else {
         layout
     };
 
-    let project = tempfile::tempdir()?;
-    let mut engine = Engine::open(project.path(), SAMPLE_RAM_BUDGET)?;
-    let mut output = engine.output().ok_or("output already taken")?;
+    // No project: monitoring an input needs no samples and no disk.
+    let (mut renderer, control) = Renderer::new();
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.
     let capture = Capture::default_input()?;
     let have = capture.channels();
-    let mut input = engine.input(&layout, capture.period())?;
-    let id = input.id();
-    let sounds = input.sounds().to_vec();
+    let (input, mut feed) = control.input(&layout, capture.period())?;
     // Declared after `engine`, so they are dropped first: both audio
     // threads stop before the engine goes.
-    let mut playback = Device::default_output()?.start(move |out| output.render(out))?;
+    let mut playback = Device::default_output()?.start(move |out| renderer.render(out))?;
     // The first channels of the device, as many as the layout is wide.
-    let take = (0..input.channels()).collect();
-    let mut capture = capture.start(take, move |frames| input.feed(frames))?;
+    let take = (0..feed.channels()).collect();
+    let mut capture = capture.start(take, move |frames| feed.feed(frames))?;
 
     println!(
         "input {layout:?} added over a {have}-channel device; silent for 2s, then heard for {LISTEN:?}"
     );
     sleep(Duration::from_secs(2));
-    for &sound in &sounds {
-        engine.monitor(sound)?;
+    for source in input.sources() {
+        source.monitor()?;
     }
     sleep(LISTEN);
-    // Stop hearing it, then remove it before the capture stream, and its
-    // `Input`, go.
-    for &sound in &sounds {
-        engine.unmonitor(sound)?;
+    // Stop hearing it, then drop the input before the capture stream, and
+    // its feed, go: the rings are then freed on this thread.
+    for source in input.sources() {
+        source.unmonitor()?;
     }
-    engine.remove_input(id)?;
+    drop(input);
 
     while let Some(e) = capture.error() {
         eprintln!("capture stream error: {e}");

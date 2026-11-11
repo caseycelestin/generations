@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::Engine;
+use generations::{Ledger, Project, Renderer};
 
 mod device;
 use device::Device;
@@ -56,21 +56,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: first_sound <project-dir>")?;
 
-    let mut engine = Engine::open(&dir, SAMPLE_RAM_BUDGET)?;
-    let mut output = engine.output().ok_or("output already taken")?;
+    let mut project = Project::open(&dir, Ledger::new(SAMPLE_RAM_BUDGET))?;
+    let (mut renderer, control) = Renderer::new();
     // Declared after `engine`, so it is dropped first: the audio thread
     // stops before the engine lets go of its audio.
-    let mut stream = Device::default_output()?.start(move |out| output.render(out))?;
+    let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
     let scratch = tempfile::tempdir()?;
-    let pluck = engine.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
-    engine.load(pluck)?;
+    let pluck = project.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
+    let pluck = project.load(pluck)?;
 
     println!("pluck");
-    engine.play(pluck)?;
+    control.play(&pluck)?;
     sleep(Duration::from_millis(600));
     println!("pluck again, over the first one's tail");
-    engine.play(pluck)?;
+    control.play(&pluck)?;
     sleep(Duration::from_millis(1200));
 
     // The audio thread queues its complaints; this is where they are read.

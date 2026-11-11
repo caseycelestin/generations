@@ -2,7 +2,7 @@
 //!
 //! A [`Command`] is a method call made into a value so it can cross to the
 //! audio thread on the ring and be applied there at the next period. The
-//! renderer defines what it will accept; the engine builds and sends them.
+//! renderer defines what it will accept; its handle builds and sends them.
 //!
 //! The renderer holds one mixer per kind of source, and a command is for
 //! exactly one of them, so the enum says which first and what second: a
@@ -14,9 +14,9 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::dsp::{BufferAddr, InputReader, SoundId};
+use crate::render::dsp::{BufferAddress, InputReader, SoundId};
 
-/// What the engine can ask of the renderer: a command for one of its
+/// What the handle can ask of the renderer: a command for one of its
 /// mixers.
 ///
 /// An `Add` carries a whole `InputReader`, which is wide; every command
@@ -55,9 +55,9 @@ pub enum SampleCommand {
     Stop(SoundId),
     /// Stop every sample.
     StopAll,
-    /// Stop every sound playing the buffer at `addr`, so the engine can
-    /// let go of the last reference to it.
-    Evict(BufferAddr),
+    /// Stop every sound playing the buffer at `addr`, so the control side
+    /// can let go of the last reference to it.
+    Evict(BufferAddress),
 }
 
 /// What can be asked of the input mixer.

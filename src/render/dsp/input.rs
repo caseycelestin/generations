@@ -1,12 +1,12 @@
 //! The render side of an input: one source's ring, read a period at a
 //! time and heard.
 //!
-//! An input is added on the control side, in [`crate::input`], as one
+//! An input is added on the control side, in [`crate::control::input`], as one
 //! ring per mono or stereo source; this is the other end of one of those
 //! rings. An [`InputReader`] is a [`Source`] the renderer's input mixer
 //! holds, which each period takes one period's worth of frames off its
 //! ring and, when heard, adds them into the output as a
-//! [`Playhead`](crate::dsp::Playhead) adds a sample, mono on both sides,
+//! [`Playhead`](crate::render::dsp::Playhead) adds a sample, mono on both sides,
 //! stereo left and right. It knows nothing of the device, the layout or
 //! the other sources: frames of one or two samples arrive, and that is
 //! all. Nothing here blocks or allocates.
@@ -21,8 +21,8 @@
 use rtrb::Consumer;
 
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::Source;
-use crate::dsp::math::{add, sides_for, stereo};
+use crate::render::dsp::Source;
+use crate::render::dsp::math::{add, sides_for, stereo};
 
 /// How far an input may fall behind the output, in output periods,
 /// before its reader skips ahead.

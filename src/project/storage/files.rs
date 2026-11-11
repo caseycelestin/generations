@@ -18,11 +18,11 @@
 //! project is the disk. Adding a sample writes and syncs its WAV first,
 //! then replaces the manifest through a synced temp file and rename, with
 //! the directory synced after each step, so a power cut leaves the old
-//! manifest or the new one, never half of either. The directory is
-//! engine-owned; renaming a WAV by hand breaks the sample, and
+//! manifest or the new one, never half of either. The directory is the
+//! project's; renaming a WAV by hand breaks the sample, and
 //! [`FileStorage::open`] checks the whole project before opening on it.
 //!
-//! The WAV holds the engine's sample type as it is, so a read is a copy
+//! The WAV holds the crate's sample type as it is, so a read is a copy
 //! from disk into a block and nothing converts. A 16-bit project written
 //! by `storage` is refused as the wrong format; the format version does
 //! not move because nothing written at version 1 is meant to be kept.
@@ -30,7 +30,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
@@ -39,8 +38,8 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::config::{MAX_CHANNELS, Pcm, SAMPLE_RATE};
 use crate::memory::Ledger;
+use crate::project::storage::{Storage, StorageError};
 use crate::project::{Sample, SampleId};
-use crate::storage::{Storage, StorageError};
 
 /// Bits in one stored sample, as the WAV header counts them.
 const BITS_PER_SAMPLE: u16 = (size_of::<Pcm>() * 8) as u16;
@@ -81,10 +80,6 @@ struct Manifest {
 #[derive(Serialize, Deserialize)]
 struct Entry {
     parent: Option<u32>,
-    /// Absent in manifests written before the field existed, which means
-    /// not loaded, so the format version does not move.
-    #[serde(default)]
-    loaded: bool,
 }
 
 /// A project stored as a directory.
@@ -150,7 +145,7 @@ impl FileStorage {
     /// Checks that what is stored is a whole project: the manifest reads,
     /// every parent exists and was minted before its child, the counter is
     /// past every id, and every sample's WAV is present with a header in
-    /// the engine's format.
+    /// the crate's format.
     fn validate(&self) -> Result<(), StorageError> {
         let manifest = self.read_manifest()?;
         let corrupt = |detail: String| StorageError::Corrupt(detail);
@@ -235,7 +230,7 @@ impl FileStorage {
     /// Reads a sample's WAV into a block of exactly its sample count,
     /// allocated from `ledger` after the header is checked and before any
     /// audio is read.
-    fn read_wav(&self, id: SampleId, ledger: &Arc<Ledger>) -> Result<AudioBuffer, StorageError> {
+    fn read_wav(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
         let channels = reader.spec().channels;
@@ -249,7 +244,7 @@ impl FileStorage {
     }
 }
 
-/// Refuses a WAV header that is not the engine's one fixed format.
+/// Refuses a WAV header that is not the crate's one fixed format.
 fn check_spec(id: SampleId, spec: WavSpec) -> Result<(), StorageError> {
     let expected = spec.sample_rate == SAMPLE_RATE
         && spec.bits_per_sample == BITS_PER_SAMPLE
@@ -294,41 +289,14 @@ impl Storage for FileStorage {
         Ok(Some(Sample {
             id,
             parent: entry.parent.map(SampleId),
-            loaded: entry.loaded,
         }))
     }
 
-    fn audio(
-        &self,
-        id: SampleId,
-        ledger: &Arc<Ledger>,
-    ) -> Result<Option<AudioBuffer>, StorageError> {
+    fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
         }
         self.read_wav(id, ledger).map(Some)
-    }
-
-    fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError> {
-        Ok(self
-            .read_manifest()?
-            .samples
-            .iter()
-            .filter(|(_, e)| e.loaded)
-            .map(|(&id, _)| SampleId(id))
-            .collect())
-    }
-
-    fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError> {
-        let mut manifest = self.read_manifest()?;
-        let Some(entry) = manifest.samples.get_mut(&id.0) else {
-            return Ok(());
-        };
-        if entry.loaded == loaded {
-            return Ok(());
-        }
-        entry.loaded = loaded;
-        self.write_manifest(&manifest)
     }
 
     fn add_sample(
@@ -344,7 +312,6 @@ impl Storage for FileStorage {
             id.0,
             Entry {
                 parent: parent.map(|p| p.0),
-                loaded: false,
             },
         );
         self.write_manifest(&manifest)?;
@@ -399,7 +366,7 @@ mod tests {
         FileStorage::open(dir).unwrap()
     }
 
-    /// Reopens the directory, as the next run of the engine would.
+    /// Reopens the directory, as the next run of the sampler would.
     fn reopen(dir: &Path) -> Result<FileStorage, StorageError> {
         FileStorage::open(dir)
     }
@@ -507,7 +474,7 @@ mod tests {
         ));
     }
 
-    /// A project that was written by the engine passes the open check.
+    /// A project that was written by this crate passes the open check.
     #[test]
     fn open_accepts_a_whole_project() {
         let dir = tempfile::tempdir().unwrap();
@@ -545,35 +512,10 @@ mod tests {
     }
 
     #[test]
-    fn a_new_sample_starts_unloaded() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        let id = s.add_sample(None, &ramp(1, 1)).unwrap();
-        assert!(!s.sample(id).unwrap().unwrap().loaded);
-    }
-
-    #[test]
-    fn set_loaded_survives_a_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut s = created(dir.path());
-        let a = s.add_sample(None, &ramp(1, 1)).unwrap();
-        let b = s.add_sample(None, &ramp(1, 1)).unwrap();
-        s.set_loaded(a, true).unwrap();
-        s.set_loaded(b, true).unwrap();
-        s.set_loaded(b, false).unwrap();
-        // Not stored: not an error, nothing changes.
-        s.set_loaded(SampleId(99), true).unwrap();
-        drop(s);
-
-        let s = reopen(dir.path()).unwrap();
-        assert!(s.sample(a).unwrap().unwrap().loaded);
-        assert!(!s.sample(b).unwrap().unwrap().loaded);
-        assert!(s.sample(SampleId(99)).unwrap().is_none());
-        assert_eq!(s.loaded_samples().unwrap(), vec![a]);
-    }
-
-    #[test]
-    fn loaded_is_read_from_the_manifest_and_absent_means_unloaded() {
+    fn a_manifest_with_the_old_loaded_field_still_opens() {
+        // Manifests written while samples had a `loaded` flag carry it per
+        // entry. Nothing reads it now; it is ignored, not refused, so the
+        // format version does not move.
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         s.add_sample(None, &ramp(1, 1)).unwrap();
@@ -583,8 +525,8 @@ mod tests {
         drop(s);
 
         let s = reopen(dir.path()).unwrap();
-        assert!(s.sample(SampleId(0)).unwrap().unwrap().loaded);
-        assert!(!s.sample(SampleId(1)).unwrap().unwrap().loaded);
+        assert_eq!(s.sample(SampleId(0)).unwrap().unwrap().parent, None);
+        assert_eq!(s.sample(SampleId(1)).unwrap().unwrap().parent, None);
     }
 
     #[test]

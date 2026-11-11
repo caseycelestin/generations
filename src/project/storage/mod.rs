@@ -8,7 +8,7 @@
 //! private business.
 //!
 //! [`files::FileStorage`] is the one backend so far. A read is a
-//! [`Block`] from the ledger, and the WAV on disk holds the engine's
+//! [`Block`] from the ledger, and the WAV on disk holds the crate's one
 //! sample type.
 //!
 //! [`Project`]: crate::project::Project
@@ -18,7 +18,6 @@ pub mod files;
 
 use std::error::Error;
 use std::path::Path;
-use std::sync::Arc;
 
 use thiserror::Error as ThisError;
 
@@ -38,10 +37,10 @@ pub enum StorageError {
     /// Something is stored here, but it is not a whole project.
     #[error("stored project is corrupt: {0}")]
     Corrupt(String),
-    /// Stored audio is not in the engine's one fixed format.
+    /// Stored audio is not in the crate's one fixed format.
     #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
     BadAudioFormat { id: SampleId, detail: String },
-    /// The sample's audio would put the engine's memory over its budget.
+    /// The sample's audio would put audio memory over its budget.
     /// Nothing was allocated.
     #[error("reading sample {}: {source}", .id.0)]
     OverBudget {
@@ -66,14 +65,8 @@ pub trait Storage {
     fn has_sample(&self, id: SampleId) -> Result<bool, StorageError>;
 
     /// Everything stored about the sample with this id except its audio,
-    /// or `None` if there is none.
-    ///
-    /// `channels` and `frames` describe the audio [`audio`] will return
-    /// for the same id, so a caller can tell what a read would cost
-    /// before making it. A backend may need to look at the audio to
-    /// answer, so this can fail where the audio is unreadable.
-    ///
-    /// [`audio`]: Storage::audio
+    /// or `None` if there is none. Answered from the record alone, so it
+    /// holds even when the sample's audio cannot be read.
     fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
 
     /// The stored audio of the sample with this id in a block from
@@ -83,19 +76,7 @@ pub trait Storage {
     /// so a sample that does not fit is refused with nothing allocated.
     /// The caller holds the audio for as long as it wants the memory; the
     /// bytes go back when the buffer drops.
-    fn audio(
-        &self,
-        id: SampleId,
-        ledger: &Arc<Ledger>,
-    ) -> Result<Option<AudioBuffer>, StorageError>;
-
-    /// The ids of every stored sample that is loaded, in id order.
-    fn loaded_samples(&self) -> Result<Vec<SampleId>, StorageError>;
-
-    /// Records whether the sample with this id is loaded. Setting it on an
-    /// id that is not stored is not an error; whether it exists is the
-    /// project's rule.
-    fn set_loaded(&mut self, id: SampleId, loaded: bool) -> Result<(), StorageError>;
+    fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError>;
 
     /// Stores a sample with its audio and returns its new id.
     ///

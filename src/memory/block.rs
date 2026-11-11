@@ -5,11 +5,9 @@
 //! at `alloc` is what is ever held, and no write can reallocate, on the
 //! audio thread or anywhere else.
 
+use super::Ledger;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-
-use super::Ledger;
 
 /// A fixed-capacity buffer of `T` samples, paid for against a [`Ledger`].
 ///
@@ -27,7 +25,7 @@ pub struct Block<T> {
     /// The samples. Never reallocated after construction.
     data: Vec<T>,
     /// Where the capacity was charged, to repay it on drop.
-    ledger: Arc<Ledger>,
+    ledger: Ledger,
 }
 
 impl<T> Block<T> {
@@ -72,7 +70,7 @@ impl<T> Block<T> {
 
     /// Wraps a buffer already paid for against `ledger`. Only `alloc`
     /// calls this; it is what has done the paying.
-    pub(super) fn new(data: Vec<T>, ledger: Arc<Ledger>) -> Self {
+    pub(super) fn new(data: Vec<T>, ledger: Ledger) -> Self {
         Self { data, ledger }
     }
 }

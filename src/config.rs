@@ -26,7 +26,7 @@ pub const MAX_INPUT_CHANNELS: usize = 8;
 
 /// Input sounds the engine holds at once, across every input: the slots
 /// in the renderer's input mixer, one per mono or stereo source. Unlike
-/// samples, an input sound is never stolen: `Engine::input` refuses an
+/// samples, an input sound is never stolen: `Control::input` refuses an
 /// input whose sources would not all fit until one is removed.
 pub const MAX_INPUT_SOUNDS: usize = 8;
 
@@ -40,16 +40,16 @@ pub const MAX_INPUT_SOUNDS: usize = 8;
 /// wants.
 pub const MAX_PERIOD_FRAMES: usize = 4096;
 
-/// Samples that can play at once: the slots in the renderer's sample
-/// mixer.
+/// Sample sounds the renderer holds at once: the slots in its sample
+/// mixer, beside [`MAX_INPUT_SOUNDS`] for the input mixer.
 ///
 /// A fixed count bounds the work in one audio callback. When every slot
 /// is taken, playing another sample steals the oldest rather than
 /// failing. Set generously for now; the cost per slot grows as playback
 /// gains pitch and processing.
-pub const SAMPLE_PLAYBACK_COUNT: usize = 64;
+pub const MAX_SAMPLE_SOUNDS: usize = 64;
 
-/// Commands the engine can send the renderer before the renderer has had
+/// Commands the handle can send the renderer before the renderer has had
 /// a period to take them. A press that finds the ring full is dropped,
 /// which is the right failure for a real-time system; with periods in the
 /// hundreds per second and presses in the tens, it does not happen by hand.

@@ -1,12 +1,12 @@
 //! Audio processing pieces: the parts a pipeline is wired from.
 //!
 //! Nothing here is a pipeline. These are the pieces, each a function
-//! over one period of frames, that the [`Renderer`](crate::renderer::Renderer)
-//! wires into this engine's pipeline and that any other pipeline could
+//! over one period of frames, that the [`Renderer`](crate::render::Renderer)
+//! wires into this crate's pipeline and that any other pipeline could
 //! wire differently: a [`Mixer`] of [`Source`]s, a [`Playhead`] over a
 //! loaded sample, an [`InputReader`] over a capture ring, and the
 //! arithmetic they share in [`math`]. None of them knows about commands,
-//! the engine or the device; a piece is given a slice and its own state
+//! the control side or the device; a piece is given a slice and its own state
 //! and nothing else.
 //!
 //! Every piece runs where the frames are needed, on a thread it does not
@@ -62,10 +62,10 @@ mod playhead;
 
 pub use input::InputReader;
 pub use mixer::{Mixer, Source, WhenFull};
-pub use playhead::{BufferAddr, Playhead};
+pub use playhead::{BufferAddress, Playhead};
 
 /// Identity of one sound: one instance of something heard, a sample
-/// played once or one source of an input. Minted by the engine, in order,
+/// played once or one source of an input. Minted by the control side, in order,
 /// so the lowest id among the sounds is the oldest.
 ///
 /// Never reused, so a stop that arrives after its sound was stolen or
