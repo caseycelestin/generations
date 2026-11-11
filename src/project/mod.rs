@@ -14,15 +14,19 @@
 //! knows nothing about the project. The caller carries the sample from
 //! one to the other.
 
+pub(crate) mod import;
+pub(crate) mod loaded_sample;
+pub(crate) mod storage;
+
 use std::path::Path;
 
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::import::{self as import, ImportError};
-use crate::loaded_sample::LoadedSample;
 use crate::memory::Ledger;
-use crate::storage::{self as storage, Storage, StorageError};
+use crate::project::loaded_sample::LoadedSample;
+use import::ImportError;
+use storage::{Storage, StorageError};
 
 /// Identity of a sample within one project.
 ///
@@ -185,7 +189,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::config::Pcm;
-    use crate::import::DecodeError;
+    use crate::project::import::DecodeError;
     use crate::testing::{audio, unlimited};
 
     /// What the stub storage remembers.

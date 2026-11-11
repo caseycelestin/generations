@@ -24,8 +24,8 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::dsp::BufferAddress;
 use crate::project::SampleId;
+use crate::render::dsp::BufferAddress;
 
 /// A sample's audio in RAM. Owning this is what loaded means.
 #[derive(Debug)]

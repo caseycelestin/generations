@@ -28,8 +28,11 @@
 //! comes from a project and is played here by reference; the two sides
 //! share nothing but the ledger and that value, carried by the caller.
 //!
-//! [`Renderer::new`]: crate::renderer::Renderer::new
-//! [`Renderer`]: crate::renderer::Renderer
+//! [`Renderer::new`]: crate::render::Renderer::new
+//! [`Renderer`]: crate::render::Renderer
+
+pub(crate) mod input;
+pub(crate) mod sound;
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -38,11 +41,11 @@ use rtrb::Producer;
 use thiserror::Error;
 
 use crate::config::{COMMAND_CAPACITY, MAX_INPUT_CHANNELS, MAX_INPUT_SOUNDS, MAX_PERIOD_FRAMES};
-use crate::dsp::{InputReader, SoundId};
-use crate::input::{self, ChannelLayout, Input, InputFeed};
-use crate::loaded_sample::LoadedSample;
-use crate::renderer::command::{Command, InputCommand, SampleCommand};
-use crate::sound::Sound;
+use crate::control::sound::Sound;
+use crate::project::loaded_sample::LoadedSample;
+use crate::render::command::{Command, InputCommand, SampleCommand};
+use crate::render::dsp::{InputReader, SoundId};
+use input::{ChannelLayout, Input, InputFeed};
 
 /// Reasons the control side can refuse what it is asked: the ring is full,
 /// or an input would not fit.
@@ -66,7 +69,7 @@ pub enum ControlError {
 }
 
 /// The control side's end of the renderer, from
-/// [`Renderer::new`](crate::renderer::Renderer::new). Everything heard
+/// [`Renderer::new`](crate::render::Renderer::new). Everything heard
 /// starts as a verb here; cheap to clone, and cloned into every sound and
 /// input it hands out.
 #[derive(Debug, Clone)]
@@ -300,7 +303,7 @@ mod tests {
     use crate::config::Pcm;
     use crate::project::tests::memory_project;
     use crate::project::{Project, SampleId};
-    use crate::renderer::Renderer;
+    use crate::render::Renderer;
     use crate::testing::audio;
 
     /// A mono buffer of `n` frames, no two alike.

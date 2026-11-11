@@ -17,8 +17,8 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::audio::{AudioError, check_channels};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::import::decode::DecodedAudio;
 use crate::memory::{Block, Ledger, OverBudget};
+use crate::project::import::decode::DecodedAudio;
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
 /// not the result: the whole clip goes through in one call.

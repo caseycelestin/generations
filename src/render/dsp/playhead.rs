@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::Source;
-use crate::dsp::math::{add, sides_for, stereo};
+use crate::render::dsp::Source;
+use crate::render::dsp::math::{add, sides_for, stereo};
 
 /// Where a resident buffer lives, as a number.
 ///

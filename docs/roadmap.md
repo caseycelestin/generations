@@ -952,7 +952,10 @@ more about the render side than about input.
   builds the inner command and the grouping is spelled once. The handle
   stays `Input`, since it is the capture end of the input and not the
   hearing of it.
-- **`dsp` is the pieces, `renderer` is this engine's pipeline.** The
+- **`dsp` is the pieces, `renderer` is this engine's pipeline.** *Since
+  Handles the folders are `src/render/` (the pipeline, its commands and
+  `dsp/` under it) beside `src/control/` and `src/project/`; see the
+  layout bullet there.* The
   grouping above made a seam visible: a generic `Mixer` had grown an
   `apply(SampleCommand)`, so the reusable piece imported the one
   pipeline's command enums. Now `src/dsp/` holds only what any pipeline
@@ -973,7 +976,8 @@ more about the render side than about input.
   control side, a "source" on the render side and a "sound" in the
   engine; the three words named one object. "Group" is gone from the
   code; this document uses "source" for it from here on.
-- **The input's control code and audio code are separate files.** One
+- **The input's control code and audio code are separate files.** *Since
+  Handles: `src/control/input.rs` and `src/render/dsp/input.rs`.* One
   `dsp/input.rs` held both ends of the ring: the `Input` handle, which
   allocates at open and knows a device's layout, and the `InputReader`,
   which runs on the audio thread and knows only a width. The same split
@@ -1120,6 +1124,18 @@ answer took the engine apart.
   mixer frees a slot, so it is a requirement on step 8's mixer rather
   than a patch on this one. The rule until then is on `Renderer`: drop
   what drives it before the samples it plays.
+- **The source tree is the architecture.** `src/project/` is the disk
+  side (`Project`, `LoadedSample`, `storage/`, `import/`); `src/control/`
+  is the sound side's control thread (`Control`, `Sound`, `Input`);
+  `src/render/` is its audio thread (`Renderer`, `command.rs`, `dsp/`).
+  The three never import across the first two lines, and `render/`
+  imports neither of the others. Shared at the top: `config`, `audio`
+  (the one buffer type, the only value the disk side makes that the
+  render side reads) and `memory`. The folder is `render`, not
+  `renderer`, because it names a side to pair with `control`, as this
+  document always has; step 7's reason for `renderer` was that the
+  folder then held one type. The rule under `render/` is the real-time
+  rule: no lock, no allocation, no `Control` or `Ledger` in reach.
 - **Build the engine this product needs, with clean seams.** The question
   "is the engine for one product or for many" came up over whether the
   renderer should come with a handle at all. The answer this project has

@@ -17,7 +17,7 @@
 //! own slot in the input mixer, monitored on its own. The split from the
 //! device's frames into the sources happens in [`InputFeed::feed`], where
 //! the interleaved frame already is; the render side,
-//! [`InputReader`](crate::dsp::InputReader), sees only mono and stereo
+//! [`InputReader`](crate::render::dsp::InputReader), sees only mono and stereo
 //! sources, the same as it sees samples.
 //!
 //! The feeder is the only piece here that runs on a thread with a hard
@@ -41,14 +41,14 @@ use rtrb::Producer;
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES, Pcm};
 use crate::control::Control;
 use crate::control::ControlError;
-use crate::dsp::{InputReader, SoundId};
+use crate::render::dsp::{InputReader, SoundId};
 
 /// How many of the capture device's periods a source's ring holds: enough
 /// that the two clocks can disagree by [`MAX_LAG_PERIODS`] of output and
 /// a capture period can land on top before a frame is dropped. The ring
 /// is whole frames of the source's width, so a frame never wraps.
 ///
-/// [`MAX_LAG_PERIODS`]: crate::dsp::input::MAX_LAG_PERIODS
+/// [`MAX_LAG_PERIODS`]: crate::render::dsp::input::MAX_LAG_PERIODS
 const RING_PERIODS: usize = 8;
 
 /// The most memory every input ring together can take: every source of
@@ -128,7 +128,7 @@ pub struct Input {
 
 impl Input {
     /// The input whose sources are the sounds `sounds`, in layout order,
-    /// on `renderer`.
+    /// on `control`.
     pub(crate) fn new(sounds: &[SoundId], control: Control) -> Self {
         let sources = sounds
             .iter()
@@ -262,7 +262,7 @@ impl InputFeed {
 mod tests {
     use super::ChannelLayout::{Mono, Stereo};
     use super::*;
-    use crate::dsp::Source;
+    use crate::render::dsp::Source;
 
     /// A feed laid out as `layout` over rings of `frames` frames, and its
     /// readers.

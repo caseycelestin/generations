@@ -11,8 +11,8 @@
 //!                                         math         stereo, add, hard_clip: the arithmetic they share
 //! ```
 //!
-//! The pieces come from [`dsp`](crate::dsp) and are generic; this module
-//! is the one place that picks which of them this crate runs, in what
+//! The pieces come from [`dsp`](crate::render::dsp) and are generic; this
+//! module is the one place that picks which of them this crate runs, in what
 //! order, and what the control side may ask of them. It defines the
 //! [`Command`]s it accepts and its handle builds them. Nothing here
 //! knows what a project, a device or resident audio is: audio arrives
@@ -43,15 +43,16 @@
 //! is one type with one method, `render`.
 
 pub mod command;
+pub(crate) mod dsp;
 
 use rtrb::{Consumer, RingBuffer};
 
 use crate::config::{COMMAND_CAPACITY, MAX_INPUT_SOUNDS, MAX_SAMPLE_SOUNDS};
 use crate::control::Control;
 #[cfg(test)]
-use crate::dsp::SoundId;
-use crate::dsp::math::hard_clip;
-use crate::dsp::{InputReader, Mixer, Playhead, WhenFull};
+use crate::render::dsp::SoundId;
+use crate::render::dsp::math::hard_clip;
+use crate::render::dsp::{InputReader, Mixer, Playhead, WhenFull};
 use command::{Command, InputCommand, SampleCommand};
 
 /// The render side: turns commands and resident audio into periods of
@@ -174,7 +175,7 @@ mod tests {
     use super::*;
     use crate::audio::AudioBuffer;
     use crate::config::Pcm;
-    use crate::dsp::BufferAddress;
+    use crate::render::dsp::BufferAddress;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;

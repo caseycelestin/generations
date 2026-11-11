@@ -38,8 +38,8 @@ use thiserror::Error;
 use crate::audio::AudioBuffer;
 use crate::config::{MAX_CHANNELS, Pcm, SAMPLE_RATE};
 use crate::memory::Ledger;
+use crate::project::storage::{Storage, StorageError};
 use crate::project::{Sample, SampleId};
-use crate::storage::{Storage, StorageError};
 
 /// Bits in one stored sample, as the WAV header counts them.
 const BITS_PER_SAMPLE: u16 = (size_of::<Pcm>() * 8) as u16;

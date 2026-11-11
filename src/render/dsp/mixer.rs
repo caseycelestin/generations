@@ -2,7 +2,7 @@
 //!
 //! A [`Source`] is anything that adds its next period into the output
 //! and knows when it is done: a [`Playhead`] over a loaded sample, an
-//! [`InputReader`](crate::dsp::InputReader) over the capture ring. A
+//! [`InputReader`](crate::render::dsp::InputReader) over the capture ring. A
 //! [`Mixer`] is `N` slots for one kind of source, each the sound the
 //! control side named by a [`SoundId`]. Its methods are the whole policy:
 //! start a source, stop one by id, stop all, mute and unmute one, and
@@ -23,7 +23,7 @@
 //! pass over at most `N` slots. Nothing here allocates, locks or fails.
 
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::{BufferAddress, Playhead, SoundId};
+use crate::render::dsp::{BufferAddress, Playhead, SoundId};
 
 /// Something a mixer slot can hold: it adds its next period into the
 /// output, and says when it never will again.

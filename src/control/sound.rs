@@ -10,11 +10,11 @@
 //! audio is the [`LoadedSample`]'s and the slot is the mixer's.
 //!
 //!
-//! [`LoadedSample`]: crate::loaded_sample::LoadedSample
+//! [`LoadedSample`]: crate::project::loaded_sample::LoadedSample
 
 use crate::control::Control;
 use crate::control::ControlError;
-use crate::dsp::SoundId;
+use crate::render::dsp::SoundId;
 
 /// One play of a sample. Drop it and the sound plays on to its end;
 /// `stop` it to cut it.

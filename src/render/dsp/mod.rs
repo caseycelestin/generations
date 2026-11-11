@@ -1,7 +1,7 @@
 //! Audio processing pieces: the parts a pipeline is wired from.
 //!
 //! Nothing here is a pipeline. These are the pieces, each a function
-//! over one period of frames, that the [`Renderer`](crate::renderer::Renderer)
+//! over one period of frames, that the [`Renderer`](crate::render::Renderer)
 //! wires into this crate's pipeline and that any other pipeline could
 //! wire differently: a [`Mixer`] of [`Source`]s, a [`Playhead`] over a
 //! loaded sample, an [`InputReader`] over a capture ring, and the

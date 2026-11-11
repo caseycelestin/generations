@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::dsp::{BufferAddress, InputReader, SoundId};
+use crate::render::dsp::{BufferAddress, InputReader, SoundId};
 
 /// What the handle can ask of the renderer: a command for one of its
 /// mixers.
