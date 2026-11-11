@@ -6,7 +6,7 @@
 //! and hands each to its stream; `device/` beside this file is the only
 //! code that knows `cpal`. The input is laid out like the device: the
 //! layout says what each of the device's channels means, a stereo pair or
-//! a mono source, and each source is a sound the engine can monitor on its
+//! a mono channel, and each entry is a sound the engine can monitor on its
 //! own. The frames go from the device to the engine as delivered.
 //!
 //! Usage: `cargo run --example monitor -- [mono|stereo ...]`. The words
@@ -20,7 +20,8 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{ChannelLayout, Renderer};
+use generations::config::MAX_PERIOD_FRAMES;
+use generations::{ChannelLayout, InputLayout, Renderer, RendererSettings};
 
 mod device;
 use device::{Capture, Device};
@@ -37,14 +38,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             other => Err(format!("{other}: expected mono or stereo")),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let layout = if layout.is_empty() {
+    let layout = InputLayout::new(if layout.is_empty() {
         vec![ChannelLayout::Mono]
     } else {
         layout
-    };
+    });
 
     // No project: monitoring an input needs no samples and no disk.
-    let (mut renderer, control) = Renderer::new();
+    // The output device renders in pieces of at most this many frames.
+    let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES));
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.
     let capture = Capture::default_input()?;
@@ -61,14 +63,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         "input {layout:?} added over a {have}-channel device; silent for 2s, then heard for {LISTEN:?}"
     );
     sleep(Duration::from_secs(2));
-    for source in input.sources() {
-        source.monitor()?;
+    for sound in input.sounds() {
+        sound.monitor()?;
     }
     sleep(LISTEN);
     // Stop hearing it, then drop the input before the capture stream, and
     // its feed, go: the rings are then freed on this thread.
-    for source in input.sources() {
-        source.unmonitor()?;
+    for sound in input.sounds() {
+        sound.unmonitor()?;
     }
     drop(input);
 

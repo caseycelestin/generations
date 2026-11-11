@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Ledger, Project, Renderer};
+use generations::config::MAX_PERIOD_FRAMES;
+use generations::{Ledger, Project, Renderer, RendererSettings};
 
 mod device;
 use device::Device;
@@ -57,7 +58,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("usage: first_sound <project-dir>")?;
 
     let mut project = Project::open(&dir, Ledger::new(SAMPLE_RAM_BUDGET))?;
-    let (mut renderer, control) = Renderer::new();
+    // The output device renders in pieces of at most this many frames.
+    let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES));
     // Declared after `engine`, so it is dropped first: the audio thread
     // stops before the engine lets go of its audio.
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;

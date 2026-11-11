@@ -67,9 +67,9 @@ impl Ledger {
     /// afforded.
     ///
     /// The block comes back empty, with exactly the capacity asked for.
-    pub fn alloc<T>(&self, samples: usize) -> Result<Block<T>, OverBudget> {
+    pub fn alloc<T>(&self, samples: usize) -> Result<Block<T>, OverBudgetError> {
         let shared = &*self.0;
-        let over = |requested, in_use| OverBudget {
+        let over = |requested, in_use| OverBudgetError {
             requested,
             in_use,
             budget: shared.budget,
@@ -107,7 +107,7 @@ impl Ledger {
     "{requested} bytes would put audio memory at {} of a {budget} byte budget",
     in_use.saturating_add(*requested)
 )]
-pub struct OverBudget {
+pub struct OverBudgetError {
     /// Bytes the refused allocation would have cost.
     pub requested: usize,
     /// Bytes in use at the time.
@@ -161,7 +161,7 @@ mod tests {
         let err = ledger.alloc::<u8>(20).unwrap_err();
         assert_eq!(
             err,
-            OverBudget {
+            OverBudgetError {
                 requested: 20,
                 in_use: 40,
                 budget: 50,

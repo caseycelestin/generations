@@ -22,8 +22,8 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
-use crate::memory::{Ledger, OverBudget};
-use crate::project::{Sample, SampleId};
+use crate::memory::{Ledger, OverBudgetError};
+use crate::project::{SampleId, SampleMetadata};
 
 /// Reasons storage cannot do what was asked.
 #[derive(Debug, ThisError)]
@@ -46,7 +46,7 @@ pub enum StorageError {
     OverBudget {
         id: SampleId,
         #[source]
-        source: OverBudget,
+        source: OverBudgetError,
     },
     /// Something failed underneath: the filesystem, a codec, a database.
     #[error(transparent)]
@@ -67,7 +67,7 @@ pub trait Storage {
     /// Everything stored about the sample with this id except its audio,
     /// or `None` if there is none. Answered from the record alone, so it
     /// holds even when the sample's audio cannot be read.
-    fn sample(&self, id: SampleId) -> Result<Option<Sample>, StorageError>;
+    fn metadata(&self, id: SampleId) -> Result<Option<SampleMetadata>, StorageError>;
 
     /// The stored audio of the sample with this id in a block from
     /// `ledger`, or `None` if there is none.

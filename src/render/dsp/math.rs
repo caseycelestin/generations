@@ -7,22 +7,24 @@
 //! [`hard_clip`]. Whether the frames came from a loaded sample or the
 //! capture device makes no difference here.
 
-use crate::config::{OUTPUT_CHANNELS, Pcm};
+use crate::audio::ChannelLayout;
+use crate::config::Pcm;
+use crate::render::Renderer;
 
 /// One output frame: a sample per side.
-pub type Frame = [Pcm; OUTPUT_CHANNELS];
+pub type Frame = [Pcm; Renderer::CHANNELS];
 
 /// Which sample of a source frame each output side hears, as an index
 /// into the frame. A mono source is `[0, 0]`; a stereo one as stored is
 /// `[0, 1]`; a source with more channels could pick any two.
-pub type Sides = [usize; OUTPUT_CHANNELS];
+pub type Sides = [usize; Renderer::CHANNELS];
 
-/// The sides for a sample of `channels` channels, heard as stored: mono
-/// on both sides, stereo left and right.
-pub fn sides_for(channels: u16) -> Sides {
-    match channels {
-        1 => [0, 0],
-        _ => [0, 1],
+/// The sides for frames of `layout`, heard as stored: mono on both
+/// sides, stereo left and right.
+pub fn sides_for(layout: ChannelLayout) -> Sides {
+    match layout {
+        ChannelLayout::Mono => [0, 0],
+        ChannelLayout::Stereo => [0, 1],
     }
 }
 
@@ -46,8 +48,12 @@ pub fn stereo(samples: &[Pcm], width: usize, sides: Sides) -> impl Iterator<Item
 /// Adds rather than writes, so sources sum by each being added into the
 /// same slice.
 pub fn add(out: &mut [Pcm], frames: impl IntoIterator<Item = Frame>) {
-    debug_assert_eq!(out.len() % OUTPUT_CHANNELS, 0, "output is not whole frames");
-    let (out, _) = out.as_chunks_mut::<OUTPUT_CHANNELS>();
+    debug_assert_eq!(
+        out.len() % Renderer::CHANNELS,
+        0,
+        "output is not whole frames"
+    );
+    let (out, _) = out.as_chunks_mut::<{ Renderer::CHANNELS }>();
     for (out, frame) in out.iter_mut().zip(frames) {
         for (o, s) in out.iter_mut().zip(frame) {
             *o += s;
@@ -72,13 +78,14 @@ mod tests {
 
     #[test]
     fn mono_is_heard_on_both_sides() {
-        let frames: Vec<Frame> = stereo(&[0.5, -0.5], 1, sides_for(1)).collect();
+        let frames: Vec<Frame> = stereo(&[0.5, -0.5], 1, sides_for(ChannelLayout::Mono)).collect();
         assert_eq!(frames, vec![[0.5, 0.5], [-0.5, -0.5]]);
     }
 
     #[test]
     fn stereo_is_heard_as_stored() {
-        let frames: Vec<Frame> = stereo(&[0.5, -0.5, 0.0, 0.5], 2, sides_for(2)).collect();
+        let frames: Vec<Frame> =
+            stereo(&[0.5, -0.5, 0.0, 0.5], 2, sides_for(ChannelLayout::Stereo)).collect();
         assert_eq!(frames, vec![[0.5, -0.5], [0.0, 0.5]]);
     }
 

@@ -20,7 +20,7 @@ use hound::{SampleFormat, WavReader};
 use thiserror::Error;
 
 use crate::config::Pcm;
-use crate::memory::{Block, Ledger, OverBudget};
+use crate::memory::{Block, Ledger, OverBudgetError};
 
 /// Audio as a decoder found it: the engine's sample type at the file's
 /// own rate and channel count.
@@ -53,7 +53,7 @@ pub enum DecodeError {
     OverBudget {
         path: Box<Path>,
         #[source]
-        source: OverBudget,
+        source: OverBudgetError,
     },
 }
 
@@ -190,7 +190,7 @@ mod tests {
         assert!(matches!(
             super::decode(&path, &ledger).unwrap_err(),
             DecodeError::OverBudget {
-                source: OverBudget { requested, .. },
+                source: OverBudgetError { requested, .. },
                 ..
             } if requested == bytes
         ));
