@@ -7,9 +7,9 @@
 //! on it: `play` a loaded sample, `stop` its sounds, add an `input`,
 //! `stop_all`. What those return, a [`SampleSound`], an [`Input`] and its
 //! sounds, carries a clone of the `Control` so its own verbs work without
-//! the parent. It is cheap to clone and holds nothing but the ring's
-//! sending end, the sound id counter and the count of input sounds held,
-//! behind one `Arc`.
+//! the parent. It is cheap to clone and holds nothing but the two rings'
+//! ends, the sound id counter and the count of input sounds held, behind
+//! one `Arc`.
 //!
 //! Building the [`Command`] that carries each verb is this type's job and
 //! nobody else's, so the command vocabulary is private between here and
@@ -17,6 +17,14 @@
 //! only. The renderer's end of the ring never blocks, and the renderer
 //! never sees a control, only the commands. Nothing that runs on the audio
 //! or capture thread may hold one of these: it has a mutex.
+//!
+//! The renderer sends back every sound it lets go of, and the control
+//! drops them here, on the control side: whenever the rings' lock is
+//! taken, so at the start of every send, and whenever
+//! [`collect`](Control::collect) is called. A sample's audio the
+//! caller has already dropped is freed then. The ring cannot fill,
+//! because nothing reaches the renderer except through a send, and every
+//! send empties it first.
 //!
 //! The control mints [`SoundId`]s, because a sound's id has to be in the
 //! command that starts it and every holder must agree on the names: one
@@ -37,13 +45,13 @@ pub(crate) mod sample_sound;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use rtrb::Producer;
+use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
 use crate::project::sample::Sample;
-use crate::render::command::{Command, SoundCommand, SoundId, SoundParam};
+use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam};
 use crate::render::dsp::{InputReader, SampleReader};
 use input::{Input, InputFeed, InputLayout};
 
@@ -77,8 +85,8 @@ pub struct Control(Arc<Shared>);
 
 #[derive(Debug)]
 struct Shared {
-    /// The sending end of the command ring.
-    commands: Mutex<Producer<Command>>,
+    /// The rings to and from the renderer, under one lock.
+    rings: Mutex<Rings>,
     /// The next sound id. Only goes up.
     next_sound: AtomicU64,
     /// Input sounds added and not yet removed: the renderer's places for
@@ -90,12 +98,36 @@ struct Shared {
     input_capacity: usize,
 }
 
+/// The control's ends of the two rings, locked together so a send
+/// empties the release ring and pushes as one step.
+#[derive(Debug)]
+struct Rings {
+    /// The sending end of the command ring.
+    commands: Producer<Command>,
+    /// The receiving end of the ring the renderer sends back every sound
+    /// it lets go of on.
+    released: Consumer<Released>,
+}
+
+impl Rings {
+    /// Drops every sound the renderer has let go of since the last
+    /// collect.
+    fn collect(&mut self) {
+        while self.released.pop().is_ok() {}
+    }
+}
+
 impl Control {
-    /// A control sending over `commands`, minting sound ids from zero,
-    /// for a renderer that holds `input_capacity` input sounds.
-    pub(crate) fn new(commands: Producer<Command>, input_capacity: usize) -> Self {
+    /// A control sending over `commands` and dropping what comes back on
+    /// `released`, minting sound ids from zero, for a renderer that holds
+    /// `input_capacity` input sounds.
+    pub(crate) fn new(
+        commands: Producer<Command>,
+        released: Consumer<Released>,
+        input_capacity: usize,
+    ) -> Self {
         Self(Arc::new(Shared {
-            commands: Mutex::new(commands),
+            rings: Mutex::new(Rings { commands, released }),
             next_sound: AtomicU64::new(0),
             input_sounds: AtomicUsize::new(0),
             input_capacity,
@@ -135,6 +167,19 @@ impl Control {
     /// being heard. Refused as `CommandsFull` if the ring has no room.
     pub fn stop_all(&self) -> Result<(), ControlError> {
         self.send(Command::StopAllSamples)
+    }
+
+    /// Frees, here on the control side, every sound the renderer has let
+    /// go of since the last send or collect: the audio of a sample dropped
+    /// while it played, once that sound has ended, and the rings of an
+    /// input removed. Every send does this first, so only an owner that
+    /// can go quiet needs it: call it from a UI or event loop tick, or
+    /// before a load that needs the budget back. Never on the audio
+    /// thread: it is where the freeing happens.
+    pub fn collect(&self) {
+        // Taking the lock is the collect (see `lock`), so take it and let
+        // it go: there is nothing to send.
+        drop(self.lock());
     }
 
     /// Adds an input: the ability to put audio into the renderer. Mints a
@@ -273,6 +318,7 @@ impl Control {
     /// Pushes `command`. A full ring drops it and says so.
     fn send(&self, command: impl Into<Command>) -> Result<(), ControlError> {
         self.lock()
+            .commands
             .push(command.into())
             .map_err(|_| ControlError::CommandsFull)
     }
@@ -285,23 +331,28 @@ impl Control {
         &self,
         commands: impl ExactSizeIterator<Item = Command>,
     ) -> Result<(), ControlError> {
-        let mut ring = self.lock();
-        if ring.slots() < commands.len() {
+        let mut rings = self.lock();
+        if rings.commands.slots() < commands.len() {
             return Err(ControlError::CommandsFull);
         }
         for command in commands {
-            ring.push(command).expect("room was checked under the lock");
+            rings
+                .commands
+                .push(command)
+                .expect("room was checked under the lock");
         }
         Ok(())
     }
 
-    /// The ring. A panic while holding the lock leaves the ring itself
-    /// intact, so a poisoned lock is taken anyway.
-    fn lock(&self) -> MutexGuard<'_, Producer<Command>> {
-        self.0
-            .commands
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    /// The rings, with everything the renderer has let go of already
+    /// dropped. Every way to the rings comes through here, so every send
+    /// collects first and no path can forget to: that is what keeps the
+    /// release ring from filling. A panic while holding the lock leaves
+    /// the rings themselves intact, so a poisoned lock is taken anyway.
+    fn lock(&self) -> MutexGuard<'_, Rings> {
+        let mut rings = self.0.rings.lock().unwrap_or_else(PoisonError::into_inner);
+        rings.collect();
+        rings
     }
 }
 
@@ -633,10 +684,17 @@ mod tests {
         control.stop(&loaded).unwrap();
         drop(loaded);
         // The sound still holds the audio until the renderer applies the
-        // eviction at its next render; then both are gone.
+        // eviction at its next render, and sends the sound back; the audio
+        // is freed when the control side drops it.
         assert_eq!(p.ledger().in_use(), ramp_bytes(100));
         period(&mut r, 4);
         assert!(!r.is_playing(play.id()));
+        assert_eq!(
+            p.ledger().in_use(),
+            ramp_bytes(100),
+            "not on the audio thread"
+        );
+        control.collect();
         assert_eq!(p.ledger().in_use(), 0);
     }
 
@@ -670,9 +728,12 @@ mod tests {
         period(&mut r, 4);
         assert!(r.is_playing(play.id()));
         assert_eq!(p.ledger().in_use(), ramp_bytes(100));
-        // The audio is let go when the sound is.
+        // The audio is let go when the sound is, and freed on the next
+        // send, here the next stop.
         control.stop_all().unwrap();
         period(&mut r, 4);
+        assert_eq!(p.ledger().in_use(), ramp_bytes(100));
+        control.stop_all().unwrap();
         assert_eq!(p.ledger().in_use(), 0);
     }
 }

@@ -28,11 +28,10 @@
 //! device's period and the layout, both bounded, not with the audio held,
 //! and their worst case is [`MAX_RING_BYTES`], fixed overhead.
 //!
-//! Both ends hold a ring; it is freed when the second goes. Drop the
-//! `Input` first and the `InputFeed` second, so the render side lets go
-//! of its end at the next render and the free happens on the caller's
-//! thread. Dropped the other way round, the readers finish on their own
-//! and the renderer frees the rings on the audio thread.
+//! Both ends hold a ring; it is freed when the second goes. They can be
+//! dropped in either order: whenever the render side lets go of its end,
+//! removed or finished, the reader goes back over the release ring and
+//! the control frees it, so a ring is never freed on the audio thread.
 
 use std::mem::size_of;
 
@@ -151,8 +150,9 @@ impl Input {
 }
 
 impl Drop for Input {
-    /// Removes the input: tells the renderer to drop every sound's reader
-    /// at its next render and stops counting them as held. Best effort:
+    /// Removes the input: tells the renderer to let go of every sound's
+    /// reader at its next render, handing each back to be freed on the
+    /// control side, and stops counting them as held. Best effort:
     /// a drop cannot fail, so if the ring has no room for the removes the
     /// readers stay until the `InputFeed` is dropped, when they finish on
     /// their own, and they stay counted as held.
