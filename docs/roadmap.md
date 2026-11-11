@@ -232,7 +232,7 @@ Step 4 was built up one decision at a time; the decisions are here and
 the code follows them.
 
 - **Sound has a control side and a render side, and the engine is the
-  control side.** *Since Handles the control side is the `RendererHandle`,
+  control side.** *Since Handles the control side's end is `Control`,
   not an engine; the split itself stands.* Pressing a pad is a front-panel action, and the engine
   is what the front panel calls; it owns the audio in RAM and the sending
   end of a command ring. The render side, the `renderer` module wired
@@ -288,7 +288,7 @@ the code follows them.
   the engine never loads on its own. Load-on-play is two lines in a
   caller that wants it.
 - **Unload stops every voice playing the sample.** *Since Handles the
-  verb is `RendererHandle::stop(&sample)`, by reference, and unloading is
+  verb is `Control::stop(&sample)`, by reference, and unloading is
   dropping the sample; the eviction and its address argument are as
   below.* Before this, a voice
   still playing an unloaded sample kept its `Arc` and played to the end,
@@ -300,7 +300,7 @@ the code follows them.
   most `VOICE_COUNT` voices; the render side still never learns a sample
   id. `unload` sends first, which is what keeps an address a safe key,
   and fails with `CommandsFull` if the ring is full, like `play` and
-  `stop`. The argument and the contract are on `BufferAddr` and
+  `stop`. The argument and the contract are on `BufferAddress` and
   `Engine::unload` in the crate docs.
 - **Adding a sample and loading it stay separate.** A print the user made
   must land on disk even when it does not fit in RAM. Combining the two
@@ -357,7 +357,7 @@ the code follows them.
   `start` takes a free slot or steals the oldest, `stop` by id,
   `stop_all`, and `add`, which sums every slot and frees the finished
   ones; `evict` by buffer address exists only on the playhead mixer. The
-  renderer owns a sample mixer of `SAMPLE_PLAYBACK_COUNT` and an input
+  renderer owns a sample mixer of `MAX_SAMPLE_SOUNDS` and an input
   mixer of `MAX_INPUT_SOUNDS`, applies the commands that arrived, zeroes the
   slice it is given, has each mixer add into it, and clips the sum once.
   It is real-time safe, not real-time only: a device drives it live from
@@ -823,7 +823,7 @@ more about the render side than about input.
 - **An input is shaped like its device, and split into its sources on
   the capture side.** A capture device hands its callback one buffer per
   period with every channel interleaved, so that is what the engine
-  takes: `Engine::input(&[Channels])` where each entry is `Stereo`, the
+  takes: `Engine::input(&[ChannelLayout])` where each entry is `Stereo`, the
   next two channels heard left and right, or `Mono`, the next one heard
   on both sides. Interleaved stereo is left then right everywhere, so a
   pair needs no further description. Each source is a sound of its own,
@@ -869,7 +869,7 @@ more about the render side than about input.
   command must be a plain value; ids are what a panel stores.
 - **To revisit: how sounds, inputs and samples are managed.** *Revisited
   under Handles: ids left the public API, `remove_input` became a drop,
-  and the one shared minter is the `RendererHandle`. The retire ring and
+  and the one shared minter is `Control`. The retire ring and
   finished-sound reporting are still open, deferred into the mixer
   rewrite.* Three
   kinds of thing now have ids and lifetimes: a sound (a sample playing or
@@ -956,7 +956,7 @@ more about the render side than about input.
   grouping above made a seam visible: a generic `Mixer` had grown an
   `apply(SampleCommand)`, so the reusable piece imported the one
   pipeline's command enums. Now `src/dsp/` holds only what any pipeline
-  could wire, `math`, `Mixer` and `Source`, `Playhead` with `BufferAddr`
+  could wire, `math`, `Mixer` and `Source`, `Playhead` with `BufferAddress`
   beside it, `InputReader`, and `SoundId` at the module's top, and knows
   nothing of commands. `src/renderer/` holds the
   one pipeline: `Renderer`, which picks two mixers and an order, and
@@ -978,7 +978,7 @@ more about the render side than about input.
   allocates at open and knows a device's layout, and the `InputReader`,
   which runs on the audio thread and knows only a width. The same split
   the crate makes between `engine` and `renderer`, so it got the same
-  shape: `src/input.rs` is the control side, `Channels`, `InputId`, the
+  shape: `src/input.rs` is the control side, `ChannelLayout`, `InputId`, the
   ring depth, `open` and the `Input` handle with its `feed`, a sibling of
   `engine`; `dsp/input.rs` keeps the `InputReader` and the lag rule, a
   generic piece like the playhead. `feed` runs on the capture thread but
@@ -986,7 +986,7 @@ more about the render side than about input.
   touches rings that already exist, and the module that holds it is the
   one that knows what a device frame is.
 - **`VoiceId` became `SoundId`, `VOICE_COUNT` became
-  `SAMPLE_PLAYBACK_COUNT`.** The id names one instance of something in a
+  `MAX_SAMPLE_SOUNDS`.** The id names one instance of something in a
   mixer, a sample played once or an input while it is added, and "sound"
   was already the word the docs used for that. The count is the slot
   count of the sample mixer, beside `MAX_INPUT_SOUNDS` for the input mixer.
@@ -1025,16 +1025,19 @@ answer took the engine apart.
   source, has it been removed) are enforced by the types instead, at
   compile time, and `NotAnInputSource` and `NoSuchInput` went with the
   path.
-- **The sending end is shared.** `RendererHandle` wraps the ring's
-  producer in a mutex behind an `Arc`, with the sound id counter and the
-  input slot count beside it, and is cloned into every value that sends.
-  The lock is control-side only; the renderer's end is unchanged and the
-  renderer never sees a handle. Nothing on the audio or capture thread may
-  hold one. The handle is the only code that builds a `Command`, so the
-  vocabulary is private between it and the renderer. Named for tokio's
-  `runtime::Handle`, a cheap clone that acts on a thing running
-  elsewhere; `Link` said too little, `Remote` means a network in code,
-  `Control` is the name of a side in this document.
+- **The sending end is shared.** `Control` wraps the ring's producer in
+  a mutex behind an `Arc`, with the sound id counter and the input slot
+  count beside it, and is cloned into every value that sends. The lock is
+  control-side only; the renderer's end is unchanged and the renderer
+  never sees a `Control`. Nothing on the audio or capture thread may hold
+  one. It is the only code that builds a `Command`, so the vocabulary is
+  private between it and the renderer. Named `Control` because it is the
+  control side's end of the ring, and because no other handle in the
+  crate carries a suffix: `Ledger`, `Sound`, `Input` are each named for
+  what they are to the caller, the way `Sender` and `Producer` are, and
+  `RendererHandle` was the one that did not fit. Rejected on the way:
+  `Link` said too little, `Remote` means a network in code,
+  `RendererHandle` for the suffix.
 - **The engine dissolved into two sides that never name each other.** No
   method on it needed both the disk and the renderer, so there was
   nothing to coordinate. `Project::open(dir, ledger)` is the disk side,
@@ -1207,7 +1210,7 @@ changes to it.
   input mixer frees their rings. Fix, decided under Handles and deferred
   into the mixer rewrite: every place the mixer frees a slot hands the
   source to a sink, the renderer pushes it onto a ring back to the
-  control side, and the `RendererHandle` sweeps that ring on every send;
+  control side, and the `Control` sweeps that ring on every send;
   sized at the slot count plus the command capacity it can never fill.
   Not an audible problem today; a rule to keep before the device is the
   target.

@@ -38,7 +38,7 @@
 //! clip.
 //!
 //! Commands come over a lock-free ring. The renderer owns the consuming
-//! end; its [`RendererHandle`] owns the producing end, and the two are
+//! end; its [`Control`] owns the producing end, and the two are
 //! made together by [`Renderer::new`]. Outside the crate the render side
 //! is one type with one method, `render`.
 
@@ -46,18 +46,18 @@ pub mod command;
 
 use rtrb::{Consumer, RingBuffer};
 
-use crate::config::{COMMAND_CAPACITY, MAX_INPUT_SOUNDS, SAMPLE_PLAYBACK_COUNT};
+use crate::config::{COMMAND_CAPACITY, MAX_INPUT_SOUNDS, MAX_SAMPLE_SOUNDS};
+use crate::control::Control;
 #[cfg(test)]
 use crate::dsp::SoundId;
 use crate::dsp::math::hard_clip;
 use crate::dsp::{InputReader, Mixer, Playhead, WhenFull};
-use crate::renderer_handle::RendererHandle;
 use command::{Command, InputCommand, SampleCommand};
 
 /// The render side: turns commands and resident audio into periods of
 /// output.
 ///
-/// Made by [`Renderer::new`] together with its [`RendererHandle`], and
+/// Made by [`Renderer::new`] together with its [`Control`], and
 /// moved to whoever owns the audio thread: into a device callback for
 /// live sound, or a loop for the same frames offline.
 ///
@@ -70,7 +70,7 @@ pub struct Renderer {
     /// The consuming end of the command ring.
     commands: Consumer<Command>,
     /// The sounds playing.
-    samples: Mixer<Playhead, SAMPLE_PLAYBACK_COUNT>,
+    samples: Mixer<Playhead, MAX_SAMPLE_SOUNDS>,
     /// The input sounds, one per mono or stereo source of every input,
     /// heard or not.
     inputs: Mixer<InputReader, MAX_INPUT_SOUNDS>,
@@ -83,9 +83,9 @@ impl Renderer {
     /// sound starts. Commands sent before the renderer is driven are not
     /// lost: they wait in the ring and apply on the first render. No audio
     /// device is involved: a machine without one drives it in a loop.
-    pub fn new() -> (Renderer, RendererHandle) {
+    pub fn new() -> (Renderer, Control) {
         let (producer, consumer) = RingBuffer::new(COMMAND_CAPACITY);
-        (Self::on(consumer), RendererHandle::new(producer))
+        (Self::on(consumer), Control::new(producer))
     }
 
     /// A silent renderer that takes its commands from `commands`.
@@ -174,7 +174,7 @@ mod tests {
     use super::*;
     use crate::audio::AudioBuffer;
     use crate::config::Pcm;
-    use crate::dsp::BufferAddr;
+    use crate::dsp::BufferAddress;
     use crate::testing::audio;
 
     const HALF: Pcm = 0.5;
@@ -298,7 +298,7 @@ mod tests {
         assert!(!r.is_playing(SoundId(1)));
         assert_eq!(out, vec![0.5; 4]);
 
-        p.push(SampleCommand::Evict(BufferAddr::of(&b)).into())
+        p.push(SampleCommand::Evict(BufferAddress::of(&b)).into())
             .unwrap();
         r.render(&mut out);
         assert_eq!(r.playing(), 0);

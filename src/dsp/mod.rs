@@ -62,7 +62,7 @@ mod playhead;
 
 pub use input::InputReader;
 pub use mixer::{Mixer, Source, WhenFull};
-pub use playhead::{BufferAddr, Playhead};
+pub use playhead::{BufferAddress, Playhead};
 
 /// Identity of one sound: one instance of something heard, a sample
 /// played once or one source of an input. Minted by the control side, in order,

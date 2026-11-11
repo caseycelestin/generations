@@ -25,9 +25,9 @@ use crate::dsp::math::{add, sides_for, stereo};
 /// later buffer at the same address is started by a play that is behind
 /// it on the ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferAddr(usize);
+pub struct BufferAddress(usize);
 
-impl BufferAddr {
+impl BufferAddress {
     /// The address of the buffer `audio` points at.
     pub fn of(audio: &Arc<AudioBuffer>) -> Self {
         Self(Arc::as_ptr(audio) as usize)

@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("usage: first_sound <project-dir>")?;
 
     let mut project = Project::open(&dir, Ledger::new(SAMPLE_RAM_BUDGET))?;
-    let (mut renderer, audio) = Renderer::new();
+    let (mut renderer, control) = Renderer::new();
     // Declared after `engine`, so it is dropped first: the audio thread
     // stops before the engine lets go of its audio.
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
@@ -67,10 +67,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pluck = project.load(pluck)?;
 
     println!("pluck");
-    audio.play(&pluck)?;
+    control.play(&pluck)?;
     sleep(Duration::from_millis(600));
     println!("pluck again, over the first one's tail");
-    audio.play(&pluck)?;
+    control.play(&pluck)?;
     sleep(Duration::from_millis(1200));
 
     // The audio thread queues its complaints; this is where they are read.

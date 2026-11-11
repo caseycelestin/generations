@@ -228,7 +228,7 @@ impl Capture {
     }
 
     /// How many frames the device delivers per callback: what
-    /// `RendererHandle::input` sizes its rings from.
+    /// `Control::input` sizes its rings from.
     pub fn period(&self) -> usize {
         match self.config.buffer_size {
             BufferSize::Fixed(frames) => frames as usize,

@@ -20,7 +20,7 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Channels, Renderer};
+use generations::{ChannelLayout, Renderer};
 
 mod device;
 use device::{Capture, Device};
@@ -32,24 +32,24 @@ fn main() -> Result<(), Box<dyn Error>> {
     let layout = std::env::args()
         .skip(1)
         .map(|word| match word.as_str() {
-            "mono" => Ok(Channels::Mono),
-            "stereo" => Ok(Channels::Stereo),
+            "mono" => Ok(ChannelLayout::Mono),
+            "stereo" => Ok(ChannelLayout::Stereo),
             other => Err(format!("{other}: expected mono or stereo")),
         })
         .collect::<Result<Vec<_>, _>>()?;
     let layout = if layout.is_empty() {
-        vec![Channels::Mono]
+        vec![ChannelLayout::Mono]
     } else {
         layout
     };
 
     // No project: monitoring an input needs no samples and no disk.
-    let (mut renderer, audio) = Renderer::new();
+    let (mut renderer, control) = Renderer::new();
     // The capture device is opened first so the engine can be told how
     // many frames it delivers at a time.
     let capture = Capture::default_input()?;
     let have = capture.channels();
-    let (input, mut feed) = audio.input(&layout, capture.period())?;
+    let (input, mut feed) = control.input(&layout, capture.period())?;
     // Declared after `engine`, so they are dropped first: both audio
     // threads stop before the engine goes.
     let mut playback = Device::default_output()?.start(move |out| renderer.render(out))?;

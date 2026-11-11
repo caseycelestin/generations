@@ -12,22 +12,22 @@
 //!
 //! [`LoadedSample`]: crate::loaded_sample::LoadedSample
 
+use crate::control::Control;
+use crate::control::ControlError;
 use crate::dsp::SoundId;
-use crate::renderer_handle::RendererError;
-use crate::renderer_handle::RendererHandle;
 
 /// One play of a sample. Drop it and the sound plays on to its end;
 /// `stop` it to cut it.
 #[derive(Debug)]
 pub struct Sound {
     id: SoundId,
-    renderer: RendererHandle,
+    control: Control,
 }
 
 impl Sound {
     /// The sound `id`, playing on `renderer`.
-    pub(crate) fn new(id: SoundId, renderer: RendererHandle) -> Self {
-        Self { id, renderer }
+    pub(crate) fn new(id: SoundId, control: Control) -> Self {
+        Self { id, control }
     }
 
     /// The id the renderer knows this sound by.
@@ -40,7 +40,7 @@ impl Sound {
     /// period. One that has finished or been stolen is left alone, so
     /// stopping twice is harmless. Refused as `CommandsFull` if the ring
     /// has no room.
-    pub fn stop(&self) -> Result<(), RendererError> {
-        self.renderer.stop_sound(self.id)
+    pub fn stop(&self) -> Result<(), ControlError> {
+        self.control.stop_sound(self.id)
     }
 }

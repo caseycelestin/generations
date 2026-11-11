@@ -23,7 +23,7 @@
 //! pass over at most `N` slots. Nothing here allocates, locks or fails.
 
 use crate::config::{OUTPUT_CHANNELS, Pcm};
-use crate::dsp::{BufferAddr, Playhead, SoundId};
+use crate::dsp::{BufferAddress, Playhead, SoundId};
 
 /// Something a mixer slot can hold: it adds its next period into the
 /// output, and says when it never will again.
@@ -164,11 +164,11 @@ impl<const N: usize> Mixer<Playhead, N> {
     /// references to it. A buffer nothing plays costs the pass and
     /// changes nothing. Only a sample has a buffer, so only this mixer
     /// can be asked.
-    pub fn evict(&mut self, addr: BufferAddr) {
+    pub fn evict(&mut self, addr: BufferAddress) {
         for slot in self.slots.iter_mut() {
             if slot
                 .as_ref()
-                .is_some_and(|s| BufferAddr::of(s.source.audio()) == addr)
+                .is_some_and(|s| BufferAddress::of(s.source.audio()) == addr)
             {
                 *slot = None;
             }
@@ -354,7 +354,7 @@ mod tests {
         start(&mut m, 2, &kept);
         start(&mut m, 3, &gone);
 
-        m.evict(BufferAddr::of(&gone));
+        m.evict(BufferAddress::of(&gone));
         assert!(!m.is_playing(SoundId(1)));
         assert!(m.is_playing(SoundId(2)));
         assert!(!m.is_playing(SoundId(3)));
@@ -368,7 +368,7 @@ mod tests {
         let mut m = stealing();
         start(&mut m, 1, &mono(vec![HALF; 100]));
         let other = mono(vec![HALF; 2]);
-        m.evict(BufferAddr::of(&other));
+        m.evict(BufferAddress::of(&other));
         assert_eq!(m.playing(), 1);
     }
 

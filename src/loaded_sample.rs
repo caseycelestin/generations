@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::dsp::BufferAddr;
+use crate::dsp::BufferAddress;
 use crate::project::SampleId;
 
 /// A sample's audio in RAM. Owning this is what loaded means.
@@ -56,7 +56,7 @@ impl LoadedSample {
     }
 
     /// Where the audio lives, the key an eviction names it by.
-    pub(crate) fn addr(&self) -> BufferAddr {
-        BufferAddr::of(&self.audio)
+    pub(crate) fn addr(&self) -> BufferAddress {
+        BufferAddress::of(&self.audio)
     }
 }

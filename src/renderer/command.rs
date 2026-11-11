@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::dsp::{BufferAddr, InputReader, SoundId};
+use crate::dsp::{BufferAddress, InputReader, SoundId};
 
 /// What the handle can ask of the renderer: a command for one of its
 /// mixers.
@@ -57,7 +57,7 @@ pub enum SampleCommand {
     StopAll,
     /// Stop every sound playing the buffer at `addr`, so the control side
     /// can let go of the last reference to it.
-    Evict(BufferAddr),
+    Evict(BufferAddress),
 }
 
 /// What can be asked of the input mixer.

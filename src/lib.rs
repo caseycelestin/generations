@@ -26,7 +26,7 @@
 //!        └─ files   a directory of WAVs and a manifest (the one backend)
 //!
 //! renderer    the sound side, in two ends like a channel. The Renderer
-//!   │         goes to the audio thread and makes frames; the RendererHandle
+//!   │         goes to the audio thread and makes frames; the Control
 //!   │         stays and is where every sound starts: play a LoadedSample,
 //!   │         stop its sounds, add an input. Commands cross on a ring
 //!   ├─ sound     a Sound: one play, stop it
@@ -49,37 +49,40 @@
 //!   as a [`LoadedSample`], whose holder owns it. The project sends no
 //!   commands and knows nothing about sound.
 //! - **`renderer`** is everything heard. [`Renderer::new`] returns the
-//!   renderer and its [`RendererHandle`] as a pair; the renderer runs on
-//!   a thread the handle does not, turning commands and resident audio
-//!   into frames wherever it is driven, live in a device callback or
+//!   renderer and its [`Control`] as a pair; the renderer runs on a
+//!   thread the control side does not, turning commands and resident
+//!   audio into frames wherever it is driven, live in a device callback or
 //!   offline in a loop. Nothing in it knows what a project or a device is.
-//!   The handle is cheap to clone and carries the verbs: `play` takes a
+//!   `Control` is cheap to clone and carries the verbs: `play` takes a
 //!   `LoadedSample` by reference and shares its audio with the sound it
 //!   starts; `stop` cuts every sound playing one. Unloading is dropping
 //!   the sample.
 //! - **Handles** are where things are done, and the rule for which values
 //!   have verbs is one sentence: what the renderer hands out carries a
-//!   clone of the `RendererHandle` and acts on its own; what the project
-//!   hands out is data the renderer takes by reference. So a [`Sound`]
-//!   stops, an [`InputSource`] monitors, an [`Input`] removes itself when
+//!   clone of the `Control` and acts on its own; what the project hands
+//!   out is data the renderer takes by reference. So a [`Sound`] stops,
+//!   an [`InputSource`] monitors, an [`Input`] removes itself when
 //!   dropped, and a [`LoadedSample`] does nothing but be played or stopped
-//!   by `audio.play(&sample)` and `audio.stop(&sample)`. The asymmetry is
-//!   the price of the project not knowing the renderer. Holding a value is
-//!   what it means for the thing to exist, and no side keeps a list of
-//!   what is loaded or playing.
+//!   by `control.play(&sample)` and `control.stop(&sample)`. The
+//!   asymmetry is the price of the project not knowing the renderer.
+//!   Holding a value is what it means for the thing to exist, and no side
+//!   keeps a list of what is loaded or playing. None of these types is
+//!   called a handle: each is named for what it is to the caller, and the
+//!   one on the renderer is `Control` because it is the control side's end
+//!   of the ring.
 //! - **`dsp`** is the pieces the pipeline is wired from, and nothing more:
 //!   a mixer of sources, a playhead over a loaded sample, the reading end
 //!   of an input ring, and the arithmetic they share. Each is a function
 //!   over one period of frames and its own state, generic enough that a
 //!   second pipeline would wire the same pieces differently. No piece
 //!   knows a command exists.
-//! - **`input`** is the control side of an input: the [`Input`] handle
+//! - **`input`** is the control side of an input: the [`Input`] you hold,
 //!   whose [`InputSource`]s are monitored and whose drop removes the
 //!   input, and the [`InputFeed`] a capture callback fills. It allocates
 //!   the rings when an input is added and knows what a device's frames
 //!   look like, and hands the render side nothing but mono and stereo
 //!   rings to read. Its one hot method, `feed`, is the fixed loop a
-//!   capture callback runs, and the feed holds no handle, so that loop
+//!   capture callback runs, and the feed holds no `Control`, so that loop
 //!   takes no lock.
 //! - **The device is not a role of this crate.** The caller, which knows
 //!   what machine it is on, opens an audio device and moves the renderer
@@ -117,7 +120,7 @@
 //! Project::open(dir, ledger)   the disk side: import and load
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!
-//! Renderer::new()              the sound side: the renderer and its handle,
+//! Renderer::new()              the sound side: the Renderer and its Control,
 //!                              which plays, adds inputs, stops all
 //! device.start(move |out| renderer.render(out))
 //!                              the caller's own device, whatever it is
@@ -131,12 +134,13 @@
 //!
 //! # Where to start
 //!
-//! [`Project`] and [`RendererHandle`] for what a caller does;
+//! [`Project`] and [`Control`] for what a caller does;
 //! `examples/first_sound.rs` for the whole path, file to speaker;
 //! `docs/roadmap.md` for the plan and the decisions behind it.
 
 pub(crate) mod audio;
 pub mod config;
+pub(crate) mod control;
 pub(crate) mod dsp;
 pub(crate) mod import;
 pub(crate) mod input;
@@ -144,19 +148,18 @@ pub(crate) mod loaded_sample;
 pub(crate) mod memory;
 pub mod project;
 pub(crate) mod renderer;
-pub(crate) mod renderer_handle;
 pub(crate) mod sound;
 pub(crate) mod storage;
 #[cfg(test)]
 pub(crate) mod testing;
 
 pub use audio::AudioError;
+pub use control::{Control, ControlError};
 pub use import::{ConvertError, DecodeError, ImportError};
-pub use input::{Channels, Input, InputFeed, InputSource};
+pub use input::{ChannelLayout, Input, InputFeed, InputSource};
 pub use loaded_sample::LoadedSample;
 pub use memory::{Ledger, OverBudget};
 pub use project::{Project, ProjectError, Sample, SampleId};
 pub use renderer::Renderer;
-pub use renderer_handle::{RendererError, RendererHandle};
 pub use sound::Sound;
 pub use storage::StorageError;

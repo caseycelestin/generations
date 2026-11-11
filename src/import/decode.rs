@@ -1,6 +1,6 @@
 //! Reading audio files into samples, paid for against the ledger.
 //!
-//! One function, [`decode`], takes a path and returns a [`Decoded`]: the
+//! One function, [`decode`], takes a path and returns a [`DecodedAudio`]: the
 //! file's audio as interleaved [`Pcm`] samples at the file's own rate
 //! and channel count, in a [`Block`] the decoder paid for itself. The one
 //! format read is WAV: RIFF/WAVE with integer PCM at 8 to 32 bits, or
@@ -25,7 +25,7 @@ use crate::memory::{Block, Ledger, OverBudget};
 /// Audio as a decoder found it: the engine's sample type at the file's
 /// own rate and channel count.
 #[derive(Debug)]
-pub struct Decoded {
+pub struct DecodedAudio {
     /// Sample rate of the source, in Hz.
     pub rate: u32,
     /// Interleaved channel count of the source.
@@ -65,7 +65,7 @@ pub enum DecodeError {
 /// so each lands on the same range, which is exact up to 24 bits.
 /// Anything else `hound` can open but we do not expect is reported as
 /// malformed rather than guessed at.
-pub fn decode(path: &Path, ledger: &Ledger) -> Result<Decoded, DecodeError> {
+pub fn decode(path: &Path, ledger: &Ledger) -> Result<DecodedAudio, DecodeError> {
     let mut reader = WavReader::open(path).map_err(|e| hound_error(path, e))?;
     let spec = reader.spec();
     let width = check_width(path, spec)?;
@@ -84,7 +84,7 @@ pub fn decode(path: &Path, ledger: &Ledger) -> Result<Decoded, DecodeError> {
             fill(path, &mut samples, scaled)?;
         }
     }
-    Ok(Decoded {
+    Ok(DecodedAudio {
         rate: spec.sample_rate,
         channels: spec.channels,
         samples,
@@ -151,7 +151,7 @@ mod tests {
     use super::*;
 
     /// Decodes against a ledger that refuses nothing.
-    fn decode(path: &Path) -> Result<Decoded, DecodeError> {
+    fn decode(path: &Path) -> Result<DecodedAudio, DecodeError> {
         super::decode(path, &Ledger::new(usize::MAX))
     }
 
