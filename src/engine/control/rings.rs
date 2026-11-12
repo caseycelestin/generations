@@ -77,9 +77,13 @@ impl Rings {
         Ok(())
     }
 
-    /// Drops everything handed back.
+    /// Frees everything handed back.
     pub(crate) fn collect(&mut self) {
-        while self.from_renderer.pop().is_ok() {}
+        while let Ok(returned) = self.from_renderer.pop() {
+            match returned {
+                Return::Voice { .. } => {}
+            }
+        }
     }
 }
 

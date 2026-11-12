@@ -10,7 +10,7 @@ use std::error::Error;
 use std::path::Path;
 use std::thread;
 
-use generations::engine;
+use generations::engine::{self, VoiceState};
 use generations::{Ledger, Project, SampleId};
 
 /// RAM for loaded audio: a generous guess for a desktop.
@@ -37,6 +37,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let voice = control.play(&sample)?;
     voice.stop()?;
+
+    // The audio thread reports how a voice ended, once it has.
+    match voice.state() {
+        VoiceState::Playing => println!("still playing"),
+        VoiceState::Ended(why) => println!("ended: {why:?}"),
+    }
 
     // Sends collect on their own; call it when the app goes quiet.
     control.collect();

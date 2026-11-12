@@ -6,7 +6,8 @@ pub(crate) mod control;
 pub(crate) mod protocol;
 pub(crate) mod realtime;
 
-pub use control::{Control, ControlError, Voice};
+pub use control::{Control, ControlError, Voice, VoiceState};
+pub use protocol::voice::VoiceEnd;
 pub use realtime::render::Renderer;
 
 use rtrb::RingBuffer;

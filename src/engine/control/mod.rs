@@ -3,7 +3,7 @@
 mod rings;
 mod voice;
 
-pub use voice::Voice;
+pub use voice::{Voice, VoiceState};
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
