@@ -1,6 +1,7 @@
 //! The audio thread: turns commands and audio into periods of output.
 
 mod math;
+mod voice;
 
 use rtrb::{Consumer, Producer};
 
@@ -32,7 +33,18 @@ impl Renderer {
     /// Renders one period into `out`, interleaved stereo, replacing what
     /// it held. Silence until something can play.
     pub fn render(&mut self, out: &mut [Pcm]) {
+        self.apply_commands();
         out.fill(0.0);
         hard_clip(out);
+    }
+
+    /// Applies every command waiting, oldest first.
+    fn apply_commands(&mut self) {
+        while let Ok(command) = self.from_control.pop() {
+            match command {
+                // Dropped until voices have somewhere to live.
+                Command::Voice(_) => {}
+            }
+        }
     }
 }
