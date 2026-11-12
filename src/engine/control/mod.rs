@@ -5,13 +5,12 @@ mod voice;
 
 pub use voice::Voice;
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
 use crate::engine::protocol::{Command, Return};
-use rings::Rings;
+use crate::project::sample::Sample;
+use rings::SharedRings;
 
 #[derive(Debug, Error)]
 pub enum ControlError {
@@ -20,41 +19,29 @@ pub enum ControlError {
     CommandsFull,
 }
 
-/// The control side's view of one renderer. Clones share it.
+/// One renderer, for the control side: makes the handles that act on it.
+/// Clones are the same renderer.
 #[derive(Debug, Clone)]
-pub struct Control(Arc<Shared>);
-
-#[derive(Debug)]
-struct Shared {
-    rings: Mutex<Rings>,
-}
-
-impl Shared {
-    /// A panic while locked leaves the rings intact, so a poisoned lock
-    /// is taken anyway.
-    fn rings(&self) -> MutexGuard<'_, Rings> {
-        self.rings.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+pub struct Control {
+    rings: SharedRings,
 }
 
 impl Control {
     pub(crate) fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
-        Self(Arc::new(Shared {
-            rings: Mutex::new(Rings::new(to_renderer, from_renderer)),
-        }))
+        Self {
+            rings: SharedRings::new(to_renderer, from_renderer),
+        }
     }
 
-    pub(crate) fn send(&self, command: Command) -> Result<(), ControlError> {
-        self.0
-            .rings()
-            .send(command)
-            .map_err(|_| ControlError::CommandsFull)
+    /// Starts `sample` at the renderer's next period.
+    pub fn play(&self, sample: &Sample) -> Result<Voice, ControlError> {
+        Voice::play(self.rings.clone(), sample)
     }
 
     /// Frees what the renderer has handed back, returning its memory to
     /// the ledger. Every send does this first; call it when the app goes
     /// quiet, or before a load that needs the memory.
     pub fn collect(&self) {
-        self.0.rings().collect();
+        self.rings.collect();
     }
 }

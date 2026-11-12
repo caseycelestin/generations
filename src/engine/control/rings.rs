@@ -4,9 +4,39 @@
 //!
 //! [`return_capacity`]: crate::engine::return_capacity
 
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
 use rtrb::{Consumer, Producer, PushError};
 
+use super::ControlError;
 use crate::engine::protocol::{Command, Return};
+
+/// The rings of one renderer, shared by its `Control` and every handle it
+/// makes. Clones share them.
+#[derive(Debug, Clone)]
+pub(crate) struct SharedRings(Arc<Mutex<Rings>>);
+
+impl SharedRings {
+    pub(crate) fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
+        Self(Arc::new(Mutex::new(Rings::new(to_renderer, from_renderer))))
+    }
+
+    pub(crate) fn send(&self, command: Command) -> Result<(), ControlError> {
+        self.lock()
+            .send(command)
+            .map_err(|_| ControlError::CommandsFull)
+    }
+
+    pub(crate) fn collect(&self) {
+        self.lock().collect();
+    }
+
+    /// A panic while locked leaves the rings intact, so a poisoned lock
+    /// is taken anyway.
+    fn lock(&self) -> MutexGuard<'_, Rings> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Rings {

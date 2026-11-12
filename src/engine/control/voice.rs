@@ -2,34 +2,31 @@
 
 use std::sync::Arc;
 
-use super::{Control, ControlError};
+use super::ControlError;
+use super::rings::SharedRings;
 use crate::engine::protocol::{Command, VoiceCommand, VoiceId};
 use crate::project::sample::Sample;
 
 #[derive(Debug)]
 pub struct Voice {
     id: VoiceId,
-    control: Control,
+    rings: SharedRings,
 }
 
 impl Voice {
-    /// Starts `sample` at the renderer's next period.
-    pub fn play(control: &Control, sample: &Sample) -> Result<Self, ControlError> {
+    pub(crate) fn play(rings: SharedRings, sample: &Sample) -> Result<Self, ControlError> {
         let id = VoiceId::next();
-        control.send(Command::Voice(VoiceCommand::Add {
+        rings.send(Command::Voice(VoiceCommand::Add {
             id,
             audio: Arc::clone(sample.audio()),
         }))?;
-        Ok(Self {
-            id,
-            control: control.clone(),
-        })
+        Ok(Self { id, rings })
     }
 
     /// Stops the voice at the renderer's next period. A dropped voice
     /// plays out instead.
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.control
+        self.rings
             .send(Command::Voice(VoiceCommand::Remove(self.id)))
     }
 }

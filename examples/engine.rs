@@ -10,7 +10,7 @@ use std::error::Error;
 use std::path::Path;
 use std::thread;
 
-use generations::engine::{self, Voice};
+use generations::engine;
 use generations::{Ledger, Project, SampleId};
 
 /// RAM for loaded audio: a generous guess for a desktop.
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Clones are the same engine.
     let _ui = control.clone();
 
-    let voice = Voice::play(&control, &sample)?;
+    let voice = control.play(&sample)?;
     voice.stop()?;
 
     // Sends collect on their own; call it when the app goes quiet.
