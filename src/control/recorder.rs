@@ -1,11 +1,15 @@
-//! A recorder the caller holds: a buffer paid for once, at one tap, and
-//! the takes made with it.
+//! The recorder the caller holds: a buffer paid for once, and the takes
+//! made with it.
 //!
 //! [`Control::recorder`] returns a [`Recorder`]: the control side's
 //! handle, holding the buffer takes are recorded into. The render side
 //! builds its own recorder around the buffer for each take; one concept,
-//! one name, and the module says the side. The [`Tap`] says where in the
-//! signal path it records.
+//! one name, and the module says the side. Each take says where in the
+//! signal path it records, by its [`Tap`].
+//!
+//! There is one recorder at a time, like a hardware sampler's one
+//! recording path: a take records one tap, chosen when it starts, and
+//! the next take may record another without paying again.
 //!
 //! One recorder makes many takes. The buffer is paid for when the
 //! recorder is made, so starting a take allocates nothing and costs the
@@ -22,16 +26,15 @@ use crate::audio::Take;
 use crate::control::{Control, ControlError};
 use crate::render::command::{TakeId, Tap};
 
-/// A recorder at one tap, and the takes it makes. Made by
-/// [`Control::recorder`](crate::Control::recorder); only one recorder
-/// is held per tap at a time.
+/// The recorder, and the takes it makes. Made by
+/// [`Control::recorder`](crate::Control::recorder); only one is held at
+/// a time.
 ///
-/// Dropping it frees the tap. A take still running is stopped, and its
+/// Dropping it lets another be made. A take still running is stopped, and its
 /// buffer is freed on the control side when the renderer lets it go.
 #[derive(Debug)]
 pub struct Recorder {
     control: Control,
-    tap: Tap,
     /// The buffer, while it is here: empty before the first take, and
     /// after each holding it. `None` while the renderer has it.
     buffer: Option<Take>,
@@ -40,26 +43,25 @@ pub struct Recorder {
 }
 
 impl Recorder {
-    /// A recorder at `tap` recording into `buffer`, no take running.
-    pub(crate) fn new(control: Control, tap: Tap, buffer: Take) -> Self {
+    /// A recorder recording into `buffer`, no take running.
+    pub(crate) fn new(control: Control, buffer: Take) -> Self {
         Self {
             control,
-            tap,
             buffer: Some(buffer),
             take: None,
         }
     }
 
-    /// Starts a take from the renderer's next period, over whatever the
-    /// last take kept: the buffer moves to the renderer until the take
-    /// ends. Refused as `Recording` while a take is running, and as
+    /// Starts a take of what passes `tap` from the renderer's next
+    /// period, over whatever the last take kept: the buffer moves to the
+    /// renderer until the take ends. Refused as `Recording` while a take is running, and as
     /// `CommandsFull`, with nothing started, if the ring has no room.
-    pub fn record(&mut self) -> Result<(), ControlError> {
+    pub fn record(&mut self, tap: Tap) -> Result<(), ControlError> {
         if self.is_recording() {
             return Err(ControlError::Recording);
         }
         let buffer = self.buffer.take().expect("here when no take runs");
-        match self.control.start_recording(self.tap, buffer.into_audio()) {
+        match self.control.start_recording(tap, buffer.into_audio()) {
             Ok(id) => {
                 self.take = Some(id);
                 Ok(())
@@ -111,7 +113,7 @@ impl Recorder {
 }
 
 impl Drop for Recorder {
-    /// Frees the tap, and stops a take still running; its buffer is
+    /// Lets another recorder be made, and stops a take still running; its buffer is
     /// dropped on the control side when it comes back. Best effort: if
     /// the ring has no room for the stop, the take runs until the buffer
     /// is full, and is dropped then.
@@ -119,7 +121,7 @@ impl Drop for Recorder {
         if let Some(id) = self.take {
             self.control.abandon_take(id);
         }
-        self.control.free_tap(self.tap);
+        self.control.free_recorder();
     }
 }
 
@@ -150,8 +152,8 @@ mod tests {
     #[test]
     fn a_take_runs_until_the_buffer_is_full() {
         let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
-        rec.record().unwrap();
+        let mut rec = control.recorder(4).unwrap();
+        rec.record(Tap::MainOut).unwrap();
         period(&mut r, 2);
         assert!(rec.is_recording());
         period(&mut r, 2);
@@ -162,8 +164,8 @@ mod tests {
     #[test]
     fn a_stopped_take_keeps_what_it_had() {
         let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
-        rec.record().unwrap();
+        let mut rec = control.recorder(4).unwrap();
+        rec.record(Tap::MainOut).unwrap();
         period(&mut r, 1);
         rec.stop().unwrap();
         period(&mut r, 1);
@@ -175,9 +177,9 @@ mod tests {
     fn one_recorder_makes_many_takes_without_paying_again() {
         let ledger = Ledger::new(usize::MAX);
         let (mut r, control) = Renderer::new(SETTINGS, ledger.clone());
-        let mut rec = control.recorder(Tap::MainOut, 1).unwrap();
+        let mut rec = control.recorder(1).unwrap();
         for _ in 0..3 {
-            rec.record().unwrap();
+            rec.record(Tap::MainOut).unwrap();
             period(&mut r, 1);
             assert!(!rec.is_recording());
             assert_eq!(rec.last_take().unwrap().audio().samples().len(), 2);
@@ -188,41 +190,44 @@ mod tests {
     #[test]
     fn a_take_cannot_be_recorded_while_one_runs() {
         let (_r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
-        rec.record().unwrap();
-        assert!(matches!(rec.record(), Err(ControlError::Recording)));
+        let mut rec = control.recorder(4).unwrap();
+        rec.record(Tap::MainOut).unwrap();
+        assert!(matches!(
+            rec.record(Tap::MainOut),
+            Err(ControlError::Recording)
+        ));
     }
 
     #[test]
-    fn a_tap_holds_one_recorder_until_it_is_dropped() {
+    fn there_is_one_recorder_until_it_is_dropped() {
         let (_r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let rec = control.recorder(Tap::MainOut, 4).unwrap();
+        let rec = control.recorder(4).unwrap();
         assert!(matches!(
-            control.recorder(Tap::MainOut, 4),
-            Err(ControlError::TapInUse)
+            control.recorder(4),
+            Err(ControlError::RecorderInUse)
         ));
         drop(rec);
-        assert!(control.recorder(Tap::MainOut, 4).is_ok());
+        assert!(control.recorder(4).is_ok());
     }
 
     #[test]
-    fn a_recorder_over_budget_is_refused_and_leaves_the_tap_free() {
+    fn a_recorder_over_budget_is_refused_and_another_can_be_made() {
         let ledger = Ledger::new(bytes(4) - 1);
         let (_r, control) = Renderer::new(SETTINGS, ledger.clone());
         assert!(matches!(
-            control.recorder(Tap::MainOut, 4),
+            control.recorder(4),
             Err(ControlError::OverBudget(_))
         ));
         assert_eq!(ledger.in_use(), 0);
-        assert!(control.recorder(Tap::MainOut, 1).is_ok());
+        assert!(control.recorder(1).is_ok());
     }
 
     #[test]
     fn a_recorder_dropped_mid_take_is_freed_when_it_comes_back() {
         let ledger = Ledger::new(usize::MAX);
         let (mut r, control) = Renderer::new(SETTINGS, ledger.clone());
-        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
-        rec.record().unwrap();
+        let mut rec = control.recorder(4).unwrap();
+        rec.record(Tap::MainOut).unwrap();
         drop(rec);
         assert_eq!(ledger.in_use(), bytes(4), "the renderer still has it");
         period(&mut r, 1);
@@ -234,7 +239,7 @@ mod tests {
     fn a_recorder_dropped_between_takes_is_freed_at_once() {
         let ledger = Ledger::new(usize::MAX);
         let (_r, control) = Renderer::new(SETTINGS, ledger.clone());
-        let rec = control.recorder(Tap::MainOut, 4).unwrap();
+        let rec = control.recorder(4).unwrap();
         drop(rec);
         assert_eq!(ledger.in_use(), 0);
     }
@@ -242,9 +247,9 @@ mod tests {
     #[test]
     fn there_is_no_last_take_before_the_first_or_while_one_runs() {
         let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
+        let mut rec = control.recorder(4).unwrap();
         assert!(rec.last_take().is_none(), "before the first");
-        rec.record().unwrap();
+        rec.record(Tap::MainOut).unwrap();
         assert!(rec.last_take().is_none(), "sent, not yet rendered");
         period(&mut r, 1);
         assert!(rec.last_take().is_none(), "still recording");
@@ -256,8 +261,8 @@ mod tests {
     #[test]
     fn a_take_stopped_before_it_kept_a_frame_is_no_take() {
         let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let mut rec = control.recorder(Tap::MainOut, 4).unwrap();
-        rec.record().unwrap();
+        let mut rec = control.recorder(4).unwrap();
+        rec.record(Tap::MainOut).unwrap();
         rec.stop().unwrap();
         period(&mut r, 1);
         assert!(!rec.is_recording());
@@ -272,8 +277,8 @@ mod tests {
             .unwrap();
         let sample = project.load(id).unwrap();
         let (mut r, control) = Renderer::new(SETTINGS, Ledger::new(usize::MAX));
-        let mut rec = control.recorder(Tap::MainOut, 8).unwrap();
-        rec.record().unwrap();
+        let mut rec = control.recorder(8).unwrap();
+        rec.record(Tap::MainOut).unwrap();
         control.play(&sample).unwrap();
         period(&mut r, 2);
         rec.stop().unwrap();

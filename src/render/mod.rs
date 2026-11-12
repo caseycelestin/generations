@@ -11,8 +11,7 @@
 //!                                             InputReader   one input sound's ring, a period at a time
 //!               ── a ring per input sound ─▶              fed from the capture callback
 //!                                         math         add, hard_clip: the period summed and clipped
-//!               ── Record ──▶             Recorders    one place per tap, each recorder read where its tap is
-//!                                           Recorder   what passes the tap, kept until full or stopped
+//!               ── Record ──▶             Recorder     the one take: what passes its tap, kept until full or stopped
 //! ```
 //!
 //! The pieces come from [`dsp`](crate::render::dsp) and are generic; this
@@ -61,7 +60,6 @@
 
 pub mod command;
 pub(crate) mod dsp;
-pub(crate) mod recorders;
 pub(crate) mod sound;
 pub(crate) mod sounds;
 
@@ -75,7 +73,6 @@ use crate::render::dsp::{Gain, InputReader, Recorder, SampleReader, Source};
 #[cfg(test)]
 use command::SoundId;
 use command::{BufferAddress, Command, InputRing, Released, SoundCommand, TakeId, Tap};
-use recorders::Recorders;
 use sound::Sound;
 use sounds::Sounds;
 
@@ -177,8 +174,9 @@ pub struct Renderer {
     /// The input sounds, one per mono or stereo entry of every input, up
     /// to the settings' `input_sounds`.
     inputs: Sounds<Sound<InputReader>>,
-    /// The recorders, one place per tap, each read where its tap is.
-    recorders: Recorders,
+    /// The one take running, if any: where it records, whose it is and
+    /// what keeps it. One at a time, whatever the tap.
+    recorder: Option<(Tap, TakeId, Recorder)>,
 }
 
 impl Renderer {
@@ -252,7 +250,7 @@ impl Renderer {
             period: settings.period,
             samples: Sounds::new(settings.sample_sounds),
             inputs: Sounds::new(settings.input_sounds),
-            recorders: Recorders::new(),
+            recorder: None,
         }
     }
 
@@ -283,10 +281,10 @@ impl Renderer {
         self.inputs
             .remove_where(|s| s.finished(), |s| release(released, s));
         hard_clip(out);
-        if let Some(recorder) = self.recorders.get_mut(Tap::MainOut) {
+        if let Some((Tap::MainOut, _, recorder)) = &mut self.recorder {
             recorder.record(as_frames(out));
             if recorder.full()
-                && let Some((id, recorder)) = self.recorders.remove(Tap::MainOut)
+                && let Some((_, id, recorder)) = self.recorder.take()
             {
                 release_recorder(&mut self.released, id, recorder);
             }
@@ -319,15 +317,20 @@ impl Renderer {
                     |s| release(released, s),
                 ),
                 Command::StopRecording(id) => {
-                    if let Some((id, recorder)) = self.recorders.remove_take(id) {
+                    if self
+                        .recorder
+                        .as_ref()
+                        .is_some_and(|(_, held, _)| *held == id)
+                        && let Some((_, id, recorder)) = self.recorder.take()
+                    {
                         release_recorder(released, id, recorder);
                     }
                 }
                 Command::Record { id, tap, audio } => {
-                    // A take already at this tap ends; Control prevents it,
-                    // so this is the backstop.
-                    if let Some((old, recorder)) =
-                        self.recorders.insert(tap, id, Recorder::new(audio))
+                    // A take already running ends; Control prevents it, so
+                    // this is the backstop.
+                    if let Some((_, old, recorder)) =
+                        self.recorder.replace((tap, id, Recorder::new(audio)))
                     {
                         release_recorder(released, old, recorder);
                     }

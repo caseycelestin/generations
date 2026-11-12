@@ -187,7 +187,7 @@ or rejected instead. The history of how a shape was reached is in git.
   eviction from `Drop` was tried and rejected as the wrong coupling.
 - **`Control` is the shared sending end.** A mutex around the command
   ring's producer behind an `Arc`, with the sound and take id counters,
-  the count of input sounds held, the taps that have a recorder, and the
+  the count of input sounds held, whether the recorder exists, and the
   ledger. Control side only: nothing on the audio or capture thread
   holds one. It is the only code that builds a `Command`. Named for what it
   is to the caller; `RendererHandle`, `Link` and `Remote` were rejected.
@@ -214,7 +214,7 @@ or rejected instead. The history of how a shape was reached is in git.
   `Project`, `Sample`, `storage/`, `import/`), `src/control/` (the
   control thread: `Control`, `SampleSound`, `Input`, `Recorder`),
   `src/render/` (the audio thread: `Renderer`, `command.rs`, `Sounds`,
-  `Recorders`, `dsp/`). Shared at the top: `config`,
+  `dsp/`). Shared at the top: `config`,
   `audio`, `memory`. `render/` imports neither of the others.
 
 ### The render side
@@ -344,15 +344,15 @@ or rejected instead. The history of how a shape was reached is in git.
 ### Recording
 
 Built in step 6, removed in the memory port (PR #40), and rebuilt on the
-renderer in step 8 for the main out. Recording an input is next.
+renderer in step 8 for the main out. Recording an input waits until it
+is needed.
 
 - **A tap is where a recorder records:** a point in the signal path whose
   frames are kept as they go on to where they were going. `Tap::MainOut`
-  is after the clip, exactly what is heard, which is resampling. An
-  input, before or after its gain, and a bus come later as more variants.
-  Where to record is data on one `Record` command, not a command per
-  place.
-- **One recorder, many takes.** `control.recorder(tap, max_frames)` pays
+  is after the clip, exactly what is heard, which is resampling, and is
+  the only tap. An input and a bus come later as more variants. Where to
+  record is data on one `Record` command, not a command per place.
+- **One recorder, many takes.** `control.recorder(max_frames)` pays
   for one stereo buffer from the ledger and returns a `Recorder` handle;
   starting a take allocates nothing, so a press records at once. Every
   page is written when the recorder is made (`Block::prefault`), because
@@ -364,22 +364,25 @@ renderer in step 8 for the main out. Recording an input is next.
 - **The length is a maximum.** `stop()` ends a take; reaching the end of
   the buffer is a normal end too, not an error. Lengths are frames: the
   panel converts from seconds or bars, and only it knows the tempo.
-- **One recorder per tap, one take at a time.** `Control` refuses a
-  second recorder on a tap (`TapInUse`) and a second take on a recorder
-  (`Recording`); the renderer ending the take already at a tap is the
-  backstop.
-- **The buffer moves, it is not shared.** `record()` moves the
+- **One recorder, one take at a time, the tap chosen per take.** Like a
+  hardware sampler's one recording path: `record(tap)` says what each
+  take records, so switching sources costs nothing. `Control` refuses a
+  second recorder (`RecorderInUse`) and a second take (`Recording`); the
+  renderer ending the take already running is the backstop. A recorder
+  per tap came first (`TapInUse`), and a place per input sound was
+  sketched for recording inputs; both were dropped on 2026-11-12 until
+  multitrack recording is shown to be needed.
+- **The buffer moves, it is not shared.** `record(tap)` moves the
   `AudioBuffer` into `Record`, so while the renderer writes, nothing else
   can see it, without `unsafe` or a lock; an `Arc` would have made it
   read-only. `AudioBuffer` gained crate-private whole-frame writes for
   its owner; shared, as a loaded sample is, it never changes.
 - **The renderer builds the `dsp::Recorder`** around the buffer when the
   take starts, and takes it apart when the take ends, so the control side
-  never names a `dsp` type. It holds recorders in `Recorders`, a fixed
-  array with one place per tap that exists (`std::HashMap` was rejected:
-  its insert and remove can rehash). Sample and input sources are still
-  built by `Control`; moving them to the renderer the same way is a
-  backfill.
+  never names a `dsp` type. It holds the one take as an
+  `Option<(Tap, TakeId, Recorder)>`. A `Recorders` table with a place per
+  tap came first and went with the recorder per tap. Sample and input
+  sources are built on the render side the same way.
 - **A take comes back, not a recorder.** When it ends, the buffer goes
   back on the release ring as `Released::Take { id, audio }`; `Control`'s
   collect keeps takes by `TakeId` for their owner instead of dropping
@@ -391,7 +394,7 @@ renderer in step 8 for the main out. Recording an input is next.
   state is the take's; a `Take` handle borrowing the recorder would make
   the panel's state self-referential.
 - **A take is not a sample until it is saved.** `last_take()` lends the
-  finished `Take`, which lasts until the next `record()`, and
+  finished `Take`, which lasts until the next `record(tap)`, and
   `project.save_take(&take)` stores the frames it kept as a new root
   through the same crate-private add as import. To play it, load the id:
   playing shares a buffer, and the recorder's must stay its own.
@@ -441,9 +444,13 @@ send the frames wherever it likes, so routing is where the renderer puts
 frames it already has.
 
 What is left:
-- **Recording an input:** a `Tap::Input` variant, a place in `Recorders`
-  per input sound, and reading the frames before the gain, so an
-  unmonitored input still records.
+- **Recording an input,** when it is needed: a `Tap::Input(SoundId)`
+  variant, read before the gain so an unmonitored input still records.
+  Open: how the frames before the gain reach the recorder (a callback
+  inside `Sound`, or a scratch buffer); whether a mono input records as
+  stereo, twice the memory, or in its own layout; ending the take when
+  its input is removed; and `Control` refusing a tap on an input sound
+  it does not hold, which needs it to know the ids, not just a count.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on
   the command.
 
