@@ -1,8 +1,6 @@
-//! The real-time side: code that runs on a thread with a deadline, the
-//! audio thread and the capture thread. Nothing here allocates, locks,
-//! blocks or makes a system call. Real-time safe, not real-time only: an
-//! offline bounce runs the same code with no deadline and gets the same
-//! frames.
+//! Code with a deadline: the audio and capture threads. No allocating,
+//! locking, blocking or system calls. An offline bounce runs the same code
+//! with no deadline.
 
 pub(crate) mod capture;
 pub(crate) mod render;

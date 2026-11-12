@@ -1,2 +1,2 @@
-//! The capture thread: takes frames from an input device's callback and
-//! puts them on the rings the renderer reads.
+//! The capture thread: moves frames from the input device's callback onto
+//! the rings the renderer reads.
