@@ -20,5 +20,9 @@ fn main() {
     // other parts of the app.
     let _ui = control.clone();
 
+    // Frees whatever the renderer has handed back. Sends do this on their
+    // own; an app calls it when it goes quiet or before a big load.
+    control.collect();
+
     audio.join().expect("audio thread");
 }
