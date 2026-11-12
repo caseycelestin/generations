@@ -5,6 +5,7 @@
 //! per feature. Only plain data crosses: audio, ids, values.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::audio::AudioBuffer;
 
@@ -32,8 +33,27 @@ pub(crate) enum Return {
     Sample(Arc<AudioBuffer>),
 }
 
-/// One instance of something heard. Minted in order by the control side,
-/// so the lowest id is the oldest. Never reused, so a stale remove does
-/// nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct SoundId(pub(crate) u64);
+/// Defines an id type minted by `next()` from its own process-wide
+/// counter, as `std::thread::ThreadId` is: unique and in order across
+/// every engine, never reused, not starting at 0 per engine. A macro
+/// because a `static` in a generic function would be shared by every type.
+macro_rules! id {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub(crate) struct $name(u64);
+
+        impl $name {
+            pub(crate) fn next() -> Self {
+                static NEXT: AtomicU64 = AtomicU64::new(0);
+                Self(NEXT.fetch_add(1, Ordering::Relaxed))
+            }
+        }
+    };
+}
+
+id! {
+    /// One instance of something heard. The lowest id is the oldest; a
+    /// stale remove names nothing and does nothing.
+    SoundId
+}
