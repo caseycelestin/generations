@@ -6,10 +6,10 @@ pub(crate) mod control;
 pub(crate) mod protocol;
 pub(crate) mod realtime;
 
-use rtrb::RingBuffer;
+pub use control::Control;
+pub use realtime::render::Renderer;
 
-use control::Control;
-use realtime::render::Renderer;
+use rtrb::RingBuffer;
 
 /// Makes both rings and hands each side its ends. The [`Renderer`] goes
 /// to the audio thread; the [`Control`] stays.
