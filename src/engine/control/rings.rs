@@ -21,9 +21,9 @@ impl SharedRings {
         Self(Arc::new(Mutex::new(Rings::new(to_renderer, from_renderer))))
     }
 
-    pub(crate) fn send(&self, command: Command) -> Result<(), ControlError> {
+    pub(crate) fn send(&self, command: impl Into<Command>) -> Result<(), ControlError> {
         self.lock()
-            .send(command)
+            .send(command.into())
             .map_err(|_| ControlError::CommandsFull)
     }
 

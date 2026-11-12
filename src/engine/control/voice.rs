@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use super::ControlError;
 use super::rings::SharedRings;
-use crate::engine::protocol::Command;
-use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceReport};
+use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceReport, VoiceSpec};
 use crate::project::sample::Sample;
 
 #[derive(Debug)]
@@ -27,19 +26,19 @@ impl Voice {
     pub(crate) fn play(rings: SharedRings, sample: &Sample) -> Result<Self, ControlError> {
         let id = VoiceId::next();
         let report = Arc::new(VoiceReport::new());
-        rings.send(Command::Voice(VoiceCommand::Add {
+        let spec = VoiceSpec {
             id,
             audio: Arc::clone(sample.audio()),
             report: Arc::clone(&report),
-        }))?;
+        };
+        rings.send(VoiceCommand::Add(spec))?;
         Ok(Self { id, rings, report })
     }
 
     /// Stops the voice at the renderer's next period. A dropped voice
     /// plays out instead.
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings
-            .send(Command::Voice(VoiceCommand::Remove(self.id)))
+        self.rings.send(VoiceCommand::Remove(self.id))
     }
 
     /// What the audio thread has said, as of now.

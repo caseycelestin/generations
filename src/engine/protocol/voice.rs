@@ -7,14 +7,18 @@ use crate::audio::AudioBuffer;
 
 #[derive(Debug)]
 pub(crate) enum VoiceCommand {
-    /// Play `audio` from its first frame.
-    Add {
-        id: VoiceId,
-        audio: Arc<AudioBuffer>,
-        report: Arc<VoiceReport>,
-    },
+    Add(VoiceSpec),
     /// Stop the voice, if it is still playing.
     Remove(VoiceId),
+}
+
+/// A voice as asked for: what to play and where to report. Fixed for the
+/// voice's life; the renderer keeps it whole beside its playing state.
+#[derive(Debug)]
+pub(crate) struct VoiceSpec {
+    pub(crate) id: VoiceId,
+    pub(crate) audio: Arc<AudioBuffer>,
+    pub(crate) report: Arc<VoiceReport>,
 }
 
 id! {

@@ -43,6 +43,12 @@ pub(crate) enum Command {
     Voice(VoiceCommand),
 }
 
+impl From<VoiceCommand> for Command {
+    fn from(command: VoiceCommand) -> Self {
+        Self::Voice(command)
+    }
+}
+
 /// Handed back so the last reference is dropped on the control side:
 /// freeing has no time bound and must not happen on the audio thread.
 #[derive(Debug)]
