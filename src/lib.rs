@@ -30,7 +30,7 @@
 //!   mod.rs                  Control: the end of the command ring you hold.
 //!   │                       play a Sample, stop its sounds, add an input
 //!   sample_sound.rs         SampleSound: one play, stop it
-//!   recorder.rs             Recorder: a buffer at a tap, its takes
+//!   recorder.rs             Recorder: the one buffer, its takes, each at a tap
 //!   input.rs                Input you hold, shaped by an InputLayout, its
 //!                           InputSounds you monitor; InputFeed a capture
 //!                           callback fills, one ring per sound

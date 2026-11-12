@@ -69,10 +69,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pluck = project.load(pluck)?;
 
     // Paid for here, once; every take records into the same buffer.
-    let mut recorder = control.recorder(Tap::MainOut, MAX_TAKE_FRAMES)?;
+    let mut recorder = control.recorder(MAX_TAKE_FRAMES)?;
 
     println!("recording the main out");
-    recorder.record()?;
+    recorder.record(Tap::MainOut)?;
     println!("pluck");
     control.play(&pluck)?;
     sleep(Duration::from_millis(600));
