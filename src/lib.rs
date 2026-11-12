@@ -157,6 +157,11 @@
 pub(crate) mod audio;
 pub mod config;
 pub(crate) mod control;
+#[expect(
+    dead_code,
+    reason = "skeleton, not yet wired in: remove when the first feature uses it"
+)]
+pub(crate) mod engine;
 pub(crate) mod memory;
 pub mod project;
 pub(crate) mod render;
