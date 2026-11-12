@@ -2,6 +2,7 @@
 
 use rtrb::{Consumer, Producer};
 
+use crate::config::Pcm;
 use crate::engine::protocol::{Command, Return};
 
 #[derive(Debug)]
@@ -16,5 +17,11 @@ impl Renderer {
             from_control,
             to_control,
         }
+    }
+
+    /// Renders one period into `out`, interleaved stereo, replacing what
+    /// it held. Silence until something can play.
+    pub fn render(&mut self, out: &mut [Pcm]) {
+        out.fill(0.0);
     }
 }
