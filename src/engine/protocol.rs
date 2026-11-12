@@ -11,26 +11,26 @@ use crate::audio::AudioBuffer;
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    Sample(SampleCommand),
+    Voice(VoiceCommand),
 }
 
 #[derive(Debug)]
-pub(crate) enum SampleCommand {
+pub(crate) enum VoiceCommand {
     /// Play `audio` from its first frame.
     Add {
-        id: SoundId,
+        id: VoiceId,
         audio: Arc<AudioBuffer>,
     },
-    /// Stop the sound, if it is still playing.
-    Remove(SoundId),
+    /// Stop the voice, if it is still playing.
+    Remove(VoiceId),
 }
 
 /// Handed back so the last reference is dropped on the control side:
 /// freeing has no time bound and must not happen on the audio thread.
 #[derive(Debug)]
 pub(crate) enum Return {
-    /// A sample sound's audio: finished, removed or cut.
-    Sample(Arc<AudioBuffer>),
+    /// A voice's audio: finished, removed or cut.
+    Voice(Arc<AudioBuffer>),
 }
 
 /// Defines an id type minted by `next()` from its own process-wide
@@ -53,7 +53,7 @@ macro_rules! id {
 }
 
 id! {
-    /// One instance of something heard. The lowest id is the oldest; a
-    /// stale remove names nothing and does nothing.
-    SoundId
+    /// One playing of a sample. The lowest id is the oldest; a stale
+    /// remove names nothing and does nothing.
+    VoiceId
 }

@@ -1,35 +1,46 @@
-//! The new engine as a user sees it today: make one, keep the control,
-//! give the renderer to the audio thread to render periods. Nothing can
-//! be played yet.
+//! The new engine as a user sees it today: load a sample from a project,
+//! make an engine, keep the control, give the renderer to the audio thread
+//! to render periods, and play the sample as a voice. Nothing is heard yet:
+//! the renderer does not read commands.
 //!
-//! Usage: `cargo run --example engine`.
+//! A demonstration of the shape, not a program to run: it expects a
+//! project at `project/` that already holds sample 0.
 
+use std::error::Error;
+use std::path::Path;
 use std::thread;
 
-use generations::engine;
+use generations::engine::{self, Voice};
+use generations::{Ledger, Project, SampleId};
 
-fn main() {
-    // Both sides of one engine, with room for 64 commands in flight.
+/// RAM for loaded audio: a generous guess for a desktop.
+const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let ledger = Ledger::new(SAMPLE_RAM_BUDGET);
+    let project = Project::open(Path::new("project"), ledger)?;
+    let sample = project.load(SampleId(0))?;
+
+    // Room for 64 commands in flight.
     let (control, renderer) = engine::create(64);
 
-    // The renderer goes to the audio thread; a device callback would own it.
+    // A device callback would own the renderer.
     let audio = thread::spawn(move || {
         let mut renderer = renderer;
-        // One period of 256 stereo frames, as a device callback would hand
-        // over. Nothing plays yet, so it comes back silent.
+        // One period of 256 stereo frames.
         let mut period = vec![1.0; 256 * 2];
         renderer.render(&mut period);
-        assert!(period.iter().all(|&s| s == 0.0));
-        println!("rendered {} frames of silence", period.len() / 2);
     });
 
-    // The control stays here. Clones are the same engine, for handing to
-    // other parts of the app.
+    // Clones are the same engine.
     let _ui = control.clone();
 
-    // Frees whatever the renderer has handed back. Sends do this on their
-    // own; an app calls it when it goes quiet or before a big load.
+    let voice = Voice::play(&control, &sample)?;
+    voice.stop()?;
+
+    // Sends collect on their own; call it when the app goes quiet.
     control.collect();
 
     audio.join().expect("audio thread");
+    Ok(())
 }
