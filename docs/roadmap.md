@@ -238,6 +238,12 @@ or rejected instead. The history of how a shape was reached is in git.
   hard-coded; no runtime graph. A `Processor` trait with boxed chains, a
   plain-data-plus-free-functions shape and a `Mixer<S, N>` that owned the
   sources were all built and removed.
+- **Only plain things cross, both ways.** A command carries what a sound
+  is made from (a sample's `Arc<AudioBuffer>`, an input's ring), never a
+  dsp piece; the renderer builds the piece from it, which only moves it,
+  and takes it apart again so `Released` carries the same plain things
+  back. The recorder's buffer goes the same way, out on `Record` and
+  back as a take. `command.rs` imports nothing from `dsp/`.
 - **Mix by accumulating into the caller's slice.** Each sound adds its
   period straight into the output with `math::add`; nothing has a scratch
   buffer and the iterators allocate nothing. The internal mix is always
@@ -329,7 +335,7 @@ or rejected instead. The history of how a shape was reached is in git.
   what level is the engine's, by command.
 - **The stream runs from open to drop.** Opening clicks and costs tens of
   milliseconds, so it renders silence when idle. Samples can be dropped
-  in any order: a sound holding the last `Arc` goes back on the release
+  in any order: the last `Arc`, held by a sound, goes back on the release
   ring to be freed on the control side.
 - **The examples are `first_sound`, `monitor` and `resample`**, and are plain
   demonstration code: no hardening or shared abstractions there. When the

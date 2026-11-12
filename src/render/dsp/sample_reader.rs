@@ -37,6 +37,11 @@ impl SampleReader {
     pub fn audio(&self) -> &Arc<AudioBuffer> {
         &self.audio
     }
+
+    /// The buffer it was made from, given back.
+    pub fn into_audio(self) -> Arc<AudioBuffer> {
+        self.audio
+    }
 }
 
 impl Source for SampleReader {

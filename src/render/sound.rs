@@ -30,6 +30,11 @@ impl<S> Sound<S> {
         &self.source
     }
 
+    /// The source, given back.
+    pub fn into_source(self) -> S {
+        self.source
+    }
+
     /// Moves one parameter to a new value.
     pub fn set(&mut self, param: SoundParam) {
         match param {

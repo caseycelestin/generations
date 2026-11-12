@@ -38,10 +38,11 @@
 //! [`SampleReader`] is a buffer and a position, a [`Gain`] a level and
 //! its target. A piece without state is a free function in [`math`].
 //!
-//! Real-time safe once built: no piece allocates, locks or fails. State
-//! is built on the control side, where it may allocate what it will need
-//! for its whole life (a buffer to read, a delay line, from the ledger if
-//! it scales with audio), and moved to where it runs.
+//! Real-time safe once built: no piece allocates, locks or fails. What a
+//! piece needs for its whole life (a buffer to read, a ring, a delay
+//! line, from the ledger if it scales with audio) is allocated on the
+//! control side and moved to where it runs; the piece is built there
+//! around it, which only moves it, and taken apart again to give it back.
 
 mod gain;
 pub mod input_reader;

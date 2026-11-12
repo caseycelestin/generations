@@ -50,10 +50,9 @@ impl InputReader {
         Self { frames, layout }
     }
 
-    /// How many samples the ring holds.
-    #[cfg(test)]
-    pub(crate) fn capacity(&self) -> usize {
-        self.frames.buffer().capacity()
+    /// What it was made from, given back: the ring and its layout.
+    pub(crate) fn into_parts(self) -> (Consumer<Pcm>, ChannelLayout) {
+        (self.frames, self.layout)
     }
 
     /// The next period's worth of frames off the ring, as a chunk to read

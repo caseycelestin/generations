@@ -16,9 +16,9 @@
 //! is a sound of its own, with its own ring and its own place in the
 //! renderer, monitored on its own. The split from the
 //! device's frames into the sources happens in [`InputFeed::feed`], where
-//! the interleaved frame already is; the render side,
-//! [`InputReader`](crate::render::dsp::InputReader), sees only mono and stereo
-//! sources, the same as it sees samples.
+//! the interleaved frame already is; the render side gets one ring per
+//! source and sees only mono and stereo sources, the same as it sees
+//! samples.
 //!
 //! The feeder is the only piece here that runs on a thread with a hard
 //! deadline, and the only one that holds no [`Control`]: `feed`
@@ -41,8 +41,7 @@ use crate::audio::ChannelLayout;
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES, Pcm};
 use crate::control::Control;
 use crate::control::ControlError;
-use crate::render::command::SoundId;
-use crate::render::dsp::InputReader;
+use crate::render::command::{InputRing, SoundId};
 
 /// How many of the capture device's periods a source's ring holds: enough
 /// that the two clocks can disagree by [`MAX_LAG_PERIODS`] of output and
@@ -163,7 +162,7 @@ impl Drop for Input {
 }
 
 /// The writing end of one source's ring, the other end of its
-/// [`InputReader`], and where in a device frame the source's channels are.
+/// [`InputRing`], and where in a device frame the source's channels are.
 #[derive(Debug)]
 struct InputWriter {
     frames: Producer<Pcm>,
@@ -190,10 +189,10 @@ impl InputFeed {
     /// Both ends of a new input laid out as `layout`, fed `period` frames
     /// at a time, at most `MAX_PERIOD_FRAMES`. The rings are sized from
     /// the period and allocated here, on the control side. The feed goes
-    /// to the capture callback; each [`InputReader`], one per entry of
+    /// to the capture callback; each [`InputRing`], one per entry of
     /// `layout` in order, crosses to the render side on the command that
     /// adds its source.
-    pub(crate) fn new(layout: &InputLayout, period: usize) -> (InputFeed, Vec<InputReader>) {
+    pub(crate) fn new(layout: &InputLayout, period: usize) -> (InputFeed, Vec<InputRing>) {
         debug_assert!(
             (1..=MAX_PERIOD_FRAMES).contains(&period),
             "the engine checks the period"
@@ -202,9 +201,9 @@ impl InputFeed {
     }
 
     /// [`new`](Self::new) with rings of `frames` frames.
-    fn with_ring(layout: &InputLayout, frames: usize) -> (InputFeed, Vec<InputReader>) {
+    fn with_ring(layout: &InputLayout, frames: usize) -> (InputFeed, Vec<InputRing>) {
         let mut sources = Vec::with_capacity(layout.entries().len());
-        let mut readers = Vec::with_capacity(layout.entries().len());
+        let mut rings = Vec::with_capacity(layout.entries().len());
         let mut first = 0;
         for &source in layout.entries() {
             // This allocation is seen and deliberately not on the ledger.
@@ -219,14 +218,17 @@ impl InputFeed {
                 first,
                 channels: source.count(),
             });
-            readers.push(InputReader::new(reader, source));
+            rings.push(InputRing {
+                frames: reader,
+                layout: source,
+            });
             first += source.count();
         }
         let feed = InputFeed {
             sources,
             width: first,
         };
-        (feed, readers)
+        (feed, rings)
     }
 
     /// How many samples make a device frame: the layout's width.
@@ -265,13 +267,18 @@ impl InputFeed {
 mod tests {
     use super::*;
     use crate::audio::ChannelLayout::{Mono, Stereo};
-    use crate::render::dsp::Source;
+    use crate::render::dsp::{InputReader, Source};
     use crate::testing::hear;
 
-    /// A feed laid out as `layout` over rings of `frames` frames, and its
-    /// readers.
+    /// A feed laid out as `layout` over rings of `frames` frames, and a
+    /// reader of each ring, as the renderer would build them.
     fn feed(layout: &[ChannelLayout], frames: usize) -> (InputFeed, Vec<InputReader>) {
-        InputFeed::with_ring(&InputLayout::new(layout), frames)
+        let (feed, rings) = InputFeed::with_ring(&InputLayout::new(layout), frames);
+        (feed, rings.into_iter().map(reader).collect())
+    }
+
+    fn reader(ring: InputRing) -> InputReader {
+        InputReader::new(ring.frames, ring.layout)
     }
 
     #[test]
@@ -323,13 +330,13 @@ mod tests {
 
     #[test]
     fn new_sizes_each_ring_from_the_period_in_whole_frames_of_its_width() {
-        let (mut f, mut readers) = InputFeed::new(&InputLayout::new([Mono, Stereo]), 4);
-        assert_eq!(readers[0].capacity(), 4 * RING_PERIODS);
-        assert_eq!(readers[1].capacity(), 4 * RING_PERIODS * 2);
+        let (mut f, mut rings) = InputFeed::new(&InputLayout::new([Mono, Stereo]), 4);
+        assert_eq!(rings[0].frames.buffer().capacity(), 4 * RING_PERIODS);
+        assert_eq!(rings[1].frames.buffer().capacity(), 4 * RING_PERIODS * 2);
         assert_eq!(f.channels(), 3);
         f.feed(&[0.9, 0.1, 0.5]);
         let mut out = vec![0.0; 2];
-        hear(&mut readers[1], &mut out);
+        hear(&mut reader(rings.remove(1)), &mut out);
         assert_eq!(out, vec![0.1, 0.5]);
     }
 }
@@ -341,10 +348,10 @@ mod worst_case {
     #[test]
     fn the_widest_input_at_the_longest_period_takes_exactly_the_worst_case() {
         let widest = [ChannelLayout::Stereo; MAX_INPUT_CHANNELS / 2];
-        let (_f, readers) = InputFeed::new(&InputLayout::new(widest), MAX_PERIOD_FRAMES);
-        let bytes: usize = readers
+        let (_f, rings) = InputFeed::new(&InputLayout::new(widest), MAX_PERIOD_FRAMES);
+        let bytes: usize = rings
             .iter()
-            .map(|r| r.capacity() * size_of::<Pcm>())
+            .map(|r| r.frames.buffer().capacity() * size_of::<Pcm>())
             .sum();
         assert_eq!(bytes, MAX_RING_BYTES);
     }

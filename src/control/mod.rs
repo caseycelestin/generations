@@ -57,8 +57,9 @@ use crate::control::sample_sound::SampleSound;
 use crate::memory::{Ledger, OverBudgetError};
 use crate::project::sample::Sample;
 use crate::render::Renderer;
-use crate::render::command::{Command, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap};
-use crate::render::dsp::{InputReader, SampleReader};
+use crate::render::command::{
+    Command, InputRing, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap,
+};
 use input::{Input, InputFeed, InputLayout};
 use recorder::Recorder;
 
@@ -140,7 +141,8 @@ struct Rings {
 
 impl Rings {
     /// Takes everything the renderer has let go of since the last
-    /// collect: drops every sound, and keeps every take for its owner
+    /// collect: drops what every sound was made from, a sample's audio or
+    /// an input's ring, and keeps every take for its owner
     /// unless the owner is gone.
     fn collect(&mut self) {
         while let Ok(released) = self.released.pop() {
@@ -190,7 +192,7 @@ impl Control {
         let id = self.mint(1);
         self.send(SoundCommand::Add {
             id,
-            source: SampleReader::new(Arc::clone(sample.audio())),
+            from: Arc::clone(sample.audio()),
             gain: 1.0,
         })?;
         Ok(SampleSound::new(id, self.clone()))
@@ -217,9 +219,9 @@ impl Control {
     /// Frees, here on the control side, every sound the renderer has let
     /// go of since the last send or collect: the audio of a sample dropped
     /// while it played, once that sound has ended, and the rings of an
-    /// input removed. A recorder let go of, full or stopped, is kept
-    /// with its take for its owner instead. Every send does this first, so only an owner that
-    /// can go quiet needs it: call it from a UI or event loop tick, or
+    /// input removed. A take, full or stopped, is kept for its owner
+    /// instead. Every send does this first, so only an owner that can go
+    /// quiet needs it: call it from a UI or event loop tick, or
     /// before a load that needs the budget back. Never on the audio
     /// thread: it is where the freeing happens.
     pub fn collect(&self) {
@@ -294,21 +296,21 @@ impl Control {
             return Err(ControlError::BadInputPeriod(period));
         }
         // A sound per entry. The capture callback writes frames in
-        // through the feed, the renderer reads them out through the
-        // readers on the audio thread. One command per sound; all of
+        // through the feed, the renderer reads them out of the rings on
+        // the audio thread. One command per sound; all of
         // them go or none does. The sound ids a refused add minted are
         // burnt, and nothing minds.
         let count = layout.entries().len();
         let first = self.mint(count);
         let sounds: Vec<SoundId> = (0..count as u64).map(|n| SoundId(first.0 + n)).collect();
-        let (feed, readers) = InputFeed::new(layout, period);
-        self.add_input(&sounds, readers)?;
+        let (feed, rings) = InputFeed::new(layout, period);
+        self.add_input(&sounds, rings)?;
         Ok((Input::new(&sounds, self.clone()), feed))
     }
 
     /// Stops the sound `id` if it is still playing.
     pub(crate) fn stop_sound(&self, id: SoundId) -> Result<(), ControlError> {
-        self.send(SoundCommand::<SampleReader>::Remove(id))
+        self.send(SoundCommand::<Arc<AudioBuffer>>::Remove(id))
     }
 
     /// `count` fresh, consecutive sound ids; the first is returned.
@@ -317,14 +319,14 @@ impl Control {
     }
 
     /// Adds the sounds of an input, the sound `sounds[n]` reading
-    /// `readers[n]`, none of them heard yet (at gain 0), counting each
+    /// `rings[n]`, none of them heard yet (at gain 0), counting each
     /// as held. All are added or none is: refused as `InputsFull`
     /// if they would not all fit beside the input sounds already held, so
     /// an input already heard is never cut by another being added, and as
     /// `CommandsFull` with nothing sent and nothing counted if the ring has
     /// no room for every one.
-    fn add_input(&self, sounds: &[SoundId], readers: Vec<InputReader>) -> Result<(), ControlError> {
-        debug_assert_eq!(sounds.len(), readers.len(), "a sound per reader");
+    fn add_input(&self, sounds: &[SoundId], rings: Vec<InputRing>) -> Result<(), ControlError> {
+        debug_assert_eq!(sounds.len(), rings.len(), "a sound per ring");
         let count = sounds.len();
         self.0
             .input_sounds
@@ -332,10 +334,10 @@ impl Control {
                 (held + count <= self.0.input_capacity).then_some(held + count)
             })
             .map_err(|_| ControlError::InputsFull)?;
-        let sent = self.send_all(sounds.iter().zip(readers).map(|(&id, source)| {
+        let sent = self.send_all(sounds.iter().zip(rings).map(|(&id, from)| {
             SoundCommand::Add {
                 id,
-                source,
+                from,
                 gain: 0.0,
             }
             .into()
@@ -346,14 +348,14 @@ impl Control {
         sent
     }
 
-    /// Removes the input sounds `sounds`, dropping their readers, and
+    /// Removes the input sounds `sounds`, dropping their rings, and
     /// stops counting them as held. All or none, as
     /// [`add_input`](Self::add_input); a refused remove keeps them counted.
     pub(crate) fn remove_input(&self, sounds: &[SoundId]) -> Result<(), ControlError> {
         self.send_all(
             sounds
                 .iter()
-                .map(|&id| SoundCommand::<InputReader>::Remove(id).into()),
+                .map(|&id| SoundCommand::<InputRing>::Remove(id).into()),
         )?;
         self.0
             .input_sounds
@@ -366,7 +368,7 @@ impl Control {
     /// stays drained.
     pub(crate) fn set_monitored(&self, id: SoundId, monitored: bool) -> Result<(), ControlError> {
         let level = if monitored { 1.0 } else { 0.0 };
-        self.send(SoundCommand::<InputReader>::Set {
+        self.send(SoundCommand::<InputRing>::Set {
             id,
             param: SoundParam::Gain(level),
         })
