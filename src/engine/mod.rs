@@ -10,23 +10,25 @@ pub use control::{Control, ControlError, Voice, VoiceState};
 pub use protocol::voice::VoiceEnd;
 pub use realtime::render::Renderer;
 
+use std::num::NonZeroUsize;
+
 use rtrb::RingBuffer;
 
 /// Makes both rings and hands each side its ends. The [`Renderer`] goes
-/// to the audio thread; the [`Control`] stays.
-pub fn create(command_capacity: usize) -> (Control, Renderer) {
-    let (to_renderer, from_control) = RingBuffer::new(command_capacity);
-    let (to_control, from_renderer) = RingBuffer::new(return_capacity(command_capacity));
+/// to the audio thread; the [`Control`] stays. `voices` is how many can
+/// play at once: the caller's call, for its hardware.
+pub fn create(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> (Control, Renderer) {
+    let (to_renderer, from_control) = RingBuffer::new(command_capacity.get());
+    let (to_control, from_renderer) = RingBuffer::new(return_capacity(command_capacity, voices));
     (
         Control::new(to_renderer, from_renderer),
-        Renderer::new(from_control, to_control),
+        Renderer::new(from_control, to_control, voices),
     )
 }
 
 /// Depth of the ring back, so the renderer never finds it full. Every send
-/// collects first, so between collects it holds at most one return per
-/// queued command, plus whatever the renderer holds (added as features
-/// land).
-fn return_capacity(command_capacity: usize) -> usize {
-    command_capacity
+/// collects first, so between collects it holds at most every voice the
+/// renderer holds, plus one return per queued command.
+fn return_capacity(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> usize {
+    voices.get() + command_capacity.get()
 }

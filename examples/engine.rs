@@ -7,6 +7,7 @@
 //! project at `project/` that already holds sample 0.
 
 use std::error::Error;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::thread;
 
@@ -21,8 +22,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let project = Project::open(Path::new("project"), ledger)?;
     let sample = project.load(SampleId(0))?;
 
-    // Room for 64 commands in flight.
-    let (control, renderer) = engine::create(64);
+    // Room for 64 commands in flight and 16 voices at once.
+    let commands = NonZeroUsize::new(64).expect("not zero");
+    let voices = NonZeroUsize::new(16).expect("not zero");
+    let (control, renderer) = engine::create(commands, voices);
 
     // A device callback would own the renderer.
     let audio = thread::spawn(move || {

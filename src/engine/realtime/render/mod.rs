@@ -1,13 +1,16 @@
 //! The audio thread: turns commands and audio into periods of output.
 
 mod math;
-mod voice;
+mod voices;
+
+use std::num::NonZeroUsize;
 
 use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
 use crate::engine::protocol::{Command, Return};
 use math::hard_clip;
+use voices::Voices;
 
 /// Channels in every frame the renderer makes: always stereo. A mono
 /// source is heard on both sides.
@@ -20,13 +23,21 @@ pub(crate) type Frame = [Pcm; CHANNELS];
 pub struct Renderer {
     from_control: Consumer<Command>,
     to_control: Producer<Return>,
+    voices: Voices,
 }
 
 impl Renderer {
-    pub(crate) fn new(from_control: Consumer<Command>, to_control: Producer<Return>) -> Self {
+    /// Allocates everything the renderer holds for its life, here, on the
+    /// control side.
+    pub(crate) fn new(
+        from_control: Consumer<Command>,
+        to_control: Producer<Return>,
+        voices: NonZeroUsize,
+    ) -> Self {
         Self {
             from_control,
             to_control,
+            voices: Voices::new(voices),
         }
     }
 
