@@ -80,13 +80,13 @@ impl Renderer {
                         stopped.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
-                Command::Voice(VoiceCommand::RemoveAll) => {
-                    for voice in self.voices.drain() {
+                Command::Voice(VoiceCommand::RemoveAudio(audio)) => {
+                    for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
-                Command::Voice(VoiceCommand::RemoveAudio(audio)) => {
-                    for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
+                Command::Voice(VoiceCommand::RemoveAll) => {
+                    for voice in self.voices.drain() {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
