@@ -12,12 +12,8 @@ use crate::engine::protocol::{Command, Return};
 use math::hard_clip;
 use voices::Voices;
 
-/// Channels in every frame the renderer makes: always stereo. A mono
-/// source is heard on both sides.
-pub(crate) const CHANNELS: usize = 2;
-
 /// One output frame: a sample per side.
-pub(crate) type Frame = [Pcm; CHANNELS];
+pub(crate) type Frame = [Pcm; Renderer::CHANNELS];
 
 #[derive(Debug)]
 pub struct Renderer {
@@ -27,6 +23,9 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// Always stereo.
+    pub(crate) const CHANNELS: usize = 2;
+
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(

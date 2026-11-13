@@ -1,13 +1,17 @@
 //! Arithmetic on periods: free functions over slices, no state.
 
-use super::{CHANNELS, Frame};
+use super::{Frame, Renderer};
 use crate::config::Pcm;
 
 /// Adds `frames` into `out`, interleaved stereo, from its start. Stops at
 /// whichever runs out first. Adds rather than writes, so sources sum.
 pub(crate) fn add(out: &mut [Pcm], frames: impl IntoIterator<Item = Frame>) {
-    debug_assert_eq!(out.len() % CHANNELS, 0, "output is not whole frames");
-    let (out, _) = out.as_chunks_mut::<CHANNELS>();
+    debug_assert_eq!(
+        out.len() % Renderer::CHANNELS,
+        0,
+        "output is not whole frames"
+    );
+    let (out, _) = out.as_chunks_mut::<{ Renderer::CHANNELS }>();
     for (out, frame) in out.iter_mut().zip(frames) {
         for (o, s) in out.iter_mut().zip(frame) {
             *o += s;
