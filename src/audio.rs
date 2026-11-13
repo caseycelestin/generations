@@ -388,4 +388,30 @@ mod tests {
             "AudioBuffer { layout: Stereo, frames: 2, .. }"
         );
     }
+
+    #[test]
+    fn a_buffer_is_full_once_no_whole_frame_fits() {
+        let mut audio = AudioMemory::new().alloc_buffer(Stereo, 2).unwrap();
+        assert!(!audio.is_full());
+        audio.extend([0.0; 4]);
+        assert!(audio.is_full());
+    }
+
+    #[test]
+    fn clear_empties_the_buffer_and_keeps_its_room() {
+        let mut filled = buffer(Stereo, &[0.5; 4]);
+        filled.clear();
+        assert_eq!(filled.frames(), 0);
+        assert_eq!(filled.extend([0.25; 4]), 2);
+    }
+
+    #[test]
+    fn prefault_leaves_the_buffer_empty_with_all_its_room() {
+        let memory = AudioMemory::new();
+        let mut audio = memory.alloc_buffer(Stereo, 4).unwrap();
+        audio.prefault();
+        assert_eq!(audio.frames(), 0);
+        assert_eq!(audio.extend([0.5; 8]), 4);
+        assert_eq!(memory.in_use(), 8 * S);
+    }
 }

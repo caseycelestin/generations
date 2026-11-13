@@ -136,8 +136,9 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::audio::AudioBuffer;
+    use crate::audio::{AudioBuffer, AudioMemory};
     use crate::engine::protocol::BufferAddress;
+    use crate::engine::protocol::recording::{RecordingReport, RecordingSpec, RecordingState};
     use crate::engine::protocol::voice::{VoiceId, VoiceReport, VoiceSpec};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
@@ -170,6 +171,38 @@ mod tests {
         };
         to_renderer.push(VoiceCommand::Add(spec).into()).unwrap();
         (id, report)
+    }
+
+    /// Sends a start for a recording into empty stereo audio with room for
+    /// `frames`, as `Control::record` does.
+    fn start(
+        to_renderer: &mut Producer<Command>,
+        frames: usize,
+    ) -> (BufferAddress, Arc<RecordingReport>) {
+        let audio = AudioMemory::new()
+            .alloc_buffer(ChannelLayout::Stereo, frames)
+            .unwrap();
+        let audio = Arc::new(audio);
+        let address = BufferAddress::of(&audio);
+        let report = Arc::new(RecordingReport::new());
+        let spec = RecordingSpec {
+            audio,
+            report: Arc::clone(&report),
+        };
+        to_renderer
+            .push(RecordingCommand::Start(spec).into())
+            .unwrap();
+        (address, report)
+    }
+
+    /// The samples of the first recording handed back.
+    fn recorded(from_renderer: &mut Consumer<Return>) -> Vec<Pcm> {
+        while let Ok(returned) = from_renderer.pop() {
+            if let Return::Recording(spec) = returned {
+                return spec.audio.frames_in(0..spec.audio.frames()).to_vec();
+            }
+        }
+        panic!("no recording was handed back");
     }
 
     #[test]
@@ -282,5 +315,54 @@ mod tests {
         assert_eq!(oldest.ended(), Some(VoiceEnd::Cut));
         assert_eq!(newest.ended(), None);
         assert!(matches!(from_renderer.pop(), Ok(Return::Voice(_))));
+    }
+
+    #[test]
+    fn a_recording_writes_what_is_heard_until_stopped() {
+        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
+        play(&mut to_renderer, &[0.25; 64]);
+        let (address, report) = start(&mut to_renderer, 64);
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(report.state(), RecordingState::Recording);
+
+        to_renderer
+            .push(RecordingCommand::Stop(address).into())
+            .unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(report.state(), RecordingState::Ended(RecordingEnd::Stopped));
+        assert_eq!(recorded(&mut from_renderer), vec![0.25; 4 * 2]);
+    }
+
+    #[test]
+    fn a_recording_ends_full_when_its_audio_has_no_room() {
+        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
+        let (_, report) = start(&mut to_renderer, 3);
+        renderer.render(&mut [0.0; 8 * 2]);
+        assert_eq!(report.state(), RecordingState::Ended(RecordingEnd::Full));
+        assert_eq!(recorded(&mut from_renderer).len(), 3 * 2);
+    }
+
+    #[test]
+    fn a_start_while_recording_is_refused_and_the_first_runs_on() {
+        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
+        let (_, first) = start(&mut to_renderer, 64);
+        let (_, second) = start(&mut to_renderer, 64);
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(first.state(), RecordingState::Recording);
+        assert_eq!(second.state(), RecordingState::Refused);
+        assert!(matches!(from_renderer.pop(), Ok(Return::Recording(_))));
+    }
+
+    #[test]
+    fn a_stop_naming_other_audio_does_nothing() {
+        let (mut to_renderer, _from_renderer, mut renderer) = renderer(1);
+        let (_, report) = start(&mut to_renderer, 64);
+        let other = Arc::new(buffer(ChannelLayout::Stereo, &[]));
+        to_renderer
+            .push(RecordingCommand::Stop(BufferAddress::of(&other)).into())
+            .unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(report.state(), RecordingState::Recording);
     }
 }
