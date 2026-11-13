@@ -346,6 +346,15 @@ How a recording gets its buffer from `AudioMemory` is open.
   value. The alternative: the take rides the ring back and collect hands
   it to the recording feature, with no new primitive but delivery only at
   a collect.
+- **Arming comes later, with the features that need it.** An armed
+  recording is held by the renderer, which starts it itself: at the frame
+  the input crosses a level (threshold start), on the next beat or bar
+  once there is a clock (quantized start), or with the second before the
+  press kept from a ring written while armed (pre-roll). Only the audio
+  thread can time these. Arming also claims the recorder early, so a busy
+  one is refused before the press, and takes `record`'s prefault off the
+  press. Until then the user waits for the prefault, a few milliseconds
+  per 30 s of stereo; accepted for now (2026-11-13).
 
 ### Process
 
