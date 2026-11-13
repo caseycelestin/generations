@@ -33,7 +33,7 @@ use crate::audio::AudioBuffer;
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use recording::{RecordingCommand, RecordingSpec};
+use recording::{RecordingCommand, Returned};
 use voice::{VoiceCommand, VoiceSpec};
 
 #[derive(Debug)]
@@ -60,9 +60,14 @@ impl From<RecordingCommand> for Command {
 #[derive(Debug)]
 pub(crate) enum Return {
     Voice(VoiceSpec),
-    /// Refused or ended.
-    Recording(RecordingSpec),
+    Recording { id: HandleId, state: Returned },
 }
+
+/// Names one handle's thing (a voice, a take) on both sides: what the
+/// renderer sends back about it carries this id. Minted in order by the
+/// rings, so unique within one engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct HandleId(pub(crate) u64);
 
 /// Names audio to the renderer without sending it, so nothing comes back
 /// to be freed. Sound only while the audio cannot be freed before the

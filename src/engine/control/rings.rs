@@ -4,20 +4,32 @@
 //!
 //! [`return_capacity`]: crate::engine::return_capacity
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rtrb::{Consumer, Producer};
 
 use super::ControlError;
-use crate::engine::protocol::{Command, Return};
+use crate::engine::protocol::recording::{RecordingState, Returned};
+use crate::engine::protocol::{Command, HandleId, Return};
 
 /// One per renderer, shared by its `Control` and every handle.
 #[derive(Debug, Clone)]
-pub(crate) struct SharedRings(Arc<Mutex<Rings>>);
+pub(crate) struct SharedRings(Arc<Shared>);
+
+#[derive(Debug)]
+struct Shared {
+    rings: Mutex<Rings>,
+    /// Outside the lock, so a handle can mint while holding a permit.
+    ids: AtomicU64,
+}
 
 impl SharedRings {
     pub(crate) fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
-        Self(Arc::new(Mutex::new(Rings::new(to_renderer, from_renderer))))
+        Self(Arc::new(Shared {
+            rings: Mutex::new(Rings::new(to_renderer, from_renderer)),
+            ids: AtomicU64::new(0),
+        }))
     }
 
     pub(crate) fn send(&self, command: impl Into<Command>) -> Result<(), ControlError> {
@@ -40,10 +52,15 @@ impl SharedRings {
         self.lock().collect();
     }
 
+    /// Only uniqueness matters, so no ordering with other memory.
+    pub(crate) fn next_id(&self) -> HandleId {
+        HandleId(self.0.ids.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// A panic while locked leaves the rings intact, so a poisoned lock
     /// is taken anyway.
     fn lock(&self) -> MutexGuard<'_, Rings> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.rings.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -52,6 +69,16 @@ impl SharedRings {
 pub(crate) struct Permit<'a>(MutexGuard<'a, Rings>);
 
 impl Permit<'_> {
+    /// Before the send, under the same lock, so no return for `id` can be
+    /// collected before its place exists.
+    pub(crate) fn register(&mut self, id: HandleId, state: Arc<Mutex<RecordingState>>) {
+        let free = self.0.handles.iter_mut().find(|place| place.is_none());
+        debug_assert!(free.is_some(), "sized for every id still owed a return");
+        if let Some(place) = free {
+            *place = Some((id, state));
+        }
+    }
+
     pub(crate) fn send(mut self, command: impl Into<Command>) {
         let pushed = self.0.to_renderer.push(command.into());
         debug_assert!(pushed.is_ok(), "a permit holds a free slot");
@@ -62,13 +89,24 @@ impl Permit<'_> {
 struct Rings {
     to_renderer: Producer<Command>,
     from_renderer: Consumer<Return>,
+    /// Which handle's state box an id's returns go to, held until its last
+    /// return arrives. Every id held here still has that return coming, so
+    /// there are never more than the ring back can hold, and the list takes
+    /// its size.
+    handles: Box<[Place]>,
 }
+
+type Place = Option<(HandleId, Arc<Mutex<RecordingState>>)>;
 
 impl Rings {
     fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
+        let handles = (0..from_renderer.buffer().capacity())
+            .map(|_| None)
+            .collect();
         Self {
             to_renderer,
             from_renderer,
+            handles,
         }
     }
 
@@ -76,8 +114,33 @@ impl Rings {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {
                 Return::Voice(spec) => drop(spec),
-                Return::Recording(spec) => drop(spec),
+                Return::Recording { id, state } => {
+                    let (now, last) = match state {
+                        Returned::Started => (RecordingState::Recording, false),
+                        Returned::Refused(_) => (RecordingState::Refused, true),
+                        Returned::Ended(why, _) => (RecordingState::Ended(why), true),
+                    };
+                    self.deliver(id, now, last);
+                }
             }
+        }
+    }
+
+    /// Writes `state` into the handle's box; after its `last` return the
+    /// place is freed.
+    fn deliver(&mut self, id: HandleId, state: RecordingState, last: bool) {
+        let place = self
+            .handles
+            .iter_mut()
+            .find(|place| matches!(place, Some((held, _)) if *held == id));
+        let Some(place) = place else {
+            return;
+        };
+        if let Some((_, handle)) = place {
+            *handle.lock().unwrap_or_else(PoisonError::into_inner) = state;
+        }
+        if last {
+            *place = None;
         }
     }
 }

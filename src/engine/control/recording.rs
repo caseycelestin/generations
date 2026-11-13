@@ -1,16 +1,14 @@
 //! A recording: the main out written into audio the renderer holds.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
 use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
-use crate::engine::protocol::BufferAddress;
-use crate::engine::protocol::recording::{
-    RecordingCommand, RecordingReport, RecordingSpec, RecordingState,
-};
+use crate::engine::protocol::HandleId;
+use crate::engine::protocol::recording::{RecordingCommand, RecordingSpec, RecordingState};
 use crate::layout::ChannelLayout;
 
 /// A refused `record`, holding the audio it was given.
@@ -38,8 +36,9 @@ impl RecordError {
 #[derive(Debug)]
 pub struct Recording {
     rings: SharedRings,
-    address: BufferAddress,
-    report: Arc<RecordingReport>,
+    id: HandleId,
+    /// Written by `collect` when the renderer reports this recording.
+    state: Arc<Mutex<RecordingState>>,
 }
 
 impl Recording {
@@ -47,38 +46,34 @@ impl Recording {
         if audio.layout() != ChannelLayout::Stereo {
             return Err(RecordError::NotStereo(audio));
         }
-        let Ok(permit) = rings.reserve() else {
-            return Err(RecordError::CommandsFull(audio));
-        };
-        // Only this side clones or drops the audio, the caller gave up
-        // theirs, and the permit has just collected under the lock, so the
-        // count cannot rise before the send.
+        // Collected first, so ended voices have let go. The caller gave up
+        // theirs, so nothing can clone it: the count can only fall before
+        // the send.
+        rings.collect();
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
+        let Ok(mut permit) = rings.reserve() else {
+            return Err(RecordError::CommandsFull(audio));
+        };
+        let id = rings.next_id();
         let mut audio = audio.into_shared();
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
-        let address = BufferAddress::of(&audio);
-        let report = Arc::new(RecordingReport::new());
-        permit.send(RecordingCommand::Start(RecordingSpec {
-            audio,
-            report: Arc::clone(&report),
-        }));
-        Ok(Self {
-            rings,
-            address,
-            report,
-        })
+        let state = Arc::new(Mutex::new(RecordingState::Pending));
+        permit.register(id, Arc::clone(&state));
+        permit.send(RecordingCommand::Start(RecordingSpec { id, audio }));
+        Ok(Self { rings, id, state })
     }
 
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings.send(RecordingCommand::Stop(self.address))
+        self.rings.send(RecordingCommand::Stop(self.id))
     }
 
     pub fn state(&self) -> RecordingState {
-        self.report.state()
+        self.rings.collect();
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Until the recording has ended the handle comes back, to ask again.
@@ -93,7 +88,7 @@ impl Recording {
 impl Drop for Recording {
     fn drop(&mut self) {
         if matches!(
-            self.report.state(),
+            self.state(),
             RecordingState::Pending | RecordingState::Recording
         ) {
             let _ = self.stop();

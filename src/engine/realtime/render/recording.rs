@@ -5,9 +5,9 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use super::Frame;
-use crate::engine::protocol::BufferAddress;
+use crate::engine::protocol::HandleId;
 use crate::engine::protocol::Return;
-use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, RecordingState};
+use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, Returned};
 
 #[derive(Debug)]
 pub(crate) struct Recording {
@@ -15,8 +15,12 @@ pub(crate) struct Recording {
 }
 
 impl Recording {
-    pub(crate) fn start(spec: RecordingSpec) -> Self {
-        spec.report.set(RecordingState::Recording);
+    pub(crate) fn start(spec: RecordingSpec, to_control: &mut Producer<Return>) -> Self {
+        let pushed = to_control.push(Return::Recording {
+            id: spec.id,
+            state: Returned::Started,
+        });
+        debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
         Self { spec }
     }
 
@@ -29,8 +33,8 @@ impl Recording {
         }
     }
 
-    pub(crate) fn writes(&self, audio: BufferAddress) -> bool {
-        BufferAddress::of(&self.spec.audio) == audio
+    pub(crate) fn is(&self, id: HandleId) -> bool {
+        self.spec.id == id
     }
 
     pub(crate) fn finished(&self) -> bool {
@@ -39,14 +43,18 @@ impl Recording {
 
     /// The one way a recording leaves.
     pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Return>) {
-        self.spec.report.set(RecordingState::Ended(why));
-        let pushed = to_control.push(Return::Recording(self.spec));
+        let pushed = to_control.push(Return::Recording {
+            id: self.spec.id,
+            state: Returned::Ended(why, self.spec),
+        });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 
     pub(crate) fn refuse(spec: RecordingSpec, to_control: &mut Producer<Return>) {
-        spec.report.set(RecordingState::Refused);
-        let pushed = to_control.push(Return::Recording(spec));
+        let pushed = to_control.push(Return::Recording {
+            id: spec.id,
+            state: Returned::Refused(spec),
+        });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 }
