@@ -29,7 +29,7 @@ use crate::config::Pcm;
 /// block it has made repays into it on drop, even after the project is
 /// gone.
 #[derive(Debug, Clone)]
-pub struct Ledger(Arc<Shared>);
+pub(crate) struct Ledger(Arc<Shared>);
 
 /// What a ledger's clones share: the budget and the bytes in use.
 #[derive(Debug)]
@@ -170,19 +170,6 @@ impl Block {
     pub fn truncate(&mut self, len: usize) {
         self.data.truncate(len);
     }
-
-    /// Writes every sample of the capacity once, then empties the block,
-    /// so the OS backs every page of it now. A fresh block is reserved,
-    /// not backed: the first write to each page stops the thread while
-    /// the kernel finds one. Call it on the control side for a block that
-    /// will be filled on the audio thread, so that thread never waits.
-    pub fn prefault(&mut self) {
-        self.truncate(0);
-        self.extend(std::iter::repeat_n(0.0, self.capacity()));
-        // The writes are never read; keep the optimiser from dropping them.
-        std::hint::black_box(&self.data[..]);
-        self.truncate(0);
-    }
 }
 
 /// A block reads as the slice of samples it holds so far. Everything a
@@ -291,16 +278,6 @@ mod tests {
         let a = ledger.alloc(10).unwrap();
         drop(ledger);
         drop(a); // repays into the ledger it still holds; must not panic
-    }
-
-    #[test]
-    fn a_prefaulted_block_is_empty_with_its_capacity_and_payment() {
-        let ledger = Ledger::new(usize::MAX);
-        let mut block = ledger.alloc(1000).unwrap();
-        block.prefault();
-        assert!(block.is_empty());
-        assert_eq!(block.capacity(), 1000);
-        assert_eq!(ledger.in_use(), 1000 * S);
     }
 
     #[test]

@@ -27,7 +27,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Always stereo.
-    pub(crate) const CHANNELS: usize = 2;
+    pub const CHANNELS: usize = 2;
 
     /// A period of any length is mixed in blocks this long, so scratch
     /// never grows.
