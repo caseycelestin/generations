@@ -50,8 +50,8 @@ impl Control {
         self.rings.send(VoiceCommand::RemoveAll)
     }
 
-    /// Frees what the renderer has handed back, returning its memory to
-    /// the ledger. Every send does this first; call it when the app goes
+    /// Frees what the renderer has handed back, returning it to
+    /// `SampleMemory`. Every send does this first; call it when the app goes
     /// quiet, or before a load that needs the memory.
     pub fn collect(&self) {
         self.rings.collect();

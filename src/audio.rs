@@ -1,4 +1,4 @@
-//! Project audio over a `Block` from the memory ledger.
+//! Project audio over a `Block` from `SampleMemory`.
 //!
 //! An [`AudioBuffer`] is a block of [`Pcm`] samples with a
 //! [`ChannelLayout`]: interleaved, at the project's fixed rate, with no
@@ -6,7 +6,7 @@
 //! it, a recorder filling a take; shared, as a loaded sample is behind an
 //! `Arc`, it never changes. The block is where the
 //! memory was paid for, so a buffer is never uncounted and cannot be copied
-//! without going back to the ledger for another block. The sample type is
+//! without going back to `SampleMemory` for another block. The sample type is
 //! the one the render side mixes in, so a read is a slice and nothing
 //! converts.
 //!
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::config::{MAX_CHANNELS, Pcm};
-use crate::project::ledger::Block;
+use crate::memory::Block;
 
 /// Reasons a buffer cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -78,7 +78,7 @@ impl From<ChannelLayout> for u16 {
 }
 
 /// Interleaved [`Pcm`] audio at the engine's fixed sample rate, in a block
-/// paid for against the ledger.
+/// paid for against `SampleMemory`.
 ///
 /// The audio is the block's length; the block's capacity is what was
 /// paid for and may be larger, as it is for a take that stopped before
@@ -147,8 +147,8 @@ impl AudioBuffer {
 }
 
 /// Audio in RAM that never changes, shared with whatever plays it.
-/// Holding it is what loaded means: drop it and its block repays the
-/// ledger once nothing playing it holds the audio.
+/// Holding it is what loaded means: drop it and its block is repaid
+/// once nothing playing it holds the audio.
 #[derive(Debug)]
 pub struct Sample(Arc<AudioBuffer>);
 
@@ -187,14 +187,14 @@ impl fmt::Debug for AudioBuffer {
 mod tests {
     use super::ChannelLayout::{Mono, Stereo};
     use super::*;
-    use crate::project::ledger::Ledger;
+    use crate::memory::SampleMemory;
 
-    /// A block holding `data`, from a ledger that refuses nothing.
-    fn block(data: &[Pcm]) -> (Ledger, Block) {
-        let ledger = Ledger::new(usize::MAX);
-        let mut block = ledger.alloc(data.len()).unwrap();
+    /// A block holding `data`, from memory with no budget.
+    fn block(data: &[Pcm]) -> (SampleMemory, Block) {
+        let memory = SampleMemory::new();
+        let mut block = memory.alloc(data.len()).unwrap();
         block.extend(data.iter().copied());
-        (ledger, block)
+        (memory, block)
     }
 
     fn buffer(layout: ChannelLayout, data: &[Pcm]) -> AudioBuffer {
@@ -219,14 +219,14 @@ mod tests {
 
     #[test]
     fn the_audio_is_the_length_and_the_payment_is_the_capacity() {
-        let ledger = Ledger::new(usize::MAX);
-        let mut block: Block = ledger.alloc(10).unwrap();
+        let memory = SampleMemory::new();
+        let mut block: Block = memory.alloc(10).unwrap();
         block.extend([1.0, 2.0, 3.0, 4.0]);
         let b = AudioBuffer::new(Mono, block).unwrap();
         assert_eq!(b.frames(), 4);
-        assert_eq!(ledger.in_use(), 10 * size_of::<Pcm>());
+        assert_eq!(memory.in_use(), 10 * size_of::<Pcm>());
         drop(b);
-        assert_eq!(ledger.in_use(), 0);
+        assert_eq!(memory.in_use(), 0);
     }
 
     #[test]
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn rejects_ragged_frames_and_keeps_the_block() {
-        let (ledger, block) = block(&[0.0, 0.0, 0.0]);
+        let (memory, block) = block(&[0.0, 0.0, 0.0]);
         let (err, block) = AudioBuffer::new(Stereo, block).unwrap_err();
         assert_eq!(
             err,
@@ -255,15 +255,15 @@ mod tests {
                 channels: 2
             }
         );
-        assert_eq!(ledger.in_use(), 3 * size_of::<Pcm>());
+        assert_eq!(memory.in_use(), 3 * size_of::<Pcm>());
         drop(block);
-        assert_eq!(ledger.in_use(), 0);
+        assert_eq!(memory.in_use(), 0);
     }
 
     #[test]
     fn extend_takes_whole_frames_up_to_the_room() {
-        let ledger = Ledger::new(usize::MAX);
-        let mut b = AudioBuffer::new(Stereo, ledger.alloc(4).unwrap()).unwrap();
+        let memory = SampleMemory::new();
+        let mut b = AudioBuffer::new(Stereo, memory.alloc(4).unwrap()).unwrap();
         assert_eq!(b.extend([1.0, 2.0, 3.0]), 1);
         assert_eq!(b.samples(), &[1.0, 2.0]);
         assert_eq!(b.extend([5.0, 6.0, 7.0, 8.0]), 1);

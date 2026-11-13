@@ -3,17 +3,12 @@
 
 use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::Pcm;
-use crate::project::ledger::Ledger;
+use crate::memory::SampleMemory;
 
-/// A ledger that refuses nothing, for tests not about the budget.
-pub(crate) fn unlimited() -> Ledger {
-    Ledger::new(usize::MAX)
-}
-
-/// `samples` as a buffer of `layout`, paid for on a throwaway ledger, for
+/// `samples` as a buffer of `layout`, paid for on throwaway memory, for
 /// tests that need audio and are not about the budget.
 pub(crate) fn audio(layout: ChannelLayout, samples: &[Pcm]) -> AudioBuffer {
-    let mut block = unlimited().alloc(samples.len()).unwrap();
+    let mut block = SampleMemory::new().alloc(samples.len()).unwrap();
     block.extend(samples.iter().copied());
     AudioBuffer::new(layout, block).unwrap()
 }

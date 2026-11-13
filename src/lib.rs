@@ -14,12 +14,12 @@
 //! ```text
 //! config, audio           shared: the one fixed format, the buffer type
 //!                         (AudioBuffer) and Sample (what load returns)
+//! memory                  SampleMemory, where every audio-sized Block
+//!                         comes from; the project makes it
 //!
 //! project/                the disk side and the memory budget
 //!   mod.rs                  Project: opens on a directory, allocs, loads;
 //!   │                       the rules over its storage
-//!   ledger.rs               the Ledger every audio-sized Block is paid
-//!   │                       for on; the project makes it
 //!   storage.rs              the medium: a directory of WAVs and a manifest;
 //!                           keeps and returns bytes, nothing more
 //!
@@ -38,8 +38,8 @@
 //!
 //! - **[`project`]** is the disk and the budget. Every read and write goes
 //!   to storage, so changing the project is changing the disk and there is
-//!   no save step. Every byte of audio it brings into RAM is a block on its
-//!   ledger, so nothing that scales with audio exists uncounted. A load
+//!   no save step. Every byte of audio it brings into RAM is a block from its
+//!   `SampleMemory`, so nothing that scales with audio exists uncounted. A load
 //!   hands out a [`Sample`], whose holder owns it: dropping it unloads.
 //! - **[`engine`]** turns commands and samples into frames. The renderer
 //!   runs wherever it is driven, live in a device callback or offline in a
@@ -59,11 +59,12 @@
 pub(crate) mod audio;
 pub mod config;
 pub mod engine;
+pub(crate) mod memory;
 pub mod project;
 #[cfg(test)]
 pub(crate) mod testing;
 
 pub use audio::{AudioBuffer, AudioError, ChannelLayout, Sample};
-pub use project::ledger::OverBudgetError;
+pub use memory::OverBudgetError;
 pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};

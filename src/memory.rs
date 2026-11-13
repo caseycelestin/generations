@@ -1,11 +1,10 @@
-//! The memory budget for audio, and the only source of audio-length
-//! memory.
+//! The only source of audio-length memory, with an optional budget.
 //!
-//! A [`Block`] is paid for when the [`Ledger`] makes it and repays on drop,
-//! so every audio byte is checked before it exists and release cannot be
-//! forgotten or doubled. Who may allocate is who holds a `Ledger`: the
-//! project, never the render side. A block keeps a private handle only to
-//! repay, so holding one grants nothing.
+//! A [`Block`] is paid for when [`SampleMemory`] makes it and repays on
+//! drop, so every audio byte is counted before it exists and release cannot
+//! be forgotten or doubled. Who may allocate is who holds a `SampleMemory`:
+//! the project, never the render side. A block keeps a private handle only
+//! to repay, so holding one grants nothing.
 
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
@@ -19,7 +18,7 @@ use crate::config::Pcm;
 /// A handle: clones share one figure, and a block repays it even after
 /// the project is gone.
 #[derive(Debug, Clone)]
-pub(crate) struct Ledger(Arc<Shared>);
+pub(crate) struct SampleMemory(Arc<Shared>);
 
 #[derive(Debug)]
 struct Shared {
@@ -28,8 +27,15 @@ struct Shared {
     in_use: AtomicUsize,
 }
 
-impl Ledger {
-    pub fn new(budget: usize) -> Self {
+impl SampleMemory {
+    /// Counts every byte and refuses only a count that overflows.
+    #[allow(dead_code, reason = "used once the caller makes its own memory")]
+    pub fn new() -> Self {
+        Self::with_budget(usize::MAX)
+    }
+
+    /// Refuses past `budget` bytes in use at once.
+    pub fn with_budget(budget: usize) -> Self {
         Self(Arc::new(Shared {
             budget,
             in_use: AtomicUsize::new(0),
@@ -59,7 +65,7 @@ impl Ledger {
             .map_err(|in_use| over(bytes, in_use))?;
         Ok(Block {
             data: Vec::with_capacity(samples),
-            ledger: self.clone(),
+            memory: self.clone(),
         })
     }
 
@@ -86,7 +92,7 @@ pub struct OverBudgetError {
     pub budget: usize,
 }
 
-/// A fixed-capacity buffer of samples paid for against a [`Ledger`]: the
+/// A fixed-capacity buffer of samples paid for against [`SampleMemory`]: the
 /// one shape audio-length memory takes.
 ///
 /// The capacity never changes, so what was paid for is what is held; the
@@ -95,7 +101,7 @@ pub struct OverBudgetError {
 pub struct Block {
     /// Never reallocated.
     data: Vec<Pcm>,
-    ledger: Ledger,
+    memory: SampleMemory,
 }
 
 impl Block {
@@ -150,7 +156,7 @@ impl DerefMut for Block {
 impl Drop for Block {
     /// The capacity, not the length: that is what was paid for.
     fn drop(&mut self) {
-        self.ledger.release(self.data.capacity() * size_of::<Pcm>());
+        self.memory.release(self.data.capacity() * size_of::<Pcm>());
     }
 }
 
@@ -162,44 +168,44 @@ mod tests {
     const S: usize = size_of::<Pcm>();
 
     #[test]
-    fn a_new_ledger_has_nothing_in_use() {
-        let ledger = Ledger::new(100);
-        assert_eq!(ledger.in_use(), 0);
+    fn new_memory_has_nothing_in_use() {
+        let memory = SampleMemory::with_budget(100);
+        assert_eq!(memory.in_use(), 0);
     }
 
     #[test]
     fn an_alloc_of_exactly_what_is_left_succeeds() {
-        let ledger = Ledger::new(100 * S);
-        let _a = ledger.alloc(30).unwrap();
-        let _b = ledger.alloc(70).unwrap();
-        assert_eq!(ledger.in_use(), 100 * S);
+        let memory = SampleMemory::with_budget(100 * S);
+        let _a = memory.alloc(30).unwrap();
+        let _b = memory.alloc(70).unwrap();
+        assert_eq!(memory.in_use(), 100 * S);
     }
 
     #[test]
     fn a_block_counts_until_it_is_dropped() {
-        let ledger = Ledger::new(100 * S);
-        let a = ledger.alloc(15).unwrap();
-        let b = ledger.alloc(5).unwrap();
-        assert_eq!(ledger.in_use(), 20 * S);
+        let memory = SampleMemory::with_budget(100 * S);
+        let a = memory.alloc(15).unwrap();
+        let b = memory.alloc(5).unwrap();
+        assert_eq!(memory.in_use(), 20 * S);
         drop(a);
-        assert_eq!(ledger.in_use(), 5 * S);
+        assert_eq!(memory.in_use(), 5 * S);
         drop(b);
-        assert_eq!(ledger.in_use(), 0);
+        assert_eq!(memory.in_use(), 0);
     }
 
     #[test]
     fn a_block_has_exactly_the_capacity_asked_for() {
-        let ledger = Ledger::new(100 * S);
-        let a = ledger.alloc(15).unwrap();
+        let memory = SampleMemory::with_budget(100 * S);
+        let a = memory.alloc(15).unwrap();
         assert_eq!(a.capacity(), 15);
         assert_eq!(a.len(), 0);
     }
 
     #[test]
     fn over_budget_is_refused_and_changes_nothing() {
-        let ledger = Ledger::new(50 * S);
-        let _a = ledger.alloc(40).unwrap();
-        let err = ledger.alloc(20).unwrap_err();
+        let memory = SampleMemory::with_budget(50 * S);
+        let _a = memory.alloc(40).unwrap();
+        let err = memory.alloc(20).unwrap_err();
         assert_eq!(
             err,
             OverBudgetError {
@@ -208,37 +214,37 @@ mod tests {
                 budget: 50 * S,
             }
         );
-        assert_eq!(ledger.in_use(), 40 * S);
+        assert_eq!(memory.in_use(), 40 * S);
     }
 
     #[test]
     fn exactly_the_budget_is_allowed() {
-        let ledger = Ledger::new(40 * S);
-        let _a = ledger.alloc(40).unwrap();
-        assert_eq!(ledger.in_use(), 40 * S);
-        assert!(ledger.alloc(1).is_err());
+        let memory = SampleMemory::with_budget(40 * S);
+        let _a = memory.alloc(40).unwrap();
+        assert_eq!(memory.in_use(), 40 * S);
+        assert!(memory.alloc(1).is_err());
     }
 
     #[test]
     fn a_count_whose_bytes_overflow_is_refused_as_unaffordable() {
-        let ledger = Ledger::new(usize::MAX);
-        let err = ledger.alloc(usize::MAX).unwrap_err();
+        let memory = SampleMemory::new();
+        let err = memory.alloc(usize::MAX).unwrap_err();
         assert_eq!(err.requested, usize::MAX);
-        assert_eq!(ledger.in_use(), 0);
+        assert_eq!(memory.in_use(), 0);
     }
 
     #[test]
     fn a_block_outlives_the_handle_that_made_it() {
-        let ledger = Ledger::new(100 * S);
-        let a = ledger.alloc(10).unwrap();
-        drop(ledger);
-        drop(a); // repays into the ledger it still holds; must not panic
+        let memory = SampleMemory::with_budget(100 * S);
+        let a = memory.alloc(10).unwrap();
+        drop(memory);
+        drop(a); // repays into the memory it still holds; must not panic
     }
 
     #[test]
     fn a_block_reads_as_the_slice_it_holds() {
-        let ledger = Ledger::new(100 * S);
-        let mut a = ledger.alloc(4).unwrap();
+        let memory = SampleMemory::with_budget(100 * S);
+        let mut a = memory.alloc(4).unwrap();
         a.extend([0.25, 0.5, 0.75]);
         assert_eq!(a.len(), 3);
         assert_eq!(a.capacity(), 4);
@@ -249,8 +255,8 @@ mod tests {
 
     #[test]
     fn push_fills_to_capacity_and_then_refuses() {
-        let ledger = Ledger::new(100 * S);
-        let mut a = ledger.alloc(2).unwrap();
+        let memory = SampleMemory::with_budget(100 * S);
+        let mut a = memory.alloc(2).unwrap();
         assert!(a.push(0.1));
         assert!(a.push(0.2));
         assert!(!a.push(0.3));
@@ -260,20 +266,20 @@ mod tests {
 
     #[test]
     fn extend_takes_what_fits_and_drops_the_rest() {
-        let ledger = Ledger::new(100 * S);
-        let mut a = ledger.alloc(3).unwrap();
+        let memory = SampleMemory::with_budget(100 * S);
+        let mut a = memory.alloc(3).unwrap();
         assert_eq!(a.extend([0.1, 0.2]), 2);
         assert_eq!(a.extend([0.3, 0.4, 0.5]), 1);
         assert_eq!(a.extend([0.6]), 0);
         assert_eq!(&a[..], &[0.1, 0.2, 0.3]);
         assert_eq!(a.capacity(), 3);
-        assert_eq!(ledger.in_use(), 3 * S);
+        assert_eq!(memory.in_use(), 3 * S);
     }
 
     #[test]
     fn the_filled_part_can_be_written_in_place_and_cut_back() {
-        let ledger = Ledger::new(100 * S);
-        let mut a = ledger.alloc(4).unwrap();
+        let memory = SampleMemory::with_budget(100 * S);
+        let mut a = memory.alloc(4).unwrap();
         // The shape a library fill takes: zero to capacity, lend the
         // slice, keep what was written.
         a.extend(std::iter::repeat_n(0.0, a.capacity()));
@@ -284,13 +290,13 @@ mod tests {
         assert_eq!(&a[..], &[0.5, -0.5]);
         assert_eq!(a.capacity(), 4);
         assert_eq!(a.room(), 2);
-        assert_eq!(ledger.in_use(), 4 * S);
+        assert_eq!(memory.in_use(), 4 * S);
     }
 
     #[test]
     fn truncate_never_lengthens() {
-        let ledger = Ledger::new(100 * S);
-        let mut a = ledger.alloc(4).unwrap();
+        let memory = SampleMemory::with_budget(100 * S);
+        let mut a = memory.alloc(4).unwrap();
         a.extend([0.1, 0.2]);
         a.truncate(3);
         assert_eq!(a.len(), 2);

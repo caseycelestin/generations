@@ -2,11 +2,10 @@
 //!
 //! [`Project`] is the rules over its storage and keeps no copy: every
 //! change is on disk when the call returns, so there is no save step. It
-//! holds the `Ledger`, so every byte of audio it brings into RAM is paid
+//! holds a `SampleMemory`, so every byte of audio it brings into RAM is paid
 //! for. Project and engine never name each other; the caller carries a
 //! [`Sample`] between them.
 
-pub(crate) mod ledger;
 pub(crate) mod storage;
 
 use std::path::Path;
@@ -14,7 +13,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::audio::{AudioBuffer, ChannelLayout, Sample};
-use crate::project::ledger::{Ledger, OverBudgetError};
+use crate::memory::{OverBudgetError, SampleMemory};
 use storage::{Storage, StorageError};
 
 /// Minted by storage when a sample is added, never reused, and
@@ -40,7 +39,7 @@ pub enum ProjectError {
 
 pub struct Project {
     storage: Storage,
-    ledger: Ledger,
+    memory: SampleMemory,
 }
 
 impl Project {
@@ -50,7 +49,7 @@ impl Project {
     pub fn open(dir: &Path, budget: usize) -> Result<Self, ProjectError> {
         Ok(Self {
             storage: Storage::open(dir)?,
-            ledger: Ledger::new(budget),
+            memory: SampleMemory::with_budget(budget),
         })
     }
 
@@ -60,7 +59,7 @@ impl Project {
     pub fn load(&self, id: SampleId) -> Result<Sample, ProjectError> {
         let audio = self
             .storage
-            .audio(id, &self.ledger)?
+            .audio(id, &self.memory)?
             .ok_or(ProjectError::UnknownSample(id))?;
         Ok(Sample::new(audio))
     }
@@ -68,9 +67,9 @@ impl Project {
     /// An empty sample with room for `frames`, paid for in full now. It
     /// has no id until it is added.
     pub fn alloc(&self, layout: ChannelLayout, frames: usize) -> Result<Sample, ProjectError> {
-        // Saturating: the ledger refuses usize::MAX as over budget.
+        // Saturating: memory refuses usize::MAX samples, whose bytes overflow.
         let samples = frames.saturating_mul(layout.count());
-        let block = self.ledger.alloc(samples)?;
+        let block = self.memory.alloc(samples)?;
         let audio = AudioBuffer::new(layout, block)
             .unwrap_or_else(|_| unreachable!("an empty block is whole frames"));
         Ok(Sample::new(audio))
@@ -84,8 +83,8 @@ impl Project {
     }
 
     #[cfg(test)]
-    pub(crate) fn ledger(&self) -> &Ledger {
-        &self.ledger
+    pub(crate) fn memory(&self) -> &SampleMemory {
+        &self.memory
     }
 }
 
@@ -140,7 +139,7 @@ pub(crate) mod tests {
 
         let loaded = p.load(id).unwrap();
         assert_eq!(loaded.audio().samples(), ramp(4).samples());
-        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+        assert_eq!(p.memory().in_use(), ramp_bytes(4));
     }
 
     #[test]
@@ -150,7 +149,7 @@ pub(crate) mod tests {
         let loaded = p.load(id).unwrap();
 
         drop(loaded);
-        assert_eq!(p.ledger().in_use(), 0);
+        assert_eq!(p.memory().in_use(), 0);
     }
 
     #[test]
@@ -159,11 +158,11 @@ pub(crate) mod tests {
         let id = p.add_sample(&Sample::new(ramp(4))).unwrap();
         let a = p.load(id).unwrap();
         let b = p.load(id).unwrap();
-        assert_eq!(p.ledger().in_use(), 2 * ramp_bytes(4));
+        assert_eq!(p.memory().in_use(), 2 * ramp_bytes(4));
         drop(a);
-        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+        assert_eq!(p.memory().in_use(), ramp_bytes(4));
         drop(b);
-        assert_eq!(p.ledger().in_use(), 0);
+        assert_eq!(p.memory().in_use(), 0);
     }
 
     #[test]
@@ -178,7 +177,7 @@ pub(crate) mod tests {
             Err(ProjectError::Storage(StorageError::OverBudget { .. }))
         ));
         // Refused at the allocation: nothing was brought in and let go.
-        assert_eq!(p.ledger().in_use(), ramp_bytes(4));
+        assert_eq!(p.memory().in_use(), ramp_bytes(4));
     }
 
     #[test]
@@ -190,7 +189,7 @@ pub(crate) mod tests {
             p.load(bogus),
             Err(ProjectError::UnknownSample(id)) if id == bogus
         ));
-        assert_eq!(p.ledger().in_use(), 0);
+        assert_eq!(p.memory().in_use(), 0);
     }
 
     #[test]
@@ -198,9 +197,9 @@ pub(crate) mod tests {
         let (_dir, p) = project(usize::MAX);
         let sample = p.alloc(ChannelLayout::Stereo, 4).unwrap();
         assert_eq!(sample.audio().frames(), 0);
-        assert_eq!(p.ledger().in_use(), 2 * ramp_bytes(4));
+        assert_eq!(p.memory().in_use(), 2 * ramp_bytes(4));
         drop(sample);
-        assert_eq!(p.ledger().in_use(), 0);
+        assert_eq!(p.memory().in_use(), 0);
     }
 
     #[test]
@@ -214,7 +213,7 @@ pub(crate) mod tests {
             p.alloc(ChannelLayout::Stereo, usize::MAX),
             Err(ProjectError::OverBudget(_))
         ));
-        assert_eq!(p.ledger().in_use(), 0);
+        assert_eq!(p.memory().in_use(), 0);
     }
 
     #[test]
@@ -226,7 +225,7 @@ pub(crate) mod tests {
         drop(p);
 
         let p = Project::open(dir.path(), usize::MAX).unwrap();
-        assert_eq!(p.ledger().in_use(), 0, "nothing is in RAM");
+        assert_eq!(p.memory().in_use(), 0, "nothing is in RAM");
         assert!(
             p.storage.has_sample(id).unwrap(),
             "the sample is still there"
