@@ -11,7 +11,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
-| 6 | Recording: audio input as a new root | main out rebuilt on `src/engine/`, no `take` yet; inputs to come |
+| 6 | Recording: audio input as a new root | main out done on `src/engine/`, `take` included; inputs to come |
 | 7 | Input monitoring: hear the input through the output | to be rebuilt on `src/engine/` |
 | 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
 | 9 | Arrangement and more effects | |
@@ -140,7 +140,8 @@ or rejected instead. The history of how a shape was reached is in git.
   signature is the permission and tests need their own budgets.
 - **Track what scales with audio; bound the rest.** Fixed overhead (the
   manifest, the rings, the renderer's scratch and its voice pool) is not
-  counted; it is sized once by the caller. Counting the old input rings
+  counted; it is sized once by the caller, and the rings' list of handles
+  takes the ring back's size. Counting the old input rings
   was tried and reverted as one mechanism too many.
 - **The OS backs the figure.** Audio is ordinary heap memory; the
   guarantee is a cgroup reservation, no swap, and a budget set below what
@@ -178,12 +179,26 @@ or rejected instead. The history of how a shape was reached is in git.
   one. Named for what it is
   to the caller; `RendererHandle`, `Link` and `Remote` were rejected.
 - **Commands are optimistic; the audio thread is the authority on state.**
-  A send succeeds or reports the ring full; what then happened reaches the
-  handle through a report the renderer fills with one atomic store, not
-  through a ring. The ring back only carries the
-  audio thread's last references, to be freed on the control side, and
-  the rings code may only drop what comes back or hand it to the
-  feature's control module.
+  A send succeeds or reports the ring full; what then happened comes back
+  as an event on the ring back. A recording's state and its audio arrive
+  in one event, so a handle never sees an end before the take it hands
+  back; an atomic report beside the ring was used before and could show
+  `Ended` before the take could be collected. Voices still report through
+  an atomic `VoiceReport`; moving them onto events is decided, not built.
+- **Every message names its handle.** Both rings carry `Message<T>`, the
+  handle's `HandleId` and the data: `Message<Command>` out,
+  `Message<Event>` back. Commands carry no handle id: `Stop` stops the
+  sender's take. `Control` has an id of its own for what it sends.
+  Tickets minted per send were tried and dropped: they named messages,
+  not things, so a stop's own ticket and its take's state disagreed.
+- **`collect` delivers events by id.** `record` registers its id and a box
+  in a fixed list in the rings before it sends, under the same lock;
+  `collect` stores each event in the matching box and frees the record
+  once the event handing the spec back is in. The list takes the ring
+  back's size, so it never grows; the box is the handle's, allocated with
+  it. A growing map was rejected to keep the engine's memory fixed at
+  `create`, and a box carried in the spec, because the audio thread would
+  carry control-side state.
 - **Loaded audio is plain data.** Hold `Audio` and it is in RAM; drop it
   and its voices play out, its memory repaid once the last one's return
   is collected. `control.stop(&audio)` cuts them first. Each load is its
@@ -194,10 +209,14 @@ or rejected instead. The history of how a shape was reached is in git.
   disk even when it does not fit in RAM.
 - **Loading is synchronous** on the control thread. If it ever visibly
   stalls a panel, the fix is a worker thread, not async methods.
-- **Ids come from process-wide counters,** as `std::thread::ThreadId`
-  does: unique across every engine, in order, never reused. They are
-  minted before the send, so a refused command burns its id; nothing
-  reads the gaps.
+- **A `HandleId` comes from a counter in the rings,** an atomic outside
+  their lock so a handle can mint one while it holds a permit: unique
+  within one engine, in order, never reused. A refused `record` mints
+  none, since its checks come first. `VoiceId` is still process-wide,
+  from the `id!` macro, until voices move over.
+- **`create` takes plain sizes and panics on a zero**, as `slice::chunks`
+  does: a zero is a typo, not something to recover from. `NonZeroUsize`
+  parameters made every caller wrap its constants.
 - **`control/` and `realtime/` never import each other;** both import
   `protocol/`. The source tree is the architecture, drawn in the crate
   docs.
@@ -231,12 +250,14 @@ or rejected instead. The history of how a shape was reached is in git.
   place was taken). `Cut` is the sampler's umbrella: choke groups and
   retrigger will end voices the same way.
 - **Only plain things cross, both ways.** A play or a record carries a
-  spec: the audio's `Arc<AudioBuffer>`, the report, and for a voice its
-  id. Whatever ends or is refused goes back whole as a `Return`, so the
-  last reference is dropped on the control side.
+  spec: the audio's `Arc<AudioBuffer>`, and for a voice its report and
+  `VoiceId`. The renderer keeps the sender's id beside what it holds.
+  Whatever ends or is refused goes back whole in an `Event`, so the last
+  reference is dropped on the control side.
 - **The ring back never fills.** Every send drains it first, so between
   drains it holds at most every voice and the recording the renderer
-  holds, plus one return per queued command; `create` sizes it at that. Freeing a large buffer
+  holds, plus one event per queued command (a take's start, or its
+  refusal); `create` sizes it at that. Freeing a large buffer
   is a trip into the allocator and the kernel with no bound on its time,
   so it never happens on the audio thread.
 - **Commands are low level.** Operations on what the renderer holds,
@@ -251,8 +272,9 @@ or rejected instead. The history of how a shape was reached is in git.
   when the command is sent, so the address cannot name a later buffer.
 - **One concept, one name; the module says the side.** `Voice` is both
   the control-side handle and the render side's playing, as `io::Error`
-  and `fmt::Error`. `Return`, not `Released`, which clashes with an
-  envelope's release. The old engine said `Sound` and `SoundId`.
+  and `fmt::Error`. `Event` is the counterpart of `Command`; it replaced
+  `Return`, and `Released` before it clashed with an envelope's release.
+  The old engine said `Sound` and `SoundId`.
 - **Clip once, hard, last.** Same result on every device and offline; it is
   what hardware samplers do. A master gain or limiter goes before it.
 
@@ -278,21 +300,23 @@ input's ring must be freed on the control side like any other return.
   milliseconds, so it renders silence when idle. Audio can be dropped in
   any order: the last `Arc`, held by a voice, comes back on the ring back
   to be freed on the control side.
-- **The examples are `first_sound` and `engine`**, plain demonstration
-  code: no hardening or shared abstractions there. `first_sound` runs on a
-  device; `engine` shows every engine feature and compiles, and each new
+- **The examples are `first_sound`, `record` and `engine`**, plain
+  demonstration code: no hardening or shared abstractions there.
+  `first_sound` and `record` run on a device; `engine` shows every engine
+  feature and compiles, and each new
   feature is added to it in the same step. When the device exists, they
   move into a binary crate.
 
 ### Recording
 
-Built for the main out; `take` and recording inputs are not built yet.
+Built for the main out; recording inputs are not built yet.
 
-- **A recording is a handle, as a voice is.** `control.record(audio)`
-  returns a `Recording` with `stop`, `state` and `take`. Its report holds
-  the latest state: `Pending`, `Recording`, then `Ended(Full)` or
-  `Ended(Stopped)`, or `Refused`. The report is a copy of the voice's
-  until reports are made generic (see Deferred ideas).
+- **A recording is a handle, as a voice is, and one handle is one take.**
+  `control.record(audio)` returns a `Recording` with `stop`, `state` and
+  `take`. Its state is `Pending`, `Recording`, then `Ended(Full)` or
+  `Ended(Stopped)`, or `Refused`; the box behind it holds the last
+  `RecordingEvent`. Recording again is a new `record`, so a late stop or
+  event can never reach a newer take.
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
   length is a maximum, and reaching it ends the take `Full`, which is not
   an error. Only stereo audio is taken: the main out is stereo.
@@ -310,20 +334,20 @@ Built for the main out; `take` and recording inputs are not built yet.
 - **The main out is written as heard**, after each block is clipped, and
   the end-of-period clean-up ends a take whose audio is full. `record`
   clears the audio and prefaults it first.
-- **`Stop` names its take by buffer address**, so an old handle cannot
-  stop a newer take. That is sound only while the take cannot be freed
-  before the stop is applied; today `collect` frees a returned take, so
-  it holds once passback keeps the take until `take`.
+- **A recording's event is its state, plus its spec when the renderer
+  lets go:** `RecordingEvent { state, spec: Option<RecordingSpec> }`, the
+  spec back with `Refused` and `Ended` only. One state type is shared with
+  the handle; a separate wire enum (`Started`, `Refused(spec)`,
+  `Ended(why, spec)`) enforced the pairing in its types but duplicated the
+  states.
+- **`take` polls.** `take(&mut self) -> Option<Audio>` collects, then
+  takes the spec out of the box: the audio once the take ends, at once if
+  it was refused, `None` before and after. `take(self) -> Result<Audio,
+  Self>` was replaced: polling it moved the handle out and back each time.
+  A mailbox or write-once `Slot` in the spec, `oneshot` (its sender frees
+  on the audio thread) and `OnceLock` (it only lends) were ruled out.
 - **Dropping a recording stops it**, unlike a voice, which plays out: no
   one could take its audio. A stop lost to a full ring ends `Full`.
-- **How a take reaches `take` is open (next PR).** Either a mailbox in
-  the spec, which the handle shares and `collect` fills on the control
-  side: no new primitive, provided the renderer hands the spec back
-  before it reports the end, so a handle that sees an end always finds
-  the take. Or a write-once `Slot<T>` the renderer moves the audio into:
-  `unsafe` inside the cell, checked with Miri and loom. Ruled out:
-  `oneshot`, whose sender frees the channel on the audio thread when the
-  receiver is gone, and `OnceLock`, which only lends the value.
 - **Arming comes later, with the features that need it.** An armed
   recording is held by the renderer, which starts it itself: at the frame
   the input crosses a level (threshold start), on the next beat or bar
@@ -351,8 +375,10 @@ Built on `src/engine/`: voices, block mixing, the ring back (see the
 render side, above) and recording of the main out (see Recording).
 
 What is left:
-- **Recording** (see Recording, above): passing a take back to `take`,
-  then recording inputs.
+- **Voices onto events** (see the two sides, above): the end reason on
+  the ring, `VoiceReport` and `VoiceId` gone, the pool ordered by
+  `HandleId`.
+- **Recording inputs** (see Recording, above).
 - **Inputs and monitoring** (see above), with the capture thread.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on
   the command.
@@ -410,10 +436,4 @@ The project does not know about tiers.
   atomic could report a take's progress.
 - **Saving a take as loaded audio**, a copy into a right-sized buffer,
   for playing a resample at once without reading it back from disk.
-- **Generic reports.** `VoiceReport` and `RecordingReport` become one
-  `Report<T>`, and a `reason!` macro generates each state enum with its
-  `u8` conversions from the variant list, so a feature writes only that
-  list. A macro for the conversions because safe Rust cannot turn a `u8`
-  back into an enum without a `match` per type; a generic for the atomic
-  because it is the same for every feature.
 - **Hardware monitoring** on the target's codec, if it has it.

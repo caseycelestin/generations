@@ -207,6 +207,10 @@ impl Audio {
         self.0
     }
 
+    pub(crate) fn from_shared(audio: Arc<AudioBuffer>) -> Self {
+        Self(audio)
+    }
+
     pub fn layout(&self) -> ChannelLayout {
         self.0.layout()
     }

@@ -1,15 +1,15 @@
 //! A recording: the main out written into audio the renderer holds.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use thiserror::Error;
 
 use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
-use crate::engine::protocol::BufferAddress;
+use crate::engine::protocol::HandleId;
 use crate::engine::protocol::recording::{
-    RecordingCommand, RecordingReport, RecordingSpec, RecordingState,
+    RecordingCommand, RecordingEvent, RecordingSpec, RecordingState,
 };
 use crate::layout::ChannelLayout;
 
@@ -38,8 +38,9 @@ impl RecordError {
 #[derive(Debug)]
 pub struct Recording {
     rings: SharedRings,
-    address: BufferAddress,
-    report: Arc<RecordingReport>,
+    id: HandleId,
+    /// The last one `collect` heard for this recording.
+    event: Arc<Mutex<RecordingEvent>>,
 }
 
 impl Recording {
@@ -47,43 +48,54 @@ impl Recording {
         if audio.layout() != ChannelLayout::Stereo {
             return Err(RecordError::NotStereo(audio));
         }
-        let Ok(permit) = rings.reserve() else {
-            return Err(RecordError::CommandsFull(audio));
-        };
-        // Only this side clones or drops the audio, the caller gave up
-        // theirs, and the permit has just collected under the lock, so the
-        // count cannot rise before the send.
+        // Collected first, so ended voices have let go. The caller gave up
+        // theirs, so nothing can clone it: the count can only fall before
+        // the send.
+        rings.collect();
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
+        let Ok(mut permit) = rings.reserve() else {
+            return Err(RecordError::CommandsFull(audio));
+        };
+        let id = rings.next_id();
         let mut audio = audio.into_shared();
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
-        let address = BufferAddress::of(&audio);
-        let report = Arc::new(RecordingReport::new());
-        permit.send(RecordingCommand::Start(RecordingSpec {
-            audio,
-            report: Arc::clone(&report),
+        let event = Arc::new(Mutex::new(RecordingEvent {
+            state: RecordingState::Pending,
+            spec: None,
         }));
-        Ok(Self {
-            rings,
-            address,
-            report,
-        })
+        permit.register(id, Arc::clone(&event));
+        permit.send(id, RecordingCommand::Start(RecordingSpec { audio }));
+        Ok(Self { rings, id, event })
     }
 
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings.send(RecordingCommand::Stop(self.address))
+        self.rings.send(self.id, RecordingCommand::Stop)
     }
 
     pub fn state(&self) -> RecordingState {
-        self.report.state()
+        self.rings.collect();
+        self.event
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state
     }
 
-    /// Until the recording has ended the handle comes back, to ask again.
-    pub fn take(self) -> Result<Audio, Self> {
-        todo!("hand back the audio once it has come back")
+    /// The audio, once the renderer has let go of it: after the recording
+    /// ends, or at once if it was refused. `None` until then, and after it
+    /// has been taken.
+    pub fn take(&mut self) -> Option<Audio> {
+        self.rings.collect();
+        let spec = self
+            .event
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .spec
+            .take();
+        spec.map(|spec| Audio::from_shared(spec.audio))
     }
 }
 
@@ -93,7 +105,7 @@ impl Recording {
 impl Drop for Recording {
     fn drop(&mut self) {
         if matches!(
-            self.report.state(),
+            self.state(),
             RecordingState::Pending | RecordingState::Recording
         ) {
             let _ = self.stop();

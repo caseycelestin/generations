@@ -7,21 +7,25 @@ use std::num::NonZeroUsize;
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
-use crate::engine::protocol::BufferAddress;
-use crate::engine::protocol::Return;
-use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceId, VoiceSpec};
+use crate::engine::protocol::{BufferAddress, Event, HandleId, Message};
 use crate::layout::ChannelLayout;
 
 #[derive(Debug)]
 pub(crate) struct Voice {
+    id: HandleId,
     spec: VoiceSpec,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(spec: VoiceSpec) -> Self {
-        Self { spec, position: 0 }
+    pub(crate) fn new(id: HandleId, spec: VoiceSpec) -> Self {
+        Self {
+            id,
+            spec,
+            position: 0,
+        }
     }
 
     /// Silence once the audio runs out. Mono goes to both sides at full
@@ -56,9 +60,12 @@ impl Voice {
     }
 
     /// The one way a voice leaves.
-    pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Return>) {
+    pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Message<Event>>) {
         self.spec.report.end(why);
-        let pushed = to_control.push(Return::Voice(self.spec));
+        let pushed = to_control.push(Message {
+            id: self.id,
+            data: VoiceEvent::Ended(self.spec).into(),
+        });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 }
@@ -134,11 +141,14 @@ mod tests {
     use crate::testing::buffer;
 
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
-        Voice::new(VoiceSpec {
-            id: VoiceId::next(),
-            audio: Arc::new(buffer(layout, samples)),
-            report: Arc::new(VoiceReport::new()),
-        })
+        Voice::new(
+            HandleId(0),
+            VoiceSpec {
+                id: VoiceId::next(),
+                audio: Arc::new(buffer(layout, samples)),
+                report: Arc::new(VoiceReport::new()),
+            },
+        )
     }
 
     fn voices(count: usize) -> Voices {

@@ -4,7 +4,7 @@
 //! user intents; handles translate one into the other. Only plain data
 //! crosses: audio, ids, values, and reports the renderer fills with one
 //! atomic store. Each feature has its own file and its own variant in
-//! [`Command`] and [`Return`], since each ring carries one type.
+//! [`Command`] and [`Event`], since each ring carries one type.
 
 /// An id type minted by `next()` from its own process-wide counter, like
 /// `ThreadId`: unique and ordered across every engine, never reused. A
@@ -33,8 +33,15 @@ use crate::audio::AudioBuffer;
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use recording::{RecordingCommand, RecordingSpec};
-use voice::{VoiceCommand, VoiceSpec};
+use recording::{RecordingCommand, RecordingEvent};
+use voice::{VoiceCommand, VoiceEvent};
+
+/// What a ring carries: whose it is, and the data for it.
+#[derive(Debug)]
+pub(crate) struct Message<T> {
+    pub(crate) id: HandleId,
+    pub(crate) data: T,
+}
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -54,15 +61,32 @@ impl From<RecordingCommand> for Command {
     }
 }
 
-/// Handed back so the last reference is dropped on the control side:
-/// freeing has no time bound and must not happen on the audio thread. The
-/// report is filled in before its spec comes back.
+/// What happened in the renderer. A spec in it is handed back so its last
+/// reference is dropped on the control side: freeing has no time bound and
+/// must not happen on the audio thread.
 #[derive(Debug)]
-pub(crate) enum Return {
-    Voice(VoiceSpec),
-    /// Refused or ended.
-    Recording(RecordingSpec),
+pub(crate) enum Event {
+    Voice(VoiceEvent),
+    Recording(RecordingEvent),
 }
+
+impl From<VoiceEvent> for Event {
+    fn from(event: VoiceEvent) -> Self {
+        Self::Voice(event)
+    }
+}
+
+impl From<RecordingEvent> for Event {
+    fn from(event: RecordingEvent) -> Self {
+        Self::Recording(event)
+    }
+}
+
+/// Names one handle's thing (a voice, a take) on both sides: what the
+/// renderer sends back about it carries this id. Minted in order by the
+/// rings, so unique within one engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct HandleId(pub(crate) u64);
 
 /// Names audio to the renderer without sending it, so nothing comes back
 /// to be freed. Sound only while the audio cannot be freed before the

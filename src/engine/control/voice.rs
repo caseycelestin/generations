@@ -5,11 +5,14 @@ use std::sync::Arc;
 use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
+use crate::engine::protocol::HandleId;
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceReport, VoiceSpec};
 
 #[derive(Debug)]
 pub struct Voice {
     id: VoiceId,
+    /// Sends with this; `id` names the voice until voices take it over.
+    handle_id: HandleId,
     rings: SharedRings,
     report: Arc<VoiceReport>,
 }
@@ -25,19 +28,26 @@ pub enum VoiceState {
 impl Voice {
     pub(crate) fn play(rings: SharedRings, audio: &Audio) -> Result<Self, ControlError> {
         let id = VoiceId::next();
+        let handle_id = rings.next_id();
         let report = Arc::new(VoiceReport::new());
         let spec = VoiceSpec {
             id,
             audio: Arc::clone(audio.shared()),
             report: Arc::clone(&report),
         };
-        rings.send(VoiceCommand::Add(spec))?;
-        Ok(Self { id, rings, report })
+        rings.send(handle_id, VoiceCommand::Add(spec))?;
+        Ok(Self {
+            id,
+            handle_id,
+            rings,
+            report,
+        })
     }
 
     /// Dropping the handle instead lets the voice play out.
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings.send(VoiceCommand::Remove(self.id))
+        self.rings
+            .send(self.handle_id, VoiceCommand::Remove(self.id))
     }
 
     pub fn state(&self) -> VoiceState {

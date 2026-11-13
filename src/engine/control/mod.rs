@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::audio::Audio;
 use crate::engine::protocol::voice::VoiceCommand;
-use crate::engine::protocol::{BufferAddress, Command, Return};
+use crate::engine::protocol::{BufferAddress, Command, Event, HandleId, Message};
 use rings::SharedRings;
 
 #[derive(Debug, Error)]
@@ -27,13 +27,17 @@ pub enum ControlError {
 #[derive(Debug, Clone)]
 pub struct Control {
     rings: SharedRings,
+    id: HandleId,
 }
 
 impl Control {
-    pub(crate) fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
-        Self {
-            rings: SharedRings::new(to_renderer, from_renderer),
-        }
+    pub(crate) fn new(
+        to_renderer: Producer<Message<Command>>,
+        from_renderer: Consumer<Message<Event>>,
+    ) -> Self {
+        let rings = SharedRings::new(to_renderer, from_renderer);
+        let id = rings.next_id();
+        Self { rings, id }
     }
 
     pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
@@ -43,12 +47,12 @@ impl Control {
     /// Stops every voice playing `audio`.
     pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
         let address = BufferAddress::of(audio.shared());
-        self.rings.send(VoiceCommand::RemoveAudio(address))
+        self.rings.send(self.id, VoiceCommand::RemoveAudio(address))
     }
 
     /// Stops every voice; a recording runs on.
     pub fn stop_all(&self) -> Result<(), ControlError> {
-        self.rings.send(VoiceCommand::RemoveAll)
+        self.rings.send(self.id, VoiceCommand::RemoveAll)
     }
 
     /// Records the main out into `audio`, from empty. By value: the
