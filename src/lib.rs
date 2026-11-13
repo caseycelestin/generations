@@ -66,5 +66,5 @@ pub mod project;
 pub(crate) mod testing;
 
 pub use audio::{Audio, AudioMemory, OverBudgetError};
-pub use layout::{AudioError, ChannelLayout};
+pub use layout::{ChannelLayout, ChannelLayoutError};
 pub use project::{Project, ProjectError, SampleId};
