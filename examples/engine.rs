@@ -54,9 +54,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     recording.stop()?;
 
-    // The audio thread reports when a recording has ended.
+    // The audio thread reports each change: started, refused, ended.
     match recording.state() {
+        RecordingState::Pending => println!("not started yet"),
         RecordingState::Recording => println!("still recording"),
+        RecordingState::Refused => println!("refused: the recorder was busy"),
         RecordingState::Ended(why) => println!("recording ended: {why:?}"),
     }
 

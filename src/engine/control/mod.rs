@@ -4,7 +4,7 @@ mod recording;
 mod rings;
 mod voice;
 
-pub use recording::{Recording, RecordingState};
+pub use recording::Recording;
 pub use voice::{Voice, VoiceState};
 
 use rtrb::{Consumer, Producer};
@@ -54,6 +54,7 @@ impl Control {
 
     /// Records the main out into `audio`, from empty, at the renderer's
     /// next period. By value: the renderer writes it until it is handed back.
+    /// Refused while another recording runs, as its state shows.
     pub fn record(&self, audio: Audio) -> Result<Recording, ControlError> {
         Recording::record(self.rings.clone(), audio)
     }

@@ -5,20 +5,12 @@ use std::sync::Arc;
 use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
-use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd, RecordingReport};
+use crate::engine::protocol::recording::{RecordingCommand, RecordingReport, RecordingState};
 
 #[derive(Debug)]
 pub struct Recording {
     rings: SharedRings,
     report: Arc<RecordingReport>,
-}
-
-/// What the audio thread last said about a recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordingState {
-    /// Not reported ended yet: recording, or about to.
-    Recording,
-    Ended(RecordingEnd),
 }
 
 impl Recording {
@@ -35,10 +27,7 @@ impl Recording {
 
     /// What the audio thread has said, as of now.
     pub fn state(&self) -> RecordingState {
-        match self.report.ended() {
-            Some(why) => RecordingState::Ended(why),
-            None => RecordingState::Recording,
-        }
+        self.report.state()
     }
 
     /// The recorded audio, once the recording has ended. Before then the

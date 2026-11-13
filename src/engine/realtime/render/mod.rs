@@ -4,11 +4,14 @@ mod math;
 mod voices;
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
-use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
+use crate::engine::protocol::recording::{
+    RecordingCommand, RecordingEnd, RecordingReport, RecordingState,
+};
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
 use crate::engine::protocol::{Command, Return};
 use math::{add, hard_clip};
@@ -22,6 +25,8 @@ pub struct Renderer {
     from_control: Consumer<Command>,
     to_control: Producer<Return>,
     voices: Voices,
+    /// The one recording, if running.
+    recording: Option<Arc<RecordingReport>>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -45,6 +50,7 @@ impl Renderer {
             from_control,
             to_control,
             voices: Voices::new(voices),
+            recording: None,
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -91,12 +97,21 @@ impl Renderer {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
-                // Placeholder until recording is implemented: ends at once,
-                // and dropping the report here can free it on the audio thread.
+                // Placeholder until reports go back on the ring: dropping a
+                // refused or stopped one here can free it on the audio thread.
                 Command::Recording(RecordingCommand::Start(report)) => {
-                    report.end(RecordingEnd::Stopped);
+                    if self.recording.is_some() {
+                        report.set(RecordingState::Refused);
+                    } else {
+                        report.set(RecordingState::Recording);
+                        self.recording = Some(report);
+                    }
                 }
-                Command::Recording(RecordingCommand::Stop) => {}
+                Command::Recording(RecordingCommand::Stop) => {
+                    if let Some(stopped) = self.recording.take() {
+                        stopped.set(RecordingState::Ended(RecordingEnd::Stopped));
+                    }
+                }
             }
         }
     }

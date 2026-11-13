@@ -9,35 +9,51 @@ pub(crate) enum RecordingCommand {
     Stop,
 }
 
-/// The audio thread's report on a recording: empty while it records, then
-/// why it ended. A copy of `VoiceReport` until reports are made generic.
+/// The audio thread's report on a recording: its latest state, which
+/// only moves forward. Starts `Pending`; after that only the renderer writes.
 #[derive(Debug)]
 pub(crate) struct RecordingReport(AtomicU8);
 
 impl RecordingReport {
-    const RECORDING: u8 = 0;
-
     pub(crate) fn new() -> Self {
-        Self(AtomicU8::new(Self::RECORDING))
+        Self(AtomicU8::new(Self::code(RecordingState::Pending)))
     }
 
-    /// For the renderer, once, when the recording ends.
-    pub(crate) fn end(&self, why: RecordingEnd) {
-        let code = match why {
-            RecordingEnd::Full => 1,
-            RecordingEnd::Stopped => 2,
-        };
-        self.0.store(code, Ordering::Release);
+    /// For the renderer, at each change.
+    pub(crate) fn set(&self, state: RecordingState) {
+        self.0.store(Self::code(state), Ordering::Release);
     }
 
-    /// `None` while it records.
-    pub(crate) fn ended(&self) -> Option<RecordingEnd> {
+    pub(crate) fn state(&self) -> RecordingState {
         match self.0.load(Ordering::Acquire) {
-            1 => Some(RecordingEnd::Full),
-            2 => Some(RecordingEnd::Stopped),
-            _ => None,
+            1 => RecordingState::Recording,
+            2 => RecordingState::Refused,
+            3 => RecordingState::Ended(RecordingEnd::Full),
+            4 => RecordingState::Ended(RecordingEnd::Stopped),
+            _ => RecordingState::Pending,
         }
     }
+
+    fn code(state: RecordingState) -> u8 {
+        match state {
+            RecordingState::Pending => 0,
+            RecordingState::Recording => 1,
+            RecordingState::Refused => 2,
+            RecordingState::Ended(RecordingEnd::Full) => 3,
+            RecordingState::Ended(RecordingEnd::Stopped) => 4,
+        }
+    }
+}
+
+/// What the audio thread last said about a recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingState {
+    /// Sent; the renderer has not started it yet.
+    Pending,
+    Recording,
+    /// Never started: the recorder was busy.
+    Refused,
+    Ended(RecordingEnd),
 }
 
 /// Why a recording ended.
@@ -54,16 +70,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_new_report_has_not_ended() {
-        assert_eq!(RecordingReport::new().ended(), None);
+    fn a_new_report_is_pending() {
+        assert_eq!(RecordingReport::new().state(), RecordingState::Pending);
     }
 
     #[test]
-    fn each_ending_reads_back_as_itself() {
-        for why in [RecordingEnd::Full, RecordingEnd::Stopped] {
+    fn each_state_reads_back_as_itself() {
+        for state in [
+            RecordingState::Pending,
+            RecordingState::Recording,
+            RecordingState::Refused,
+            RecordingState::Ended(RecordingEnd::Full),
+            RecordingState::Ended(RecordingEnd::Stopped),
+        ] {
             let report = RecordingReport::new();
-            report.end(why);
-            assert_eq!(report.ended(), Some(why));
+            report.set(state);
+            assert_eq!(report.state(), state);
         }
     }
 }
