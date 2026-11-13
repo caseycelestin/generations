@@ -1,8 +1,10 @@
 //! The control side: runs on UI or event threads. May lock and allocate.
 
+mod recording;
 mod rings;
 mod voice;
 
+pub use recording::{Recording, RecordingState};
 pub use voice::{Voice, VoiceState};
 
 use rtrb::{Consumer, Producer};
@@ -48,6 +50,12 @@ impl Control {
     /// Stops every voice, at the renderer's next period.
     pub fn stop_all(&self) -> Result<(), ControlError> {
         self.rings.send(VoiceCommand::RemoveAll)
+    }
+
+    /// Records the main out into `audio`, from empty, at the renderer's
+    /// next period. By value: the renderer writes it until it is handed back.
+    pub fn record(&self, audio: Audio) -> Result<Recording, ControlError> {
+        Recording::record(self.rings.clone(), audio)
     }
 
     /// Frees what the renderer has handed back, returning it to

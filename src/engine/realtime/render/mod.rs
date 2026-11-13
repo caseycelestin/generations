@@ -8,6 +8,7 @@ use std::num::NonZeroUsize;
 use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
+use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
 use crate::engine::protocol::{Command, Return};
 use math::{add, hard_clip};
@@ -90,6 +91,12 @@ impl Renderer {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
+                // Placeholder until recording is implemented: ends at once,
+                // and dropping the report here can free it on the audio thread.
+                Command::Recording(RecordingCommand::Start(report)) => {
+                    report.end(RecordingEnd::Stopped);
+                }
+                Command::Recording(RecordingCommand::Stop) => {}
             }
         }
     }

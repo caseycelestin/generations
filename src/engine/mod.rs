@@ -6,7 +6,8 @@ mod control;
 mod protocol;
 mod realtime;
 
-pub use control::{Control, ControlError, Voice, VoiceState};
+pub use control::{Control, ControlError, Recording, RecordingState, Voice, VoiceState};
+pub use protocol::recording::RecordingEnd;
 pub use protocol::voice::VoiceEnd;
 pub use realtime::render::Renderer;
 

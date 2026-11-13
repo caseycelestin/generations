@@ -34,18 +34,27 @@ macro_rules! id {
     };
 }
 
+pub(crate) mod recording;
 pub(crate) mod voice;
 
+use recording::RecordingCommand;
 use voice::{VoiceCommand, VoiceReport};
 
 #[derive(Debug)]
 pub(crate) enum Command {
     Voice(VoiceCommand),
+    Recording(RecordingCommand),
 }
 
 impl From<VoiceCommand> for Command {
     fn from(command: VoiceCommand) -> Self {
         Self::Voice(command)
+    }
+}
+
+impl From<RecordingCommand> for Command {
+    fn from(command: RecordingCommand) -> Self {
+        Self::Recording(command)
     }
 }
 
