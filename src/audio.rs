@@ -13,6 +13,7 @@
 //! side mixes in, so a read is a slice and nothing converts.
 
 use std::fmt;
+use std::hint;
 use std::mem::size_of;
 use std::ops::Range;
 use std::sync::Arc;
@@ -172,6 +173,21 @@ impl AudioBuffer {
         self.data.truncate(self.frames() * self.layout.count());
         debug_assert_eq!(self.data.capacity(), capacity, "a buffer grew");
         self.frames() - before
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    /// Writes the unfilled room once, so the pages behind it are backed.
+    /// Fresh memory is only reserved: the first write to each page stalls
+    /// while the kernel finds one, which must not happen on the audio thread.
+    pub(crate) fn prefault(&mut self) {
+        let room = self.data.spare_capacity_mut();
+        for sample in room.iter_mut() {
+            sample.write(0.0);
+        }
+        hint::black_box(room);
     }
 }
 

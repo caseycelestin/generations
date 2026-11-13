@@ -55,9 +55,13 @@ impl Recording {
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
+        let mut audio = audio.into_shared();
+        let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
+        buffer.clear();
+        buffer.prefault();
         let report = Arc::new(RecordingReport::new());
         permit.send(RecordingCommand::Start(RecordingSpec {
-            audio: audio.into_shared(),
+            audio,
             report: Arc::clone(&report),
         }));
         Ok(Self { rings, report })
