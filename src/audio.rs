@@ -142,6 +142,11 @@ impl AudioBuffer {
         self.data.len() / self.layout.count()
     }
 
+    /// No room left for a whole frame.
+    pub(crate) fn is_full(&self) -> bool {
+        self.data.capacity() - self.data.len() < self.layout.count()
+    }
+
     /// The samples of frames `frames`, interleaved. This is how playback
     /// reads: a period's worth at a time, straight from the buffer.
     ///

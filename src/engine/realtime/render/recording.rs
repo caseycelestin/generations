@@ -28,6 +28,10 @@ impl Recording {
         }
     }
 
+    pub(crate) fn finished(&self) -> bool {
+        self.spec.audio.is_full()
+    }
+
     /// The one way a recording leaves: reports `why`, then hands its audio
     /// and report back to be freed on the control side, never here.
     pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Return>) {

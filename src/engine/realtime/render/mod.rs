@@ -115,10 +115,14 @@ impl Renderer {
         }
     }
 
-    /// End-of-period housekeeping: ends every voice that played to its last frame.
+    /// End-of-period housekeeping: ends every voice that played to its last
+    /// frame, and the recording once its audio is full.
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
             voice.end(VoiceEnd::Finished, &mut self.to_control);
+        }
+        if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
+            full.end(RecordingEnd::Full, &mut self.to_control);
         }
     }
 }

@@ -10,10 +10,14 @@ use crate::audio::Audio;
 use crate::engine::protocol::recording::{
     RecordingCommand, RecordingReport, RecordingSpec, RecordingState,
 };
+use crate::layout::ChannelLayout;
 
 /// A refused `record`, holding the audio it was given.
 #[derive(Debug, Error)]
 pub enum RecordError {
+    /// The main out is stereo, so mono audio cannot hold it.
+    #[error("recording needs stereo audio")]
+    NotStereo(Audio),
     /// A voice still holds the audio, so it cannot be written. Stop its
     /// voices and try again.
     #[error("a voice still holds the audio")]
@@ -26,7 +30,7 @@ pub enum RecordError {
 impl RecordError {
     pub fn into_audio(self) -> Audio {
         match self {
-            Self::AudioInUse(audio) | Self::CommandsFull(audio) => audio,
+            Self::NotStereo(audio) | Self::AudioInUse(audio) | Self::CommandsFull(audio) => audio,
         }
     }
 }
@@ -39,6 +43,9 @@ pub struct Recording {
 
 impl Recording {
     pub(crate) fn record(rings: SharedRings, audio: Audio) -> Result<Self, RecordError> {
+        if audio.layout() != ChannelLayout::Stereo {
+            return Err(RecordError::NotStereo(audio));
+        }
         let Ok(permit) = rings.reserve() else {
             return Err(RecordError::CommandsFull(audio));
         };
