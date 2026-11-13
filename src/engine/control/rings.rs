@@ -60,33 +60,12 @@ impl Rings {
             .map_err(|PushError::Full(command)| command)
     }
 
-    /// Collects, then pushes all of `commands` or none.
-    pub(crate) fn send_all(
-        &mut self,
-        commands: impl ExactSizeIterator<Item = Command>,
-    ) -> Result<(), Full> {
-        self.collect();
-        if self.to_renderer.slots() < commands.len() {
-            return Err(Full);
-        }
-        for command in commands {
-            self.to_renderer
-                .push(command)
-                .expect("room was checked, and this is the only producer");
-        }
-        Ok(())
-    }
-
     /// Frees everything handed back.
     pub(crate) fn collect(&mut self) {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {
-                Return::Voice { .. } => {}
+                Return::Voice { audio, report } => drop((audio, report)),
             }
         }
     }
 }
-
-/// No room for the whole batch; nothing was sent.
-#[derive(Debug)]
-pub(crate) struct Full;

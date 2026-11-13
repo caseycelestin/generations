@@ -390,6 +390,26 @@ is needed.
   asking: `is_recording()` and `last_take()` poll, from a panel's tick.
   Dropping the handle mid-take marks the take abandoned, and collect
   drops it on arrival.
+- **In `src/engine/`, how a take reaches its handle is undecided.** A
+  voice's outcome reaches its handle through a shared report: one atomic
+  byte the renderer stores and the handle loads, with no ring. The return
+  ring only carries things back to be freed. A take could follow the
+  report pattern with a write-once `Slot<T>` behind an `Arc`: the
+  renderer moves the buffer in (wins EMPTY -> WRITING, publishes READY
+  with Release), the handle takes it out once (wins READY -> TAKEN with
+  Acquire), and the renderer's `Arc` goes back on the return ring, so
+  nothing is freed on the audio thread. A byte can be copied by both
+  sides; a buffer must move once, hence the cell, and `take()` returns it
+  once rather than reading it repeatedly. The cell needs `unsafe` (an
+  `UnsafeCell` and `unsafe impl Sync`), but only inside `Slot`: its
+  fields are private and `put`/`take` are sound in any order (a second
+  put hands the value back), so its `// SAFETY:` comments guard edits to
+  `Slot`, not its callers. Check it with Miri and loom. Ruled out:
+  `oneshot`, whose sender frees the channel when the receiver is gone,
+  which would be on the audio thread; `OnceLock`, which only lends the
+  value. The alternative is the path above: the take rides the return
+  ring and collect hands it to the recording feature, with no new
+  primitive but delivery only at a collect.
 - **No handle per take.** The recorder holds one take at a time, so its
   state is the take's; a `Take` handle borrowing the recorder would make
   the panel's state self-referential.
