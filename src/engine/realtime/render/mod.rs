@@ -86,7 +86,7 @@ impl Renderer {
 
     /// End-of-period housekeeping: ends every voice that played to its last frame.
     fn clean_up(&mut self) {
-        for voice in self.voices.pop_finished() {
+        for voice in self.voices.extract_if(|voice| voice.finished()) {
             voice.end(VoiceEnd::Finished, &mut self.to_control);
         }
     }

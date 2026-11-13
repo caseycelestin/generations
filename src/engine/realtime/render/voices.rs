@@ -48,7 +48,7 @@ impl Voice {
     }
 
     /// Its last frame has been rendered.
-    fn finished(&self) -> bool {
+    pub(crate) fn finished(&self) -> bool {
         self.position == self.spec.audio.frames()
     }
 
@@ -80,18 +80,6 @@ impl Voices {
         }
     }
 
-    /// Every playing voice.
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
-        self.places.iter_mut().flatten()
-    }
-
-    /// Takes out every voice that has played to its last frame.
-    pub(crate) fn pop_finished(&mut self) -> impl Iterator<Item = Voice> + '_ {
-        self.places
-            .iter_mut()
-            .filter_map(|place| place.take_if(|voice| voice.finished()))
-    }
-
     /// Takes a free place, or the oldest voice's place, returning the
     /// voice replaced.
     pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
@@ -112,6 +100,11 @@ impl Voices {
         }
     }
 
+    /// Every playing voice.
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
+        self.places.iter_mut().flatten()
+    }
+
     /// Takes out the voice `id`, if it is still here.
     pub(crate) fn remove(&mut self, id: VoiceId) -> Option<Voice> {
         let found = self
@@ -119,6 +112,17 @@ impl Voices {
             .iter_mut()
             .find(|place| matches!(place, Some(voice) if voice.spec.id == id));
         found.and_then(Option::take)
+    }
+
+    /// Takes out every voice `test` picks, as `Vec::extract_if`: stopped
+    /// early, the rest stay.
+    pub(crate) fn extract_if(
+        &mut self,
+        mut test: impl FnMut(&mut Voice) -> bool,
+    ) -> impl Iterator<Item = Voice> {
+        self.places
+            .iter_mut()
+            .filter_map(move |place| place.take_if(|voice| test(voice)))
     }
 }
 
@@ -216,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn pop_finished_takes_only_finished_voices() {
+    fn extract_if_takes_only_the_voices_picked() {
         let mut voices = voices(2);
         let short = voice(ChannelLayout::Mono, &[0.0]);
         let short_id = short.spec.id;
@@ -226,8 +230,11 @@ mod tests {
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let popped: Vec<VoiceId> = voices.pop_finished().map(|voice| voice.spec.id).collect();
-        assert_eq!(popped, [short_id]);
+        let extracted: Vec<VoiceId> = voices
+            .extract_if(|voice| voice.finished())
+            .map(|voice| voice.spec.id)
+            .collect();
+        assert_eq!(extracted, [short_id]);
         assert_eq!(voices.iter_mut().count(), 1);
     }
 }
