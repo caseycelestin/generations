@@ -11,6 +11,8 @@ pub(crate) enum VoiceCommand {
     /// Stop the voice, if it is still playing.
     Remove(VoiceId),
     RemoveAll,
+    /// Stop every voice playing this audio.
+    RemoveAudio(BufferAddress),
 }
 
 /// A voice as asked for: what to play and where to report. Fixed for the
@@ -26,6 +28,19 @@ id! {
     /// One playing of a sample. The lowest id is the oldest; a stale
     /// remove names nothing and does nothing.
     VoiceId
+}
+
+/// Names audio to the renderer without sending it, so nothing comes back
+/// to be freed. Sent while the caller still holds the audio, so the
+/// address is still that audio's when the command is applied: a later
+/// buffer at the same address is started by a play behind it on the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BufferAddress(usize);
+
+impl BufferAddress {
+    pub(crate) fn of(audio: &Arc<AudioBuffer>) -> Self {
+        Self(Arc::as_ptr(audio) as usize)
+    }
 }
 
 /// Why a voice ended.

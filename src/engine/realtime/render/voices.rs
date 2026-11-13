@@ -9,7 +9,7 @@ use rtrb::Producer;
 use super::{Frame, Renderer};
 use crate::audio::ChannelLayout;
 use crate::engine::protocol::Return;
-use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{BufferAddress, VoiceEnd, VoiceId, VoiceSpec};
 
 /// A voice while it plays.
 #[derive(Debug)]
@@ -45,6 +45,10 @@ impl Voice {
         }
         silence.fill([0.0; Renderer::CHANNELS]);
         self.position = end;
+    }
+
+    pub(crate) fn plays(&self, audio: BufferAddress) -> bool {
+        BufferAddress::of(&self.spec.audio) == audio
     }
 
     /// Its last frame has been rendered.
@@ -182,6 +186,14 @@ mod tests {
         voice.render(&mut scratch);
         voice.render(&mut scratch);
         assert_eq!(scratch, [[3.0, 3.0], [4.0, 4.0]]);
+    }
+
+    #[test]
+    fn a_voice_plays_only_its_own_audio() {
+        let voice = voice(ChannelLayout::Mono, &[0.0]);
+        let other = Arc::new(audio(ChannelLayout::Mono, &[0.0]));
+        assert!(voice.plays(BufferAddress::of(&voice.spec.audio)));
+        assert!(!voice.plays(BufferAddress::of(&other)));
     }
 
     #[test]

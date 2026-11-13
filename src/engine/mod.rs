@@ -79,6 +79,26 @@ mod tests {
     }
 
     #[test]
+    fn stop_ends_only_the_voices_playing_the_sample() {
+        let (control, mut renderer) = create(count(4), count(3));
+        let stopped = sample(&[0.5; 64]);
+        let other = sample(&[0.5; 64]);
+        let first = control.play(&stopped).unwrap();
+        let second = control.play(&stopped).unwrap();
+        let kept = control.play(&other).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        control.stop(&stopped).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        control.collect();
+
+        assert_eq!(first.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(second.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(kept.state(), VoiceState::Playing);
+        assert_eq!(Arc::strong_count(stopped.audio()), 1);
+    }
+
+    #[test]
     fn stop_all_ends_every_voice_stopped() {
         let (control, mut renderer) = create(count(4), count(2));
         let sample = sample(&[0.5; 64]);
