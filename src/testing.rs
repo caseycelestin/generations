@@ -10,7 +10,11 @@ use crate::layout::ChannelLayout;
 pub(crate) fn buffer(layout: ChannelLayout, samples: &[Pcm]) -> AudioBuffer {
     let frames = samples.len() / layout.count();
     let mut audio = AudioMemory::new().alloc_buffer(layout, frames).unwrap();
-    audio.extend(samples.iter().copied());
-    assert_eq!(audio.samples(), samples, "whole frames of `layout`");
+    let filled = audio.extend(samples.iter().copied());
+    assert_eq!(
+        filled * layout.count(),
+        samples.len(),
+        "whole frames of `layout`"
+    );
     audio
 }

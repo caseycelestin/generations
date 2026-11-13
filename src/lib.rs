@@ -57,13 +57,13 @@
 //! `examples/first_sound.rs` for the whole path, file to speaker;
 //! `docs/roadmap.md` for the plan and the decisions behind it.
 
-pub(crate) mod audio;
+mod audio;
 pub mod config;
 pub mod engine;
-pub(crate) mod layout;
+mod layout;
 pub mod project;
 #[cfg(test)]
-pub(crate) mod testing;
+mod testing;
 
 pub use audio::{Audio, AudioMemory, OverBudgetError};
 pub use layout::{ChannelLayout, ChannelLayoutError};

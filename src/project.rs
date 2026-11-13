@@ -113,7 +113,7 @@ impl Project {
         let mut manifest = self.read_manifest()?;
         let id = SampleId(manifest.next_id);
         manifest.next_id += 1;
-        self.write_wav(id, audio.buffer())?;
+        self.write_wav(id, audio)?;
         manifest.samples.insert(id.0, Entry {});
         self.write_manifest(&manifest)?;
         Ok(id)
@@ -193,7 +193,7 @@ impl Project {
         sync_dir(&self.dir)
     }
 
-    fn write_wav(&self, id: SampleId, audio: &AudioBuffer) -> Result<(), ProjectError> {
+    fn write_wav(&self, id: SampleId, audio: &Audio) -> Result<(), ProjectError> {
         let path = self.wav_path(id);
         let spec = WavSpec {
             channels: audio.layout().into(),

@@ -2,9 +2,9 @@
 //! runs on. What both sides share, the protocol, lives here. There is no
 //! `Engine` type.
 
-pub(crate) mod control;
-pub(crate) mod protocol;
-pub(crate) mod realtime;
+mod control;
+mod protocol;
+mod realtime;
 
 pub use control::{Control, ControlError, Voice, VoiceState};
 pub use protocol::voice::VoiceEnd;

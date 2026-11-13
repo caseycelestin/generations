@@ -39,13 +39,13 @@ impl SharedRings {
 }
 
 #[derive(Debug)]
-pub(crate) struct Rings {
+struct Rings {
     to_renderer: Producer<Command>,
     from_renderer: Consumer<Return>,
 }
 
 impl Rings {
-    pub(crate) fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
+    fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
         Self {
             to_renderer,
             from_renderer,
@@ -53,7 +53,7 @@ impl Rings {
     }
 
     /// Collects, then pushes. A full ring hands the command back.
-    pub(crate) fn send(&mut self, command: Command) -> Result<(), Command> {
+    fn send(&mut self, command: Command) -> Result<(), Command> {
         self.collect();
         self.to_renderer
             .push(command)
@@ -61,7 +61,7 @@ impl Rings {
     }
 
     /// Frees everything handed back.
-    pub(crate) fn collect(&mut self) {
+    fn collect(&mut self) {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {
                 Return::Voice { audio, report } => drop((audio, report)),
