@@ -11,8 +11,8 @@ use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
 use crate::audio::Audio;
-use crate::engine::protocol::voice::{BufferAddress, VoiceCommand};
-use crate::engine::protocol::{Command, Return};
+use crate::engine::protocol::voice::VoiceCommand;
+use crate::engine::protocol::{BufferAddress, Command, Return};
 use rings::SharedRings;
 
 #[derive(Debug, Error)]

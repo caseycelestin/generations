@@ -7,8 +7,9 @@ use std::num::NonZeroUsize;
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
+use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::Return;
-use crate::engine::protocol::voice::{BufferAddress, VoiceEnd, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
 use crate::layout::ChannelLayout;
 
 /// A voice while it plays.

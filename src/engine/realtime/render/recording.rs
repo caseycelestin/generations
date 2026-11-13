@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use super::Frame;
+use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::Return;
 use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, RecordingState};
 
@@ -26,6 +27,10 @@ impl Recording {
         if let Some(audio) = audio {
             audio.extend(block.as_flattened().iter().copied());
         }
+    }
+
+    pub(crate) fn writes(&self, audio: BufferAddress) -> bool {
+        BufferAddress::of(&self.spec.audio) == audio
     }
 
     pub(crate) fn finished(&self) -> bool {

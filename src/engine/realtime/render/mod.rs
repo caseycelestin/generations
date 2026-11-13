@@ -106,8 +106,10 @@ impl Renderer {
                         self.recording = Some(Recording::start(spec));
                     }
                 }
-                Command::Recording(RecordingCommand::Stop) => {
-                    if let Some(stopped) = self.recording.take() {
+                Command::Recording(RecordingCommand::Stop(audio)) => {
+                    if let Some(stopped) =
+                        self.recording.take_if(|recording| recording.writes(audio))
+                    {
                         stopped.end(RecordingEnd::Stopped, &mut self.to_control);
                     }
                 }
@@ -135,7 +137,8 @@ mod tests {
 
     use super::*;
     use crate::audio::AudioBuffer;
-    use crate::engine::protocol::voice::{BufferAddress, VoiceId, VoiceReport, VoiceSpec};
+    use crate::engine::protocol::BufferAddress;
+    use crate::engine::protocol::voice::{VoiceId, VoiceReport, VoiceSpec};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 

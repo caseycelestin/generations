@@ -7,6 +7,7 @@ use thiserror::Error;
 use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
+use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::recording::{
     RecordingCommand, RecordingReport, RecordingSpec, RecordingState,
 };
@@ -38,6 +39,7 @@ impl RecordError {
 #[derive(Debug)]
 pub struct Recording {
     rings: SharedRings,
+    address: BufferAddress,
     report: Arc<RecordingReport>,
 }
 
@@ -59,17 +61,22 @@ impl Recording {
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
+        let address = BufferAddress::of(&audio);
         let report = Arc::new(RecordingReport::new());
         permit.send(RecordingCommand::Start(RecordingSpec {
             audio,
             report: Arc::clone(&report),
         }));
-        Ok(Self { rings, report })
+        Ok(Self {
+            rings,
+            address,
+            report,
+        })
     }
 
     /// Stops the recording at the renderer's next period.
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings.send(RecordingCommand::Stop)
+        self.rings.send(RecordingCommand::Stop(self.address))
     }
 
     /// What the audio thread has said, as of now.

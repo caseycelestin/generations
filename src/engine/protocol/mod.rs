@@ -30,6 +30,10 @@ macro_rules! id {
     };
 }
 
+use std::sync::Arc;
+
+use crate::audio::AudioBuffer;
+
 pub(crate) mod recording;
 pub(crate) mod voice;
 
@@ -62,6 +66,19 @@ pub(crate) enum Return {
     Voice(VoiceSpec),
     /// A recording was refused or ended; its report is already filled in.
     Recording(RecordingSpec),
+}
+
+/// Names audio to the renderer without sending it, so nothing comes back
+/// to be freed. Sound only while the audio cannot be freed before the
+/// command is applied: a later buffer at the same address then starts
+/// behind it on the ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BufferAddress(usize);
+
+impl BufferAddress {
+    pub(crate) fn of(audio: &Arc<AudioBuffer>) -> Self {
+        Self(Arc::as_ptr(audio) as usize)
+    }
 }
 
 #[cfg(test)]

@@ -3,12 +3,14 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use super::BufferAddress;
 use crate::audio::AudioBuffer;
 
 #[derive(Debug)]
 pub(crate) enum RecordingCommand {
     Start(RecordingSpec),
-    Stop,
+    /// Stop the recording into this audio, if it is still running.
+    Stop(BufferAddress),
 }
 
 /// A recording as asked for: what to record into and where to report.
