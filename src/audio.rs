@@ -1,16 +1,11 @@
 //! Audio in RAM, and the one place its memory comes from.
 //!
-//! [`AudioMemory`] counts every byte of audio before it exists, against
-//! an optional budget. An `AudioBuffer` is the only thing it makes, and
-//! repays on drop, so release cannot be forgotten or doubled. Whoever holds
-//! an `AudioMemory` may allocate: the caller and what it lends it to, never
-//! the render side. A buffer's handle is private and only repays, so
-//! holding one grants nothing. Users hold a buffer only as an [`Audio`].
-//!
-//! A buffer is interleaved [`Pcm`] at the project's fixed rate, with no
-//! identity and no idea where it came from: it becomes a sample, with an
-//! id, only when a project stores it. The sample type is the one the render
-//! side mixes in, so a read is a slice and nothing converts.
+//! [`AudioMemory`] counts every byte of audio before it exists, against an
+//! optional budget. It makes only `AudioBuffer`s, which repay on drop, so
+//! release cannot be forgotten or doubled. Whoever holds an `AudioMemory`
+//! may allocate, never the render side; the handle inside a buffer only
+//! repays, so holding one grants nothing. A buffer has no identity: it
+//! becomes a sample, with an id, only when a project stores it.
 
 use std::fmt;
 use std::hint;
@@ -51,12 +46,12 @@ impl AudioMemory {
         }))
     }
 
-    /// An empty sample with room for `frames`, paid for in full now.
+    /// Empty, with room for `frames`, paid for in full now.
     pub fn alloc(&self, layout: ChannelLayout, frames: usize) -> Result<Audio, OverBudgetError> {
         Ok(Audio::new(self.alloc_buffer(layout, frames)?))
     }
 
-    /// Unshared, for storage to fill. Refused, changing nothing, past the
+    /// Unshared, for the project to fill. Refused, changing nothing, past the
     /// budget (reaching it is allowed) or when the byte count overflows.
     pub(crate) fn alloc_buffer(
         &self,
@@ -106,7 +101,7 @@ impl Default for AudioMemory {
     }
 }
 
-/// An allocation refused for the budget. All figures are bytes.
+/// All figures are bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error(
     "{requested} bytes would put audio memory at {} of a {budget} byte budget",
@@ -118,13 +113,10 @@ pub struct OverBudgetError {
     pub budget: usize,
 }
 
-/// Interleaved [`Pcm`] audio at the engine's fixed sample rate, paid for
-/// against [`AudioMemory`].
-///
-/// The capacity is what was paid for and never changes; the audio is the
-/// filled part and may be shorter, as for a take stopped early. The audio
-/// changes only through `&mut`, by whole frames, so a buffer that is
-/// shared never changes and a buffer is always whole frames.
+/// Interleaved, at the engine's fixed rate. The capacity is what was paid
+/// for and never changes; the audio is the filled part and may be shorter,
+/// as for a recording stopped early. It changes only through `&mut` and by
+/// whole frames, so a shared buffer never changes.
 pub(crate) struct AudioBuffer {
     layout: ChannelLayout,
     /// Never reallocated.
@@ -133,12 +125,10 @@ pub(crate) struct AudioBuffer {
 }
 
 impl AudioBuffer {
-    /// Mono or stereo.
     pub(crate) fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
-    /// Number of frames, where one frame holds one sample per channel.
     pub(crate) fn frames(&self) -> usize {
         self.data.len() / self.layout.count()
     }
@@ -148,23 +138,18 @@ impl AudioBuffer {
         self.data.capacity() - self.data.len() < self.layout.count()
     }
 
-    /// The samples of frames `frames`, interleaved. This is how playback
-    /// reads: a period's worth at a time, straight from the buffer.
-    ///
-    /// Panics if the range runs past the end.
+    /// Panics if the range runs past the filled audio.
     pub(crate) fn frames_in(&self, frames: Range<usize>) -> &[Pcm] {
         let c = self.layout.count();
         &self.data[frames.start * c..frames.end * c]
     }
 
-    /// All samples, interleaved.
     fn samples(&self) -> &[Pcm] {
         &self.data
     }
 
-    /// Appends interleaved samples until the buffer is full or `samples`
-    /// runs out, and returns how many frames went in. A part frame at the
-    /// end is dropped, so the buffer stays whole frames.
+    /// Returns frames written. Stops when full; a part frame at the end is
+    /// dropped.
     pub(crate) fn extend(&mut self, samples: impl IntoIterator<Item = Pcm>) -> usize {
         let before = self.frames();
         let capacity = self.data.capacity();
@@ -192,7 +177,6 @@ impl AudioBuffer {
 }
 
 impl Drop for AudioBuffer {
-    /// The capacity, not the length: that is what was paid for.
     fn drop(&mut self) {
         self.memory.release(self.data.capacity() * size_of::<Pcm>());
     }
@@ -223,25 +207,23 @@ impl Audio {
         self.0
     }
 
-    /// Mono or stereo.
     pub fn layout(&self) -> ChannelLayout {
         self.0.layout()
     }
 
-    /// Number of frames, where one frame holds one sample per channel.
+    /// One frame holds a sample per channel.
     pub fn frames(&self) -> usize {
         self.0.frames()
     }
 
-    /// All samples, interleaved.
+    /// Interleaved.
     pub fn samples(&self) -> &[Pcm] {
         self.0.samples()
     }
 
-    /// Appends interleaved samples until the audio is full or `samples`
-    /// runs out, and returns how many frames went in; a part frame at the
-    /// end is dropped. `None`, writing nothing, while the engine holds it:
-    /// a voice playing it, or one that ended and has not been collected.
+    /// Returns frames written, stopping when full and dropping a part frame
+    /// at the end. `None`, writing nothing, while the engine holds the
+    /// audio: a voice playing it, or one ended and not yet collected.
     pub fn extend(&mut self, samples: impl IntoIterator<Item = Pcm>) -> Option<usize> {
         Arc::get_mut(&mut self.0).map(|buffer| buffer.extend(samples))
     }

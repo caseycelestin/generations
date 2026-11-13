@@ -9,19 +9,18 @@ use crate::audio::AudioBuffer;
 #[derive(Debug)]
 pub(crate) enum RecordingCommand {
     Start(RecordingSpec),
-    /// Stop the recording into this audio, if it is still running.
+    /// Does nothing unless this audio is the one being recorded into.
     Stop(BufferAddress),
 }
 
-/// A recording as asked for: what to record into and where to report.
 #[derive(Debug)]
 pub(crate) struct RecordingSpec {
     pub(crate) audio: Arc<AudioBuffer>,
     pub(crate) report: Arc<RecordingReport>,
 }
 
-/// The audio thread's report on a recording: its latest state, which
-/// only moves forward. Starts `Pending`; after that only the renderer writes.
+/// Only moves forward. Starts `Pending`; after that only the renderer
+/// writes.
 #[derive(Debug)]
 pub(crate) struct RecordingReport(AtomicU8);
 
@@ -30,7 +29,6 @@ impl RecordingReport {
         Self(AtomicU8::new(Self::code(RecordingState::Pending)))
     }
 
-    /// For the renderer, at each change.
     pub(crate) fn set(&self, state: RecordingState) {
         self.0.store(Self::code(state), Ordering::Release);
     }
@@ -67,7 +65,6 @@ pub enum RecordingState {
     Ended(RecordingEnd),
 }
 
-/// Why a recording ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingEnd {
     /// Its audio has no room left.

@@ -11,8 +11,7 @@ use rtrb::{Consumer, Producer};
 use super::ControlError;
 use crate::engine::protocol::{Command, Return};
 
-/// The rings of one renderer, shared by its `Control` and every handle it
-/// makes. Clones share them.
+/// One per renderer, shared by its `Control` and every handle.
 #[derive(Debug, Clone)]
 pub(crate) struct SharedRings(Arc<Mutex<Rings>>);
 
@@ -73,7 +72,6 @@ impl Rings {
         }
     }
 
-    /// Frees everything handed back.
     fn collect(&mut self) {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {

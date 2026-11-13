@@ -1,34 +1,24 @@
-//! The audio device: the hardware, and the thread it runs.
+//! The audio device, over `cpal`. It lives beside the examples because
+//! which machine the sampler runs on is the caller's knowledge; the library
+//! builds with no audio dependency.
 //!
-//! This lives beside the examples, not in the library. The engine never
-//! touches a device: which machine the sampler is on, and whether it has an
-//! audio device at all, is the caller's knowledge, so the caller owns the
-//! only code that knows `cpal` exists and that there is an audio thread.
-//! The library builds with no audio dependency.
+//! [`Device`] is the default output and [`Capture`] the default input, each
+//! checked once for the engine's rate. `start` takes a callback the audio
+//! thread calls once per period for as long as the returned [`Stream`] is
+//! held. Its scratch is allocated when the stream is built, never on the
+//! audio thread.
 //!
-//! A [`Device`] is the system's default output, checked once for the
-//! engine's rate and channel count; [`Device::start`] takes a callback and
-//! returns a [`Stream`] that calls it once per period from the audio
-//! thread, for as long as the stream is held. The callback that makes
-//! sound moves an engine's output, its `Renderer`, in and renders from it.
-//! A [`Capture`] is the same for the default input: it is told which of
-//! the device's channels to take, in what order, and its callback is given
-//! each period of just those, which it feeds to the engine's `Input`,
-//! whose layout says what each of them means.
+//! Callbacks always see `f32`. A device that wants 16- or 32-bit samples
+//! gets them converted in the callback, because `cpal` converts nothing and
+//! a raw ALSA `hw:` device (an I2S codec on the target) often offers
+//! nothing else. The rate is never converted: a device that cannot run at
+//! it is refused.
 //!
-//! The callbacks always see `f32`. A device that wants 16- or 32-bit
-//! samples gets them converted in the callback, because `cpal` does
-//! no conversion of its own and a raw ALSA `hw:` device (an I2S codec on
-//! the target) often offers nothing else. The rate is never converted: a
-//! device that cannot run at the engine's rate is refused, as the roadmap
-//! says.
+//! One implementation, no trait: `cpal` is already the abstraction over
+//! ALSA, PipeWire and JACK.
 //!
-//! There is one implementation. `cpal` is itself the abstraction over ALSA,
-//! PipeWire, JACK and the rest; a trait of our own waits for a second
-//! implementation.
-//!
-//! Each example compiles this module on its own and uses the half it
-//! needs, so the other half is dead code there.
+//! Each example uses the half it needs, so the other half is dead code
+//! there.
 #![allow(dead_code)]
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -42,9 +32,8 @@ use thiserror::Error;
 use generations::config::SAMPLE_RATE;
 use generations::engine::Renderer;
 
-/// Frames per period the capture device is asked for, so the period is
-/// known before the stream runs and the engine can size its rings from
-/// it. Clamped to what the device supports.
+/// Asked for so the period is known before the stream runs. Clamped to
+/// what the device supports.
 const CAPTURE_PERIOD_FRAMES: u32 = 512;
 
 /// Frames of `f32` scratch the callback renders into before converting
@@ -55,23 +44,16 @@ const SCRATCH_FRAMES: usize = 4096;
 /// Stream errors kept for the control side before the oldest is dropped.
 const ERROR_CAPACITY: usize = 8;
 
-/// Reasons a device cannot be opened or started.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum DeviceError {
-    /// The system has no default output device.
     #[error("no output device")]
     NoOutputDevice,
-    /// The system has no default input device.
     #[error("no input device")]
     NoInputDevice,
-    /// The device cannot run at the engine's rate and the channel count
-    /// asked for in any sample format this code converts.
     #[error("device does not support {rate} Hz, {channels} channels, in f32, i16 or i32")]
     UnsupportedFormat { rate: u32, channels: u16 },
-    /// A channel index past what the capture device has.
     #[error("the capture device has {have} channels; there is no channel {channel}")]
     NoSuchChannel { channel: usize, have: usize },
-    /// The audio backend refused; the message is its own.
     #[error("audio backend: {0}")]
     Backend(String),
 }
@@ -90,12 +72,8 @@ pub struct Device {
 }
 
 impl Device {
-    /// The system's default output device, at [`SAMPLE_RATE`], stereo.
-    ///
-    /// `f32` is preferred, since the renderer produces it; `i16` and `i32`
-    /// are accepted and converted to. There is no resampling. The period
-    /// size is the backend's default for now; a fixed size for the Pi
-    /// would be set on the config here.
+    /// Stereo. The period is the backend's default; a fixed size for the
+    /// Pi would be set on the config here.
     pub fn default_output() -> Result<Self, DeviceError> {
         let channels = Renderer::CHANNELS as u16;
         let device = cpal::default_host()
@@ -109,9 +87,7 @@ impl Device {
         })
     }
 
-    /// Starts the device. From now until the returned [`Stream`] is
-    /// dropped, the audio thread calls `render` once per period with an
-    /// interleaved stereo `f32` slice to fill.
+    /// `render` fills an interleaved stereo period.
     pub fn start(
         self,
         render: impl FnMut(&mut [f32]) + Send + 'static,
@@ -121,7 +97,6 @@ impl Device {
             SampleFormat::F32 => build::<f32>(&self.device, &self.config, render, errors_in),
             SampleFormat::I16 => build::<i16>(&self.device, &self.config, render, errors_in),
             SampleFormat::I32 => build::<i32>(&self.device, &self.config, render, errors_in),
-            // `default_output` picked from these three.
             _ => unreachable!("device format was chosen from the convertible set"),
         }?;
         inner.play()?;
@@ -129,8 +104,7 @@ impl Device {
     }
 }
 
-/// The configuration to run at: the engine's rate, `channels` channels,
-/// and the most convenient of the sample formats this code converts.
+/// The engine's rate, in the most convenient format this code converts.
 fn pick(
     configs: impl Iterator<Item = cpal::SupportedStreamConfigRange>,
     channels: u16,
@@ -157,9 +131,6 @@ fn preference(format: SampleFormat) -> Option<u8> {
     }
 }
 
-/// Builds the stream for one device sample type. The callback renders
-/// `f32` into a scratch buffer allocated here, on the control thread, and
-/// converts into the device's buffer; for `f32` that conversion is a copy.
 fn build<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: &StreamConfig,
@@ -198,11 +169,8 @@ pub struct Capture {
 }
 
 impl Capture {
-    /// The system's default input device, at [`SAMPLE_RATE`], at the
-    /// channel count the device itself defaults to, and at a fixed period
-    /// of about [`CAPTURE_PERIOD_FRAMES`] so the period is known up front.
-    /// The same format preference and the same refusals as
-    /// [`Device::default_output`].
+    /// At the device's own default channel count and a fixed period near
+    /// [`CAPTURE_PERIOD_FRAMES`].
     pub fn default_input() -> Result<Self, DeviceError> {
         let device = cpal::default_host()
             .default_input_device()
@@ -222,14 +190,12 @@ impl Capture {
         })
     }
 
-    /// How many channels the device records: the width of every frame
-    /// `feed` is given.
+    /// The width of a device frame, which `start`'s `take` indexes into.
     pub fn channels(&self) -> usize {
         usize::from(self.config.channels)
     }
 
-    /// How many frames the device delivers per callback: what
-    /// `Control::input` sizes its rings from.
+    /// In frames, per callback.
     pub fn period(&self) -> usize {
         match self.config.buffer_size {
             BufferSize::Fixed(frames) => frames as usize,
@@ -237,11 +203,8 @@ impl Capture {
         }
     }
 
-    /// Starts the device, taking the device channels `take` out of each
-    /// frame it records. From now until the returned [`Stream`] is
-    /// dropped, the capture thread calls `feed` once per period with
-    /// interleaved `f32` frames of just those channels, in that order, as
-    /// wide as the input's layout.
+    /// `feed` gets interleaved frames of just the device channels in
+    /// `take`, in that order.
     pub fn start(
         self,
         take: Vec<usize>,
@@ -269,10 +232,6 @@ impl Capture {
     }
 }
 
-/// Builds the capture stream for one device sample type. The callback
-/// takes the channels `take` out of each device frame, converted to
-/// `f32`, into scratch allocated here, on the control thread, and feeds
-/// that: `take.len()` samples per frame.
 fn build_input<T: SizedSample>(
     device: &cpal::Device,
     config: &StreamConfig,
@@ -325,20 +284,16 @@ impl std::fmt::Debug for Device {
     }
 }
 
-/// A running stream. Running while held; dropping it
-/// stops it, and drops whatever the callback owned.
+/// Dropping it stops the stream and drops whatever the callback owned.
 pub struct Stream {
     /// Kept so it keeps running. `cpal` stops it on drop; nothing reads it.
     #[allow(dead_code)]
     inner: cpal::Stream,
-    /// Errors the audio thread reported, oldest first.
     errors: Consumer<cpal::Error>,
 }
 
 impl Stream {
-    /// The oldest stream error not yet taken, if any. The audio thread
-    /// queues them without blocking; the control side reads them here
-    /// whenever it likes.
+    /// Oldest first.
     pub fn error(&mut self) -> Option<cpal::Error> {
         self.errors.pop().ok()
     }

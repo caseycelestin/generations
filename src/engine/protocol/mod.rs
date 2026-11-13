@@ -1,19 +1,15 @@
-//! What crosses between the two sides. Owned by neither.
+//! What crosses between the two sides, owned by neither.
 //!
 //! Commands are operations on what the renderer holds (add, remove), not
-//! user intents; handles translate one into the other. One command type
-//! per feature. Only plain data crosses: audio, ids, values, and reports
-//! the renderer fills with one atomic store.
-//!
-//! Each feature's vocabulary lives in its own file; this one holds what
-//! they share. The rings carry one type each way, so [`Command`] and
-//! [`Return`] list a variant per feature.
+//! user intents; handles translate one into the other. Only plain data
+//! crosses: audio, ids, values, and reports the renderer fills with one
+//! atomic store. Each feature has its own file and its own variant in
+//! [`Command`] and [`Return`], since each ring carries one type.
 
-/// Defines an id type minted by `next()` from its own process-wide
-/// counter, as `std::thread::ThreadId` is: unique and in order across
-/// every engine, never reused, not starting at 0 per engine. A macro
-/// because a `static` in a generic function would be shared by every type.
-/// Defined before the feature modules so they can use it.
+/// An id type minted by `next()` from its own process-wide counter, like
+/// `ThreadId`: unique and ordered across every engine, never reused. A
+/// macro because a `static` in a generic function is shared by every type;
+/// defined above the feature modules so they can use it.
 macro_rules! id {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
@@ -59,12 +55,12 @@ impl From<RecordingCommand> for Command {
 }
 
 /// Handed back so the last reference is dropped on the control side:
-/// freeing has no time bound and must not happen on the audio thread.
+/// freeing has no time bound and must not happen on the audio thread. The
+/// report is filled in before its spec comes back.
 #[derive(Debug)]
 pub(crate) enum Return {
-    /// A voice ended; its report is already filled in.
     Voice(VoiceSpec),
-    /// A recording was refused or ended; its report is already filled in.
+    /// Refused or ended.
     Recording(RecordingSpec),
 }
 

@@ -1,6 +1,5 @@
-//! Real-time audio and the code that controls it, split by the thread it
-//! runs on. What both sides share, the protocol, lives here. There is no
-//! `Engine` type.
+//! Real-time audio and the code that controls it, split by thread. There is
+//! no `Engine` type: [`create`] returns the two sides.
 
 mod control;
 mod protocol;
@@ -15,9 +14,8 @@ use std::num::NonZeroUsize;
 
 use rtrb::RingBuffer;
 
-/// Makes both rings and hands each side its ends. The [`Renderer`] goes
-/// to the audio thread; the [`Control`] stays. `voices` is how many can
-/// play at once: the caller's call, for its hardware.
+/// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
+/// `voices` is how many play at once, sized by the caller for its hardware.
 pub fn create(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> (Control, Renderer) {
     let (to_renderer, from_control) = RingBuffer::new(command_capacity.get());
     let (to_control, from_renderer) = RingBuffer::new(return_capacity(command_capacity, voices));

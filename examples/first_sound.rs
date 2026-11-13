@@ -1,13 +1,6 @@
-//! The first sound: alloc audio, write a tone into it, save it to a project as
-//! a sample, and play it twice through the default audio device.
-//!
-//! The tone decays, so it sounds like a pluck. The second press lands while
-//! the first is still ringing, which is two sounds summed by the renderer.
-//!
-//! The engine does not know there is a speaker. This file opens the
-//! device, takes the engine's output and hands it over; those are the only
-//! lines here that need hardware, and `device/` beside this file is the
-//! only code that knows `cpal`.
+//! The first sound: write a decaying tone into audio, save it to a project,
+//! and play it twice through the default output, the second over the
+//! first's tail so the renderer sums them.
 //!
 //! Usage: `cargo run --example first_sound -- <project-dir>`. The directory
 //! is created if it does not exist. Needs an output device.
@@ -25,8 +18,7 @@ use generations::{AudioMemory, ChannelLayout, Project, engine};
 mod device;
 use device::Device;
 
-/// RAM for audio. The library does not know the machine; this example
-/// does not either, so it guesses generously for a desktop.
+/// A generous guess for a desktop; the library does not know the machine.
 const AUDIO_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn Error>> {

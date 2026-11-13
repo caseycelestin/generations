@@ -330,7 +330,7 @@ out in step 8, removed with the old engine (PR #57), and rebuilt on
   returns a `Recording` with `stop`, `state` and `take`. Its report holds
   the latest state: `Pending`, `Recording`, then `Ended(Full)` or
   `Ended(Stopped)`, or `Refused`. The report is a copy of the voice's
-  until reports are made generic.
+  until reports are made generic (see Deferred ideas).
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
   length is a maximum, and reaching it ends the take `Full`, which is not
   an error. Only stereo audio is taken: the main out is stereo.
@@ -453,4 +453,10 @@ The project does not know about tiers.
 - **Saving a take as loaded audio**, a copy into a right-sized buffer,
   for playing a resample at once without reading it back from disk.
 - **A `stereo` fast path** for stereo-as-stored, after a measurement.
+- **Generic reports.** `VoiceReport` and `RecordingReport` become one
+  `Report<T>`, and a `reason!` macro generates each state enum with its
+  `u8` conversions from the variant list, so a feature writes only that
+  list. A macro for the conversions because safe Rust cannot turn a `u8`
+  back into an enum without a `match` per type; a generic for the atomic
+  because it is the same for every feature.
 - **Hardware monitoring** on the target's codec, if it has it.

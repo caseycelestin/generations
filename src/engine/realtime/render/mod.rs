@@ -16,7 +16,6 @@ use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
 
-/// One output frame: a sample per side.
 type Frame = [Pcm; Renderer::CHANNELS];
 
 #[derive(Debug)]
@@ -24,7 +23,6 @@ pub struct Renderer {
     from_control: Consumer<Command>,
     to_control: Producer<Return>,
     voices: Voices,
-    /// The one recording, if running.
     recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
@@ -54,8 +52,8 @@ impl Renderer {
         }
     }
 
-    /// Renders one period into `out`, interleaved stereo, replacing what
-    /// it held: every playing voice, summed and clipped.
+    /// One period, interleaved stereo, replacing what `out` held: every
+    /// playing voice, summed and clipped.
     pub fn render(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
         self.apply_commands();
@@ -75,7 +73,6 @@ impl Renderer {
         self.clean_up();
     }
 
-    /// Applies every command waiting, oldest first.
     fn apply_commands(&mut self) {
         while let Ok(command) = self.from_control.pop() {
             match command {
@@ -117,8 +114,6 @@ impl Renderer {
         }
     }
 
-    /// End-of-period housekeeping: ends every voice that played to its last
-    /// frame, and the recording once its audio is full.
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
             voice.end(VoiceEnd::Finished, &mut self.to_control);

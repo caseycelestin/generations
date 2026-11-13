@@ -2,8 +2,8 @@
 
 use super::Frame;
 
-/// Adds `frames` into `out`, from its start. Stops at whichever runs out
-/// first. Adds rather than writes, so sources sum.
+/// Adds rather than writes, so sources sum. Stops at whichever runs out
+/// first.
 pub(crate) fn add(out: &mut [Frame], frames: &[Frame]) {
     for (out, frame) in out.iter_mut().zip(frames) {
         for (o, s) in out.iter_mut().zip(frame) {
