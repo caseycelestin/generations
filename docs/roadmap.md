@@ -31,8 +31,8 @@ or rejected instead. The history of how a shape was reached is in git.
 
 ### The project
 
-- **The project is the disk.** `Project` holds a `Storage` and a `Ledger`
-  and no in-memory copy of the project, not even a cache. Every change is
+- **The project is the disk.** `Project` holds a `Storage` and no
+  in-memory copy of the project, not even a cache. Every change is
   durable when the call returns, so there is no save step; on the device
   the active project lives on eMMC and a "save" is a copy to the SD card.
   The first model kept everything in RAM and treated persistence as a
@@ -47,7 +47,7 @@ or rejected instead. The history of how a shape was reached is in git.
 - **A sample is named by its `SampleId`; a sound is not.** A sample
   outlives the program, so callers refer to it by an id they can keep and
   store (a parent pointer, pads and patterns later), and
-  `load(id)` turns that into a `Sample` the way a path opens a file. A
+  `load(id, &memory)` turns that into `Audio` the way a path opens a file. A
   sound lives only while it plays, so its handle keeps its `SoundId`
   private and carries the verbs instead.
 - **Generation is a relationship, not a type.** A sample will be an id
@@ -111,24 +111,36 @@ or rejected instead. The history of how a shape was reached is in git.
 
 ### Audio in
 
-- **Audio enters a project by being written.** `project.alloc(layout,
-  frames)` hands out an empty `Sample`, paid for in full against the
-  budget; `sample.write()` lends its `AudioBuffer` to fill; and
-  `project.add_sample(&sample)` stores it and mints its id. Nothing is
+- **Memory and storage are separate.** The caller makes one
+  `AudioMemory` for the machine (`new()`, or `with_budget(bytes)`) and
+  every audio byte in RAM comes from it; the project holds none, and a
+  load is paid for from the memory the caller passes. The budget belongs
+  to the machine, not to a project. (2026-11-13; it was the project's
+  `Ledger`.)
+- **Audio enters a project by being written.** `memory.alloc(layout,
+  frames)` hands out empty `Audio`, paid for in full against the budget;
+  `audio.extend(..)` fills it; and `project.add_sample(&audio)` stores it
+  as a sample and mints its id. Nothing is
   stored and no id exists until the add. `alloc` is named for what it
   does: it takes memory and touches no disk.
 - **WAV import was removed 2026-11-13** (the `decode` and `convert`
   stages, `rubato`, `Project::import`); it is in the history before
   97e8eff if a file format is needed again.
 - **The rule is that every byte of audio in RAM is counted, not that the
-  user never touches audio.** `AudioBuffer` is public and readable; only
-  the crate can make one, so every buffer still comes from the ledger.
-- **One type is written, played and saved.** `Sample` is an
-  `Arc<AudioBuffer>` with no `Clone`. `write()` is `Arc::get_mut`: `None`
-  while the engine holds the audio, which is what `Sample` protects; a
-  read by the project is protected by an ordinary borrow. A voice that
+  user never touches audio.** `Audio` is public, readable and writable;
+  only the crate can make one, so all of it comes from `AudioMemory`.
+- **Audio in RAM, samples on disk.** What RAM holds has no id: it becomes
+  a sample only when a project stores it. So the RAM types are named for
+  audio (`AudioMemory`, `Audio`, crate-private `AudioBuffer`) and the
+  project's for samples (`SampleId`, `add_sample`). (2026-11-13; the
+  handle was `Sample`, the source `SampleMemory`.)
+- **One type is written, played and saved.** `Audio` is an
+  `Arc<AudioBuffer>` with no `Clone`. `extend` goes through
+  `Arc::get_mut`: refused while the engine holds the audio, which is what
+  `Audio` protects; a read by the project is protected by an ordinary
+  borrow. A voice that
   has ended still holds it until its return is collected. Recording
-  cannot share it this way and will take the sample by value.
+  cannot share it this way and will take the audio by value.
 
 ### Memory
 

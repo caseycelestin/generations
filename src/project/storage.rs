@@ -24,9 +24,9 @@ use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, ChannelLayout};
-use crate::config::{Pcm, SAMPLE_RATE};
-use crate::project::ledger::{Ledger, OverBudgetError};
+use crate::audio::{AudioBuffer, AudioMemory, OverBudgetError};
+use crate::config::{MAX_CHANNELS, Pcm, SAMPLE_RATE};
+use crate::layout::ChannelLayout;
 use crate::project::{SampleId, SampleMetadata};
 
 #[derive(Debug, Error)]
@@ -131,17 +131,17 @@ impl Storage {
         Ok(self.read_manifest()?.samples.contains_key(&id.0))
     }
 
-    /// `None` if there is no such sample. The block is sized from the
+    /// `None` if there is no such sample. The buffer is sized from the
     /// header, so a sample over budget is refused before any audio is read.
     pub fn audio(
         &self,
         id: SampleId,
-        ledger: &Ledger,
+        memory: &AudioMemory,
     ) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
         }
-        self.read_wav(id, ledger).map(Some)
+        self.read_wav(id, memory).map(Some)
     }
 
     /// Ids come from a counter that only goes up, so an id is never reused.
@@ -256,17 +256,32 @@ impl Storage {
         Ok(reader)
     }
 
-    fn read_wav(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, StorageError> {
+    fn read_wav(&self, id: SampleId, memory: &AudioMemory) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
         let layout = ChannelLayout::try_from(reader.spec().channels).map_err(|e| at(&path, e))?;
-        let mut data = ledger
-            .alloc(reader.len() as usize)
-            .map_err(|source| StorageError::OverBudget { id, source })?;
-        for sample in reader.samples::<Pcm>() {
-            data.push(sample.map_err(|e| at(&path, e))?);
+        let c = layout.count();
+        let corrupt = || StorageError::Corrupt(format!("audio for sample {} ends mid-frame", id.0));
+        if !(reader.len() as usize).is_multiple_of(c) {
+            return Err(corrupt());
         }
-        AudioBuffer::new(layout, data).map_err(|(e, _)| at(&path, e))
+        let frames = reader.len() as usize / c;
+        let mut audio = memory
+            .alloc_buffer(layout, frames)
+            .map_err(|source| StorageError::OverBudget { id, source })?;
+        // A frame at a time, so the buffer only ever takes whole frames.
+        let mut samples = reader.samples::<Pcm>();
+        let mut frame = [0.0; MAX_CHANNELS as usize];
+        for _ in 0..frames {
+            for s in &mut frame[..c] {
+                *s = samples
+                    .next()
+                    .ok_or_else(corrupt)?
+                    .map_err(|e| at(&path, e))?;
+            }
+            audio.extend(frame[..c].iter().copied());
+        }
+        Ok(audio)
     }
 }
 
@@ -302,8 +317,7 @@ fn sync_dir(dir: &Path) -> Result<(), StorageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::ChannelLayout::{Mono, Stereo};
-    use crate::testing::unlimited;
+    use crate::layout::ChannelLayout::{Mono, Stereo};
 
     #[test]
     fn a_read_is_paid_for_exactly_and_returned_on_drop() {
@@ -311,11 +325,11 @@ mod tests {
         let mut s = created(dir.path());
         let id = s.add_sample(&SampleMetadata {}, &ramp(Stereo, 3)).unwrap();
         let bytes = 6 * size_of::<Pcm>();
-        let ledger = Ledger::new(bytes);
-        let audio = s.audio(id, &ledger).unwrap().unwrap();
-        assert_eq!(ledger.in_use(), bytes);
+        let memory = AudioMemory::with_budget(bytes);
+        let audio = s.audio(id, &memory).unwrap().unwrap();
+        assert_eq!(memory.in_use(), bytes);
         drop(audio);
-        assert_eq!(ledger.in_use(), 0);
+        assert_eq!(memory.in_use(), 0);
     }
 
     #[test]
@@ -324,18 +338,18 @@ mod tests {
         let mut s = created(dir.path());
         let id = s.add_sample(&SampleMetadata {}, &ramp(Stereo, 3)).unwrap();
         let bytes = 6 * size_of::<Pcm>();
-        let ledger = Ledger::new(bytes - 1);
+        let memory = AudioMemory::with_budget(bytes - 1);
         assert!(matches!(
-            s.audio(id, &ledger).unwrap_err(),
+            s.audio(id, &memory).unwrap_err(),
             StorageError::OverBudget { id: i, source } if i == id && source.requested == bytes
         ));
-        assert_eq!(ledger.in_use(), 0);
+        assert_eq!(memory.in_use(), 0);
     }
 
     fn ramp(layout: ChannelLayout, frames: usize) -> AudioBuffer {
-        let mut block = unlimited().alloc(frames * layout.count()).unwrap();
-        block.extend((0..block.capacity()).map(|i| i as Pcm * 0.101 - 0.7));
-        AudioBuffer::new(layout, block).unwrap()
+        let mut audio = AudioMemory::new().alloc_buffer(layout, frames).unwrap();
+        audio.extend((0..frames * layout.count()).map(|i| i as Pcm * 0.101 - 0.7));
+        audio
     }
 
     fn assert_same(a: &AudioBuffer, b: &AudioBuffer) {
@@ -391,10 +405,13 @@ mod tests {
 
         let s = reopen(dir.path()).unwrap();
         assert_same(
-            &s.audio(a, &unlimited()).unwrap().unwrap(),
+            &s.audio(a, &AudioMemory::new()).unwrap().unwrap(),
             &ramp(Stereo, 16),
         );
-        assert_same(&s.audio(b, &unlimited()).unwrap().unwrap(), &ramp(Mono, 8));
+        assert_same(
+            &s.audio(b, &AudioMemory::new()).unwrap().unwrap(),
+            &ramp(Mono, 8),
+        );
     }
 
     #[test]
@@ -402,7 +419,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = created(dir.path());
         assert!(!s.has_sample(SampleId(9)).unwrap());
-        assert!(s.audio(SampleId(9), &unlimited()).unwrap().is_none());
+        assert!(s.audio(SampleId(9), &AudioMemory::new()).unwrap().is_none());
     }
 
     #[test]
@@ -413,7 +430,7 @@ mod tests {
         fs::rename(s.wav_path(id), dir.path().join("samples/kick.wav")).unwrap();
         // Existence comes from the manifest; only the audio needs the file.
         assert!(matches!(
-            s.audio(id, &unlimited()),
+            s.audio(id, &AudioMemory::new()),
             Err(StorageError::Backend(_))
         ));
         assert!(s.has_sample(id).unwrap());
@@ -434,7 +451,7 @@ mod tests {
         w.write_sample(0.0 as Pcm).unwrap();
         w.finalize().unwrap();
         assert!(matches!(
-            s.audio(id, &unlimited()),
+            s.audio(id, &AudioMemory::new()),
             Err(StorageError::BadAudioFormat { id: i, .. }) if i == id
         ));
     }
@@ -504,7 +521,7 @@ mod tests {
         w.write_sample(0i16).unwrap();
         w.finalize().unwrap();
         assert!(matches!(
-            s.audio(id, &unlimited()),
+            s.audio(id, &AudioMemory::new()),
             Err(StorageError::BadAudioFormat { id: i, .. }) if i == id
         ));
     }

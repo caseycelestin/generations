@@ -1,5 +1,5 @@
-//! The first sound: open a project, alloc a sample, write a tone into it,
-//! save it, and play it twice through the default audio device.
+//! The first sound: alloc audio, write a tone into it, save it to a project as
+//! a sample, and play it twice through the default audio device.
 //!
 //! The tone decays, so it sounds like a pluck. The second press lands while
 //! the first is still ringing, which is two sounds summed by the renderer.
@@ -20,14 +20,14 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::{ChannelLayout, Project, engine};
+use generations::{AudioMemory, ChannelLayout, Project, engine};
 
 mod device;
 use device::Device;
 
-/// RAM for loaded audio. The engine does not know the machine; this
-/// example does not either, so it guesses generously for a desktop.
-const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
+/// RAM for audio. The library does not know the machine; this example
+/// does not either, so it guesses generously for a desktop.
+const AUDIO_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args_os()
@@ -35,7 +35,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: first_sound <project-dir>")?;
 
-    let mut project = Project::open(&dir, SAMPLE_RAM_BUDGET)?;
+    let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
+    let mut project = Project::open(&dir)?;
     // Room for 64 commands in flight and 16 voices at once.
     let commands = NonZeroUsize::new(64).expect("not zero");
     let voices = NonZeroUsize::new(16).expect("not zero");
@@ -44,12 +45,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // One second of A440, decaying from half scale to near silence.
     let frames = SAMPLE_RATE as usize;
-    let mut pluck = project.alloc(ChannelLayout::Mono, frames)?;
-    let audio = pluck.write().ok_or("the engine holds the sample")?;
-    audio.extend((0..frames).map(|i| {
-        let t = i as f32 / SAMPLE_RATE as f32;
-        0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp()
-    }));
+    let mut pluck = memory.alloc(ChannelLayout::Mono, frames)?;
+    pluck
+        .extend((0..frames).map(|i| {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp()
+        }))
+        .ok_or("the engine holds the audio")?;
     let id = project.add_sample(&pluck)?;
     println!("saved as {id:?}");
 

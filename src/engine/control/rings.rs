@@ -77,9 +77,9 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::audio::ChannelLayout;
     use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport};
-    use crate::testing::audio;
+    use crate::layout::ChannelLayout;
+    use crate::testing::buffer;
 
     fn command() -> Command {
         VoiceCommand::Remove(VoiceId::next()).into()
@@ -102,7 +102,7 @@ mod tests {
         let (to_renderer, _from_control) = RingBuffer::new(1);
         let (mut to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
-        let audio = Arc::new(audio(ChannelLayout::Mono, &[0.0]));
+        let audio = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
         let returned = Return::Voice {
             audio: Arc::clone(&audio),
             report: Arc::new(VoiceReport::new()),
