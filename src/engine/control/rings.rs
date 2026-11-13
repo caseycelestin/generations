@@ -69,3 +69,49 @@ impl Rings {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rtrb::RingBuffer;
+
+    use super::*;
+    use crate::audio::ChannelLayout;
+    use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport};
+    use crate::testing::audio;
+
+    fn command() -> Command {
+        VoiceCommand::Remove(VoiceId::next()).into()
+    }
+
+    #[test]
+    fn a_full_ring_refuses_the_command() {
+        let (to_renderer, _from_control) = RingBuffer::new(1);
+        let (_to_control, from_renderer) = RingBuffer::new(1);
+        let rings = SharedRings::new(to_renderer, from_renderer);
+        assert!(rings.send(command()).is_ok());
+        assert!(matches!(
+            rings.send(command()),
+            Err(ControlError::CommandsFull)
+        ));
+    }
+
+    #[test]
+    fn a_send_first_frees_what_came_back() {
+        let (to_renderer, _from_control) = RingBuffer::new(1);
+        let (mut to_control, from_renderer) = RingBuffer::new(1);
+        let rings = SharedRings::new(to_renderer, from_renderer);
+        let audio = Arc::new(audio(ChannelLayout::Mono, &[0.0]));
+        let returned = Return::Voice {
+            audio: Arc::clone(&audio),
+            report: Arc::new(VoiceReport::new()),
+        };
+        to_control.push(returned).unwrap();
+
+        rings.send(command()).unwrap();
+
+        assert_eq!(Arc::strong_count(&audio), 1);
+        assert_eq!(to_control.slots(), 1);
+    }
+}

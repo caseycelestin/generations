@@ -59,3 +59,15 @@ pub(crate) enum Return {
         report: Arc<VoiceReport>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::voice::VoiceId;
+
+    #[test]
+    fn ids_are_minted_in_order() {
+        let first = VoiceId::next();
+        let second = VoiceId::next();
+        assert!(first < second);
+    }
+}

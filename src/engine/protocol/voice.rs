@@ -78,3 +78,22 @@ impl VoiceReport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_report_has_not_ended() {
+        assert_eq!(VoiceReport::new().ended(), None);
+    }
+
+    #[test]
+    fn each_ending_reads_back_as_itself() {
+        for why in [VoiceEnd::Finished, VoiceEnd::Stopped, VoiceEnd::Cut] {
+            let report = VoiceReport::new();
+            report.end(why);
+            assert_eq!(report.ended(), Some(why));
+        }
+    }
+}

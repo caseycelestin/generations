@@ -32,3 +32,77 @@ pub fn create(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> (Control,
 fn return_capacity(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> usize {
     voices.get() + command_capacity.get()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::audio::ChannelLayout;
+    use crate::project::SampleId;
+    use crate::project::sample::Sample;
+    use crate::testing::audio;
+
+    fn count(n: usize) -> NonZeroUsize {
+        NonZeroUsize::new(n).unwrap()
+    }
+
+    fn sample(samples: &[f32]) -> Sample {
+        Sample::new(SampleId(0), audio(ChannelLayout::Mono, samples))
+    }
+
+    #[test]
+    fn a_played_voice_is_heard_then_ends_finished() {
+        let (control, mut renderer) = create(count(4), count(2));
+        let sample = sample(&[0.5; 2]);
+        let voice = control.play(&sample).unwrap();
+        assert_eq!(voice.state(), VoiceState::Playing);
+
+        let mut out = vec![0.0; 3 * 2];
+        renderer.render(&mut out);
+
+        assert_eq!(out, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
+        assert_eq!(voice.state(), VoiceState::Ended(VoiceEnd::Finished));
+    }
+
+    #[test]
+    fn a_stopped_voice_ends_stopped() {
+        let (control, mut renderer) = create(count(4), count(2));
+        let sample = sample(&[0.5; 64]);
+        let voice = control.play(&sample).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        voice.stop().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(voice.state(), VoiceState::Ended(VoiceEnd::Stopped));
+    }
+
+    #[test]
+    fn collect_frees_the_audio_of_an_ended_voice() {
+        let (control, mut renderer) = create(count(4), count(2));
+        let sample = sample(&[0.5; 2]);
+        let _voice = control.play(&sample).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(
+            Arc::strong_count(sample.audio()),
+            2,
+            "handed back, not yet freed"
+        );
+
+        control.collect();
+
+        assert_eq!(Arc::strong_count(sample.audio()), 1);
+    }
+
+    #[test]
+    fn play_reports_a_full_command_ring() {
+        let (control, _renderer) = create(count(1), count(1));
+        let sample = sample(&[0.5; 2]);
+        assert!(control.play(&sample).is_ok());
+        assert!(matches!(
+            control.play(&sample),
+            Err(ControlError::CommandsFull)
+        ));
+    }
+}
