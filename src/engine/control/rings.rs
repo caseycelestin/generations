@@ -11,7 +11,7 @@ use rtrb::{Consumer, Producer};
 
 use super::ControlError;
 use crate::engine::protocol::recording::{RecordingState, Returned};
-use crate::engine::protocol::{Command, HandleId, Return};
+use crate::engine::protocol::{Command, HandleId, Message, Return};
 
 /// One per renderer, shared by its `Control` and every handle.
 #[derive(Debug, Clone)]
@@ -25,15 +25,19 @@ struct Shared {
 }
 
 impl SharedRings {
-    pub(crate) fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
+    pub(crate) fn new(to_renderer: Producer<Message>, from_renderer: Consumer<Return>) -> Self {
         Self(Arc::new(Shared {
             rings: Mutex::new(Rings::new(to_renderer, from_renderer)),
             ids: AtomicU64::new(0),
         }))
     }
 
-    pub(crate) fn send(&self, command: impl Into<Command>) -> Result<(), ControlError> {
-        self.reserve()?.send(command);
+    pub(crate) fn send(
+        &self,
+        id: HandleId,
+        command: impl Into<Command>,
+    ) -> Result<(), ControlError> {
+        self.reserve()?.send(id, command);
         Ok(())
     }
 
@@ -79,15 +83,19 @@ impl Permit<'_> {
         }
     }
 
-    pub(crate) fn send(mut self, command: impl Into<Command>) {
-        let pushed = self.0.to_renderer.push(command.into());
+    pub(crate) fn send(mut self, id: HandleId, command: impl Into<Command>) {
+        let message = Message {
+            id,
+            command: command.into(),
+        };
+        let pushed = self.0.to_renderer.push(message);
         debug_assert!(pushed.is_ok(), "a permit holds a free slot");
     }
 }
 
 #[derive(Debug)]
 struct Rings {
-    to_renderer: Producer<Command>,
+    to_renderer: Producer<Message>,
     from_renderer: Consumer<Return>,
     /// Which handle's state box an id's returns go to, held until its last
     /// return arrives. Every id held here still has that return coming, so
@@ -99,7 +107,7 @@ struct Rings {
 type Place = Option<(HandleId, Arc<Mutex<RecordingState>>)>;
 
 impl Rings {
-    fn new(to_renderer: Producer<Command>, from_renderer: Consumer<Return>) -> Self {
+    fn new(to_renderer: Producer<Message>, from_renderer: Consumer<Return>) -> Self {
         let handles = (0..from_renderer.buffer().capacity())
             .map(|_| None)
             .collect();
@@ -165,9 +173,9 @@ mod tests {
         let (to_renderer, _from_control) = RingBuffer::new(1);
         let (_to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
-        assert!(rings.send(command()).is_ok());
+        assert!(rings.send(HandleId(0), command()).is_ok());
         assert!(matches!(
-            rings.send(command()),
+            rings.send(HandleId(0), command()),
             Err(ControlError::CommandsFull)
         ));
     }
@@ -185,7 +193,7 @@ mod tests {
         });
         to_control.push(returned).unwrap();
 
-        rings.send(command()).unwrap();
+        rings.send(HandleId(0), command()).unwrap();
 
         assert_eq!(Arc::strong_count(&audio), 1);
         assert_eq!(to_control.slots(), 1);

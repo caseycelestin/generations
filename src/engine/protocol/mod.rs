@@ -36,6 +36,13 @@ pub(crate) mod voice;
 use recording::{RecordingCommand, Returned};
 use voice::{VoiceCommand, VoiceSpec};
 
+/// What the ring to the renderer carries: who sent it, and what to do.
+#[derive(Debug)]
+pub(crate) struct Message {
+    pub(crate) id: HandleId,
+    pub(crate) command: Command,
+}
+
 #[derive(Debug)]
 pub(crate) enum Command {
     Voice(VoiceCommand),

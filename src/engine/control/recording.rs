@@ -63,12 +63,12 @@ impl Recording {
         buffer.prefault();
         let state = Arc::new(Mutex::new(RecordingState::Pending));
         permit.register(id, Arc::clone(&state));
-        permit.send(RecordingCommand::Start(RecordingSpec { id, audio }));
+        permit.send(id, RecordingCommand::Start(RecordingSpec { audio }));
         Ok(Self { rings, id, state })
     }
 
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings.send(RecordingCommand::Stop(self.id))
+        self.rings.send(self.id, RecordingCommand::Stop)
     }
 
     pub fn state(&self) -> RecordingState {

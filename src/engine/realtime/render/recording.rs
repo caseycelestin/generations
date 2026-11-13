@@ -11,17 +11,22 @@ use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, Returned};
 
 #[derive(Debug)]
 pub(crate) struct Recording {
+    id: HandleId,
     spec: RecordingSpec,
 }
 
 impl Recording {
-    pub(crate) fn start(spec: RecordingSpec, to_control: &mut Producer<Return>) -> Self {
+    pub(crate) fn start(
+        id: HandleId,
+        spec: RecordingSpec,
+        to_control: &mut Producer<Return>,
+    ) -> Self {
         let pushed = to_control.push(Return::Recording {
-            id: spec.id,
+            id,
             state: Returned::Started,
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
-        Self { spec }
+        Self { id, spec }
     }
 
     /// Appends `block`, as heard, until the audio is full.
@@ -34,7 +39,7 @@ impl Recording {
     }
 
     pub(crate) fn is(&self, id: HandleId) -> bool {
-        self.spec.id == id
+        self.id == id
     }
 
     pub(crate) fn finished(&self) -> bool {
@@ -44,15 +49,15 @@ impl Recording {
     /// The one way a recording leaves.
     pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Return>) {
         let pushed = to_control.push(Return::Recording {
-            id: self.spec.id,
+            id: self.id,
             state: Returned::Ended(why, self.spec),
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 
-    pub(crate) fn refuse(spec: RecordingSpec, to_control: &mut Producer<Return>) {
+    pub(crate) fn refuse(id: HandleId, spec: RecordingSpec, to_control: &mut Producer<Return>) {
         let pushed = to_control.push(Return::Recording {
-            id: spec.id,
+            id,
             state: Returned::Refused(spec),
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");

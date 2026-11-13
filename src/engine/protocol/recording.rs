@@ -2,19 +2,17 @@
 
 use std::sync::Arc;
 
-use super::HandleId;
 use crate::audio::AudioBuffer;
 
 #[derive(Debug)]
 pub(crate) enum RecordingCommand {
     Start(RecordingSpec),
-    /// A stale id names nothing and does nothing.
-    Stop(HandleId),
+    /// Stops the sender's take; from any other sender, does nothing.
+    Stop,
 }
 
 #[derive(Debug)]
 pub(crate) struct RecordingSpec {
-    pub(crate) id: HandleId,
     pub(crate) audio: Arc<AudioBuffer>,
 }
 
