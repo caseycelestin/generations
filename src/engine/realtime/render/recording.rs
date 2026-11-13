@@ -1,7 +1,10 @@
 //! The recording on the render side, while it runs.
 
+use std::sync::Arc;
+
 use rtrb::Producer;
 
+use super::Frame;
 use crate::engine::protocol::Return;
 use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, RecordingState};
 
@@ -14,6 +17,15 @@ impl Recording {
     pub(crate) fn start(spec: RecordingSpec) -> Self {
         spec.report.set(RecordingState::Recording);
         Self { spec }
+    }
+
+    /// Appends `block`, as heard, until the audio is full.
+    pub(crate) fn write(&mut self, block: &[Frame]) {
+        let audio = Arc::get_mut(&mut self.spec.audio);
+        debug_assert!(audio.is_some(), "record refuses audio a voice holds");
+        if let Some(audio) = audio {
+            audio.extend(block.as_flattened().iter().copied());
+        }
     }
 
     /// The one way a recording leaves: reports `why`, then hands its audio

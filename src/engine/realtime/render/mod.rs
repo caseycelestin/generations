@@ -68,6 +68,9 @@ impl Renderer {
                 add(block, scratch);
             }
             hard_clip(block);
+            if let Some(recording) = &mut self.recording {
+                recording.write(block);
+            }
         }
         self.clean_up();
     }
