@@ -34,18 +34,27 @@ macro_rules! id {
     };
 }
 
+pub(crate) mod recording;
 pub(crate) mod voice;
 
+use recording::{RecordingCommand, RecordingReport};
 use voice::{VoiceCommand, VoiceReport};
 
 #[derive(Debug)]
 pub(crate) enum Command {
     Voice(VoiceCommand),
+    Recording(RecordingCommand),
 }
 
 impl From<VoiceCommand> for Command {
     fn from(command: VoiceCommand) -> Self {
         Self::Voice(command)
+    }
+}
+
+impl From<RecordingCommand> for Command {
+    fn from(command: RecordingCommand) -> Self {
+        Self::Recording(command)
     }
 }
 
@@ -58,6 +67,8 @@ pub(crate) enum Return {
         audio: Arc<AudioBuffer>,
         report: Arc<VoiceReport>,
     },
+    /// A recording was refused or ended; its report is already filled in.
+    Recording { report: Arc<RecordingReport> },
 }
 
 #[cfg(test)]

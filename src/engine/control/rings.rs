@@ -65,6 +65,7 @@ impl Rings {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {
                 Return::Voice { audio, report } => drop((audio, report)),
+                Return::Recording { report } => drop(report),
             }
         }
     }

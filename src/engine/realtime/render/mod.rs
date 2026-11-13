@@ -1,6 +1,7 @@
 //! The audio thread: turns commands and audio into periods of output.
 
 mod math;
+mod recording;
 mod voices;
 
 use std::num::NonZeroUsize;
@@ -8,9 +9,11 @@ use std::num::NonZeroUsize;
 use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
+use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
 use crate::engine::protocol::{Command, Return};
 use math::{add, hard_clip};
+use recording::Recording;
 use voices::{Voice, Voices};
 
 /// One output frame: a sample per side.
@@ -21,6 +24,8 @@ pub struct Renderer {
     from_control: Consumer<Command>,
     to_control: Producer<Return>,
     voices: Voices,
+    /// The one recording, if running.
+    recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -44,6 +49,7 @@ impl Renderer {
             from_control,
             to_control,
             voices: Voices::new(voices),
+            recording: None,
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -88,6 +94,18 @@ impl Renderer {
                 Command::Voice(VoiceCommand::RemoveAll) => {
                     for voice in self.voices.drain() {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                    }
+                }
+                Command::Recording(RecordingCommand::Start(report)) => {
+                    if self.recording.is_some() {
+                        Recording::refuse(report, &mut self.to_control);
+                    } else {
+                        self.recording = Some(Recording::start(report));
+                    }
+                }
+                Command::Recording(RecordingCommand::Stop) => {
+                    if let Some(stopped) = self.recording.take() {
+                        stopped.end(RecordingEnd::Stopped, &mut self.to_control);
                     }
                 }
             }
