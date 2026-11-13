@@ -41,7 +41,7 @@ impl Control {
 
     /// Stops every voice playing `sample`, at the renderer's next period.
     pub fn stop(&self, sample: &Sample) -> Result<(), ControlError> {
-        let audio = BufferAddress::of(sample.audio());
+        let audio = BufferAddress::of(sample.shared());
         self.rings.send(VoiceCommand::RemoveAudio(audio))
     }
 

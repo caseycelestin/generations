@@ -66,7 +66,7 @@ pub mod project;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioError, ChannelLayout, Sample};
+pub use audio::{AudioBuffer, AudioError, ChannelLayout, Sample};
 pub use project::import::{ConvertError, DecodeError, ImportError};
 pub use project::ledger::OverBudgetError;
 pub use project::storage::StorageError;
