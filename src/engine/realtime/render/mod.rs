@@ -61,8 +61,8 @@ impl Renderer {
                 voice.render(scratch);
                 add(block, scratch);
             }
+            hard_clip(block);
         }
-        hard_clip(out);
         self.clean_up();
     }
 
