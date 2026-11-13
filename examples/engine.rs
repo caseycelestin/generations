@@ -13,14 +13,13 @@ use std::path::Path;
 use std::thread;
 
 use generations::engine::{self, VoiceState};
-use generations::{Ledger, Project, SampleId};
+use generations::{Project, SampleId};
 
 /// RAM for loaded audio: a generous guess for a desktop.
 const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let ledger = Ledger::new(SAMPLE_RAM_BUDGET);
-    let project = Project::open(Path::new("project"), ledger)?;
+    let project = Project::open(Path::new("project"), SAMPLE_RAM_BUDGET)?;
     let sample = project.load(SampleId(0))?;
 
     // Room for 64 commands in flight and 16 voices at once.

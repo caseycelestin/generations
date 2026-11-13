@@ -6,15 +6,16 @@
 //! the disk and there is no save step. Today a project holds samples;
 //! patterns and settings arrive as their steps come.
 //!
-//! The project holds the [`Ledger`] it was opened with, because every
-//! byte of audio it brings into RAM, an import on its way to disk or a
-//! sample loaded for playback, is a block on it. What it hands out is a
+//! The project makes and holds the [`Ledger`], because every byte of
+//! audio it brings into RAM, an import on its way to disk or a sample
+//! loaded for playback, is a block on it. What it hands out is a
 //! [`Sample`], plain audio owned by whoever holds it; the project
 //! knows nothing about sound, and the renderer that plays the sample
 //! knows nothing about the project. The caller carries the sample from
 //! one to the other.
 
 pub(crate) mod import;
+pub(crate) mod ledger;
 pub(crate) mod storage;
 
 use std::path::Path;
@@ -22,7 +23,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::audio::{AudioBuffer, Sample, Take};
-use crate::memory::Ledger;
+use crate::project::ledger::Ledger;
 use import::ImportError;
 use storage::{Storage, StorageError};
 
@@ -63,26 +64,27 @@ pub struct Project {
 }
 
 impl Project {
-    /// The project at `dir`, created there if none exists, allocating
-    /// everything it brings into RAM from `ledger`.
+    /// The project at `dir`, created there if none exists, holding at
+    /// most `budget` bytes of audio in RAM at once.
     ///
-    /// The ledger is the caller's to make, because its budget is the
-    /// machine's to know; one ledger is meant to be shared by everything
-    /// on the machine that holds audio in RAM. Nothing is loaded here:
-    /// what to load is the caller's to remember.
+    /// The budget is the caller's, because it is the machine's to know.
+    /// Nothing is loaded here: what to load is the caller's to remember.
     ///
     /// `storage::open` creates an empty project if the directory is empty
     /// or missing, validates the whole project it finds otherwise, and
     /// refuses a directory holding anything else. From then on every
     /// change is durable by the time the call that made it returns.
-    pub fn open(dir: &Path, ledger: Ledger) -> Result<Self, ProjectError> {
-        Ok(Self::on(storage::open(dir)?, ledger))
+    pub fn open(dir: &Path, budget: usize) -> Result<Self, ProjectError> {
+        Ok(Self::on(storage::open(dir)?, budget))
     }
 
     /// The project in `storage`. A storage that exists holds a whole,
     /// valid project, so there is nothing to check here.
-    pub(crate) fn on(storage: Box<dyn Storage>, ledger: Ledger) -> Self {
-        Self { storage, ledger }
+    pub(crate) fn on(storage: Box<dyn Storage>, budget: usize) -> Self {
+        Self {
+            storage,
+            ledger: Ledger::new(budget),
+        }
     }
 
     /// Imports an audio file as a new sample.
@@ -160,7 +162,7 @@ pub(crate) mod tests {
     use crate::audio::ChannelLayout;
     use crate::config::Pcm;
     use crate::project::import::DecodeError;
-    use crate::testing::{audio, unlimited};
+    use crate::testing::audio;
 
     /// What the stub storage remembers.
     #[derive(Default)]
@@ -229,7 +231,7 @@ pub(crate) mod tests {
     /// can look at what the project did to it.
     pub(crate) fn project() -> (Project, Rc<RefCell<State>>) {
         let (state, storage) = memory_storage();
-        (Project::on(storage, unlimited()), state)
+        (Project::on(storage, usize::MAX), state)
     }
 
     /// In-memory storage and its state, for a project on a ledger of the
@@ -360,7 +362,7 @@ pub(crate) mod tests {
         let path = wav(dir.path(), "d.wav", 48_000, &[0; 100]);
         // Room for the loaded ramp and nothing else.
         let (state, storage) = memory_storage();
-        let mut p = Project::on(storage, Ledger::new(ramp_bytes(4)));
+        let mut p = Project::on(storage, ramp_bytes(4));
         let root = p.add_sample(&ramp(4)).unwrap();
         let _held = p.load(root).unwrap();
 
@@ -410,7 +412,7 @@ pub(crate) mod tests {
     #[test]
     fn load_over_budget_is_refused() {
         let (_state, storage) = memory_storage();
-        let mut p = Project::on(storage, Ledger::new(ramp_bytes(4)));
+        let mut p = Project::on(storage, ramp_bytes(4));
         let a = p.add_sample(&ramp(4)).unwrap();
         let b = p.add_sample(&ramp(4)).unwrap();
         let _held = p.load(a).unwrap();
@@ -438,12 +440,12 @@ pub(crate) mod tests {
     #[test]
     fn open_loads_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let mut p = Project::open(dir.path(), unlimited()).unwrap();
+        let mut p = Project::open(dir.path(), usize::MAX).unwrap();
         let id = p.add_sample(&ramp(4)).unwrap();
         let _held = p.load(id).unwrap();
         drop(p);
 
-        let p = Project::open(dir.path(), unlimited()).unwrap();
+        let p = Project::open(dir.path(), usize::MAX).unwrap();
         assert_eq!(p.ledger().in_use(), 0, "nothing is in RAM");
         assert!(
             p.storage.has_sample(id).unwrap(),

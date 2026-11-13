@@ -56,7 +56,7 @@ use crate::audio::Sample;
 use crate::audio::{AudioBuffer, ChannelLayout, Take};
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
-use crate::memory::{Ledger, OverBudgetError};
+use crate::project::ledger::{Ledger, OverBudgetError};
 use crate::render::Renderer;
 use crate::render::command::{
     BufferAddress, Command, InputRing, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap,

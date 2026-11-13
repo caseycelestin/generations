@@ -131,7 +131,7 @@ mod tests {
 
     use crate::audio::ChannelLayout;
     use crate::config::Pcm;
-    use crate::memory::Ledger;
+    use crate::project::ledger::Ledger;
     use crate::project::tests::memory_project;
     use crate::render::{Renderer, RendererSettings};
     use crate::testing::audio;

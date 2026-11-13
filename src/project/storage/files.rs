@@ -37,7 +37,7 @@ use thiserror::Error;
 
 use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::memory::Ledger;
+use crate::project::ledger::Ledger;
 use crate::project::storage::{Storage, StorageError};
 use crate::project::{SampleId, SampleMetadata};
 

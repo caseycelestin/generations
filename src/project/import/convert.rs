@@ -16,8 +16,8 @@ use thiserror::Error;
 
 use crate::audio::{AudioBuffer, AudioError, ChannelLayout};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::memory::{Block, Ledger, OverBudgetError};
 use crate::project::import::decode::DecodedAudio;
+use crate::project::ledger::{Block, Ledger, OverBudgetError};
 
 /// Frames the resampler works on per pass. Only affects speed and memory,
 /// not the result: the whole clip goes through in one call.
@@ -68,7 +68,7 @@ pub fn convert(decoded: DecodedAudio, ledger: &Ledger) -> Result<AudioBuffer, Co
     // Saturates rather than refuses: the ledger turns a count it cannot
     // put in bytes into its own refusal.
     let out_samples = out_frames.saturating_mul(channels);
-    let mut out: Block<Pcm> = ledger.alloc(out_samples)?;
+    let mut out: Block = ledger.alloc(out_samples)?;
     out.extend(repeat_n(0.0, out_samples));
     let produced = {
         let input = InterleavedSlice::new(&decoded.samples[..], channels, frames)
