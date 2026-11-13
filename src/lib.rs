@@ -157,6 +157,7 @@
 pub(crate) mod audio;
 pub mod config;
 pub(crate) mod control;
+pub mod engine;
 pub(crate) mod memory;
 pub mod project;
 pub(crate) mod render;
