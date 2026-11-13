@@ -1,5 +1,4 @@
-//! Scaffolding shared by tests across the crate. Compiled only for tests,
-//! so nothing here can be reached from the library.
+//! Scaffolding shared by tests across the crate.
 
 use crate::audio::{AudioBuffer, AudioMemory};
 use crate::config::Pcm;

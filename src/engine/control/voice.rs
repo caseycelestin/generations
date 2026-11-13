@@ -35,13 +35,11 @@ impl Voice {
         Ok(Self { id, rings, report })
     }
 
-    /// Stops the voice at the renderer's next period. A dropped voice
-    /// plays out instead.
+    /// Dropping the handle instead lets the voice play out.
     pub fn stop(&self) -> Result<(), ControlError> {
         self.rings.send(VoiceCommand::Remove(self.id))
     }
 
-    /// What the audio thread has said, as of now.
     pub fn state(&self) -> VoiceState {
         match self.report.ended() {
             Some(why) => VoiceState::Ended(why),

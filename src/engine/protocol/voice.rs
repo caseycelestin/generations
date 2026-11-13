@@ -10,15 +10,15 @@ use super::BufferAddress;
 #[derive(Debug)]
 pub(crate) enum VoiceCommand {
     Add(VoiceSpec),
-    /// Stop the voice, if it is still playing.
+    /// A stale id names nothing and does nothing.
     Remove(VoiceId),
-    /// Stop every voice playing this audio.
+    /// Every voice playing this audio.
     RemoveAudio(BufferAddress),
     RemoveAll,
 }
 
-/// A voice as asked for: what to play and where to report. Fixed for the
-/// voice's life; the renderer keeps it whole beside its playing state.
+/// Fixed for the voice's life; the renderer keeps it whole beside its
+/// playing state, to hand back.
 #[derive(Debug)]
 pub(crate) struct VoiceSpec {
     pub(crate) id: VoiceId,
@@ -27,21 +27,11 @@ pub(crate) struct VoiceSpec {
 }
 
 id! {
-    /// One playing of audio. The lowest id is the oldest; a stale
-    /// remove names nothing and does nothing.
+    /// Lower is older, which is how the renderer finds the voice to cut.
     VoiceId
 }
 
-/// The audio thread's report on a voice: empty while it plays, then why it
-/// ended. The handle reads it; the renderer writes it with one wait-free
-/// store, so it shows the moment the voice ends.
-///
-/// When other features need reports, the box becomes a generic
-/// `Report<T>` and a `reason!` macro generates each reason enum with its
-/// `u8` conversions from the variant list, so a feature writes only that
-/// list. A macro for the conversions because safe Rust cannot turn a `u8`
-/// back into an enum without a `match` per type; a generic for the box
-/// because it is the same for every reason.
+/// Empty while the voice plays, then why it ended.
 #[derive(Debug)]
 pub(crate) struct VoiceReport(AtomicU8);
 
@@ -62,7 +52,6 @@ impl VoiceReport {
         self.0.store(code, Ordering::Release);
     }
 
-    /// `None` while the voice plays.
     pub(crate) fn ended(&self) -> Option<VoiceEnd> {
         match self.0.load(Ordering::Acquire) {
             1 => Some(VoiceEnd::Finished),
@@ -73,7 +62,6 @@ impl VoiceReport {
     }
 }
 
-/// Why a voice ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceEnd {
     /// It played to its last frame.

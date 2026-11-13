@@ -12,7 +12,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
 | 6 | Recording: audio input as a new root | main out rebuilt on `src/engine/`, no `take` yet; inputs to come |
-| 7 | Input monitoring: hear the input through the output | done on the old engine, removed with it; to be rebuilt |
+| 7 | Input monitoring: hear the input through the output | to be rebuilt on `src/engine/` |
 | 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
 | 9 | Arrangement and more effects | |
 
@@ -32,46 +32,42 @@ or rejected instead. The history of how a shape was reached is in git.
 ### The project
 
 - **The project is the disk.** `Project` is a directory and holds no
-  in-memory copy of the project, not even a cache. Every change is
-  durable when the call returns, so there is no save step; on the device
-  the active project lives on eMMC and a "save" is a copy to the SD card.
-  The first model kept everything in RAM and treated persistence as a
-  dump; step 3 replaced it.
-- **Project and storage are one type.** `Project` and `Storage` were
-  split as rules over a dumb medium, for swappable backends. The backend
-  trait went first, then the rules went with lineage, leaving `Project`
-  passing every call through with two nested error types; merged
-  2026-11-13, in one file, `project.rs`: the public methods, then the
-  private ones that read and write the files. When lineage returns, its
-  rules are checks against the manifest before a write, on `Project`.
+  in-memory copy of the project, not even a cache: the OS caches the
+  files, and nothing real-time reads them. Every change is durable when
+  the call returns, so there is no save step; on the device the active
+  project lives on eMMC and a "save" is a copy to the SD card. A model
+  that kept everything in RAM and dumped it to disk was replaced in
+  step 3.
+- **Project and storage are one type.** A split into rules over a
+  separate storage medium was dropped: with no rules left, `Project` only
+  passed calls through, behind two nested error types. When lineage
+  returns, its rules are checks against the manifest before a write, on
+  `Project`.
 - **The project mints sample ids.** A sample does not exist until it is
   stored, like a database insert returning the row id. The counter is on
-  disk, only goes up, and never reuses an id.
+  disk, only goes up, and never reuses an id. There is no remove: one was
+  built and cut for want of a caller.
 - **A sample is named by its `SampleId`; a voice is not.** A sample
   outlives the program, so callers refer to it by an id they can keep and
   store (a parent pointer, pads and patterns later), and
   `load(id, &memory)` turns that into `Audio` the way a path opens a file.
   A voice lives only while it plays, so its handle keeps its `VoiceId`
   private and carries the verbs instead.
-- **Generation is a relationship, not a type.** A sample will be an id
-  and an optional parent id; lineage is the tree of parent pointers. It
-  was built in step 3 and removed after step 8, because nothing had made
-  a child since prints went in step 5. It returns with prints: `parent`
-  goes in the manifest's per-sample `Entry` with `#[serde(default)]`
-  (empty until then), and gets its rule on `Project`; `metadata(id)` comes
-  back to read it. Other fields join the sample the same way as steps
-  need them. (A `loaded` flag was the first
-  and was removed under Handles. Removing samples was built and cut in
-  the memory port: no caller.)
+- **Generation is a relationship, not a type.** Not built: a sample will
+  be an id and an optional parent id, and lineage the tree of parent
+  pointers. It was built once and removed while nothing made a child; it
+  returns with prints. `parent` goes in the manifest's per-sample `Entry`
+  with `#[serde(default)]`, its rule on `Project`, and `metadata(id)`
+  reads it. Other fields join the sample the same way as steps need
+  them.
 - **"Project"** is what every sampler calls the unit a user opens and
   copies to a card. It will hold patterns, settings and pad layouts too.
 
 ### Files
 
-- **No backend abstraction.** The `Storage` trait (files now, perhaps
-  SQLite later) was removed 2026-11-13: it had one implementation, and
-  the project's tests run on a temporary directory instead of an
-  in-memory stub.
+- **No backend abstraction.** A `Storage` trait was removed: it had one
+  implementation, and the tests run on a temporary directory instead of
+  an in-memory stub.
 - **A `Project` is always a whole project.** `open(dir)` creates an empty
   project in an empty or missing directory, validates a whole project
   otherwise, and refuses anything else. Validation happens on open, not
@@ -83,13 +79,9 @@ or rejected instead. The history of how a shape was reached is in git.
   manifest names it, temp manifest before the rename, the directory after
   each file change. A power cut leaves the old manifest or the new one; a
   WAV the manifest does not name is ignored.
-- **The on-disk form is a directory:** `project.json` (format version, id
-  counter, samples keyed by id) and `samples/<id>.wav`. The manifest is a
-  private struct in `project.rs`, not a serde derive on the model, so the
-  file format is versioned on its own. WAV rather than raw bytes so any
-  audio tool can open a sample.
-- **Nothing is cached by the project.** The OS caches the file and nothing
-  real-time reads it.
+- **The manifest is a private struct,** not a serde derive on the model,
+  so the file format is versioned on its own. Samples are WAV rather than
+  raw bytes so any audio tool can open one.
 - **The directory belongs to the engine.** A hand-renamed WAV makes open
   refuse the project; recovering is content-hash territory (Deferred).
 
@@ -98,34 +90,22 @@ or rejected instead. The history of how a shape was reached is in git.
 - **Target:** Raspberry Pi Compute Module 4; reference device Roland
   SP-404 MK2.
 - **One fixed format: 48 kHz, `f32`, on disk, in RAM and on the render
-  path.** Channel count (1 or 2) is per buffer. Day one stored `i16` and
-  processed `f32`; switched 2026-11-09 because the CM4 has hardware float,
-  `i16` throws away 24-bit sources at every generation, and the render
-  path should read samples rather than convert them. Cost: half the
-  resident minutes. The `Pcm` alias in `config.rs` keeps the choice in one
-  place; an `i16` build is a deferred idea, chosen at build time, never a
-  hybrid.
-- **Effects are not built.** The step 2 offline effect (`&AudioBuffer ->
-  AudioBuffer`, `print`, reverse) was removed in step 5: effects are to
-  live on the render side, and the offline form was the one allocation the
-  RAM budget could not see.
+  path.** Channel count (1 or 2) is per buffer. Not `i16` storage with
+  `f32` processing: the CM4 has hardware float, `i16` throws away 24-bit
+  sources at every generation, and the render path should read samples
+  rather than convert them. Cost: half the resident minutes. The `Pcm`
+  alias keeps the choice in one place; an `i16` build is a deferred idea,
+  chosen at build time, never a hybrid.
+- **Effects are not built.** They will live on the render side. An
+  offline form (`&AudioBuffer -> AudioBuffer`) was removed: it was the one
+  allocation the RAM budget could not see.
 
 ### Audio in
 
-- **Memory and storage are separate.** The caller makes one
-  `AudioMemory` for the machine (`new()`, or `with_budget(bytes)`) and
-  every audio byte in RAM comes from it; the project holds none, and a
-  load is paid for from the memory the caller passes. The budget belongs
-  to the machine, not to a project. (2026-11-13; it was the project's
-  `Ledger`.)
-- **Audio enters a project by being written.** `memory.alloc(layout,
-  frames)` hands out empty `Audio`, paid for in full against the budget;
-  `audio.extend(..)` fills it; and `project.add_sample(&audio)` stores it
-  as a sample and mints its id. Nothing is stored and no id exists until
-  the add. `alloc` is named for what it
-  does: it takes memory and touches no disk.
-- **WAV import was removed 2026-11-13** (the `decode` and `convert`
-  stages, `rubato`, `Project::import`); it is in the history before
+- **Audio enters a project by being written.** `memory.alloc` hands out
+  empty `Audio`, `extend` fills it, and `project.add_sample` stores it and
+  mints its id. `alloc` is named for what it does: it takes memory and
+  touches no disk. WAV import was removed; it is in the history before
   97e8eff if a file format is needed again.
 - **The rule is that every byte of audio in RAM is counted, not that the
   user never touches audio.** `Audio` is public, readable and writable;
@@ -133,8 +113,8 @@ or rejected instead. The history of how a shape was reached is in git.
 - **Audio in RAM, samples on disk.** What RAM holds has no id: it becomes
   a sample only when a project stores it. So the RAM types are named for
   audio (`AudioMemory`, `Audio`, crate-private `AudioBuffer`) and the
-  project's for samples (`SampleId`, `add_sample`). (2026-11-13; the
-  handle was `Sample`, the source `SampleMemory`.)
+  project's for samples (`SampleId`, `add_sample`). `Sample` and
+  `SampleMemory` were the RAM names before.
 - **One type is written, played and saved.** `Audio` is an
   `Arc<AudioBuffer>` with no `Clone`. `extend` goes through
   `Arc::get_mut`: refused while the engine holds the audio, which is what
@@ -146,20 +126,17 @@ or rejected instead. The history of how a shape was reached is in git.
 ### Memory
 
 - **One figure covers all audio-length memory.** The caller makes one
-  `AudioMemory` per machine and shares it as a cloneable handle; loaded
-  samples, audio being written and later effect state all count against
-  it. A per-sample length bound was the earlier plan and was rejected: the
+  `AudioMemory` per machine, not per project, and shares it as a
+  cloneable handle; loaded samples, audio being written and later effect
+  state all count against it. A per-sample length bound was rejected: the
   worst case was a multiple that depended on the operation.
 - **`AudioMemory` makes every `AudioBuffer`, and a buffer is the only
-  audio-length memory.** `alloc` checks the figure and returns a buffer
-  of fixed capacity that repays on drop, so release cannot be forgotten
-  or doubled. Buffers never grow. Step 5 held a `Reservation` beside an
-  ordinary `Vec`; the memory port made that one `Block`; on 2026-11-13 the
-  block was merged into `AudioBuffer`, its only user, and the `Ledger`
-  became `AudioMemory`.
+  audio-length memory.** A buffer has fixed capacity and repays on drop,
+  so release cannot be forgotten or doubled. A reservation held beside an
+  ordinary `Vec` was replaced: the buffer is its own receipt.
 - **Who may allocate is who holds an `AudioMemory`:** the caller, and what
-  it lends one to for a call (`Project::load`). The engine holds none; the
-  render side never allocates. A parameter, not a global, because the
+  it lends one to for a call (`Project::load`). The project and the
+  engine hold none; the render side never allocates. A parameter, not a global, because the
   signature is the permission and tests need their own budgets.
 - **Track what scales with audio; bound the rest.** Fixed overhead (the
   manifest, the rings, the renderer's scratch and its voice pool) is not
@@ -178,23 +155,17 @@ or rejected instead. The history of how a shape was reached is in git.
   the audio thread is first to write (a recording, later a delay line) is
   written once on the control side before the audio thread has it:
   `record` prefaults its audio. Prefaulting every allocation was rejected
-  as work with nothing to gain, and weighed again for the wait it puts on
-  a record press; arming will take it off the press instead (see
-  Recording).
+  as work with nothing to gain.
 - **Review rule:** every new audio-length allocation comes from
   `AudioMemory`, or the figure is a lie; one the audio thread fills is
   prefaulted.
 
 ### The two sides
 
-- **The project and the engine never name each other.** The disk side is
-  `Project` (`open`, `load`, `add_sample`). The sound side is
-  `engine::create(command_capacity, voices) -> (Control, Renderer)`: the
-  renderer moves to the audio thread, `Control` stays (`play`, `stop`,
-  `stop_all`, `collect`). What crosses is `Audio`, carried by the caller.
-  Until 2026-11-10 an `Engine` type was the only way in and every verb
-  was an engine method taking an id; no method needed both sides, so it
-  was dissolved, and a joint constructor was rejected as the engine again.
+- **The project and the engine never name each other;** the caller
+  carries `Audio` between them. An `Engine` type over both was dissolved,
+  since no method needed both sides, and a joint constructor was rejected
+  as the same thing again.
 - **A verb lives on the thing it acts on.** `voice.stop()` and
   `voice.state()` act on one playing; `control.stop(&audio)` and
   `stop_all()` act across voices, so they live on `Control`. A handle
@@ -203,13 +174,13 @@ or rejected instead. The history of how a shape was reached is in git.
   removal from `Drop` was tried and rejected as the wrong coupling.
 - **`Control` is the door to one renderer.** It holds the control side's
   ends of both rings behind one lock (`SharedRings`), so every push
-  follows a drain of the ring back. Clones are the same renderer. Control
-  side only: nothing on the audio thread holds one. Named for what it is
+  follows a drain of the ring back. Nothing on the audio thread holds
+  one. Named for what it is
   to the caller; `RendererHandle`, `Link` and `Remote` were rejected.
 - **Commands are optimistic; the audio thread is the authority on state.**
   A send succeeds or reports the ring full; what then happened reaches the
-  handle through a report the renderer fills with one atomic store
-  (`VoiceReport`), not through a ring. The ring back only carries the
+  handle through a report the renderer fills with one atomic store, not
+  through a ring. The ring back only carries the
   audio thread's last references, to be freed on the control side, and
   the rings code may only drop what comes back or hand it to the
   feature's control module.
@@ -227,12 +198,9 @@ or rejected instead. The history of how a shape was reached is in git.
   does: unique across every engine, in order, never reused. They are
   minted before the send, so a refused command burns its id; nothing
   reads the gaps.
-- **The source tree is the architecture.** At the top: `config` and
-  `layout` (the fixed format), `audio` (`AudioMemory`, `Audio`) and
-  `project`. Under `src/engine/`: `protocol/` (what crosses), `control/`
-  (the control thread: `Control`, `Voice`) and `realtime/` (the audio
-  thread's `render/`, and `capture/`, empty until inputs). `control/` and
-  `realtime/` never import each other; both import `protocol/`.
+- **`control/` and `realtime/` never import each other;** both import
+  `protocol/`. The source tree is the architecture, drawn in the crate
+  docs.
 
 ### The render side
 
@@ -251,24 +219,24 @@ or rejected instead. The history of how a shape was reached is in git.
   once. Blocks keep the scratch fixed and are what Pd, SuperCollider and
   Max do; the latency is the device's period, not the block. The mix is
   always stereo (`Renderer::CHANNELS`): mono audio plays at full level on
-  both sides. The old engine's `Source` trait, `Gain` and `Sounds` were
-  not carried over, and before them a `Processor` trait with boxed
-  chains and a `Mixer<S, N>` were built and removed.
+  both sides. A `Source` trait, boxed `Processor` chains and a generic
+  `Mixer` were each built and dropped.
 - **Voices are a fixed pool.** `voices` is given to `create` and the pool
-  never resizes. A play with every place taken cuts the oldest: a press
-  must sound. The pool picks which voice to cut; the renderer ends it and
-  reports why.
+  never resizes: a CPU budget the caller sizes for its hardware, with no
+  hardware maximums in the crate, and not counted by `AudioMemory`. A play
+  with every place taken cuts the oldest: a press must sound. The pool
+  picks which voice to cut; the renderer ends it and reports why.
 - **Every voice ends one of three ways, and says which:** `Finished`
   (played to its last frame), `Stopped` (a stop arrived) or `Cut` (its
   place was taken). `Cut` is the sampler's umbrella: choke groups and
   retrigger will end voices the same way.
-- **Only plain things cross, both ways.** A play carries a `VoiceSpec`:
-  the id, the audio's `Arc<AudioBuffer>` and the report. When the voice
-  ends, the audio and report go back as a `Return`, so the last reference
-  is dropped on the control side.
+- **Only plain things cross, both ways.** A play or a record carries a
+  spec: the audio's `Arc<AudioBuffer>`, the report, and for a voice its
+  id. Whatever ends or is refused goes back whole as a `Return`, so the
+  last reference is dropped on the control side.
 - **The ring back never fills.** Every send drains it first, so between
-  drains it holds at most every voice the renderer holds plus one return
-  per queued command; `create` sizes it at that. Freeing a large buffer
+  drains it holds at most every voice and the recording the renderer
+  holds, plus one return per queued command; `create` sizes it at that. Freeing a large buffer
   is a trip into the allocator and the kernel with no bound on its time,
   so it never happens on the audio thread.
 - **Commands are low level.** Operations on what the renderer holds,
@@ -287,15 +255,11 @@ or rejected instead. The history of how a shape was reached is in git.
   envelope's release. The old engine said `Sound` and `SoundId`.
 - **Clip once, hard, last.** Same result on every device and offline; it is
   what hardware samplers do. A master gain or limiter goes before it.
-- **Bounded polyphony.** The voice count is a CPU budget the caller sizes
-  for its hardware; the crate keeps no hardware maximums. It is not
-  counted by `AudioMemory`, which counts only audio-length memory.
 
 ### Input and monitoring
 
-Built in step 7 on the old engine and removed with it (PR #57); the old
-design is in the history before 42231f2. To be rebuilt on `src/engine/`,
-where inputs bring the capture thread: `realtime/capture/` is its place.
+Not built; the old engine's version is in the history before 42231f2.
+Inputs bring the capture thread, whose place is `realtime/capture/`.
 cpal has no duplex stream, so the capture and audio clocks drift, and an
 input's ring must be freed on the control side like any other return.
 
@@ -322,15 +286,13 @@ input's ring must be freed on the control side like any other return.
 
 ### Recording
 
-Built in step 6, removed in the memory port (PR #40), rebuilt for the main
-out in step 8, removed with the old engine (PR #57), and rebuilt on
-`src/engine/` for the main out (PR #66 and the buffer PR). Inputs follow.
+Built for the main out; `take` and recording inputs are not built yet.
 
 - **A recording is a handle, as a voice is.** `control.record(audio)`
   returns a `Recording` with `stop`, `state` and `take`. Its report holds
   the latest state: `Pending`, `Recording`, then `Ended(Full)` or
   `Ended(Stopped)`, or `Refused`. The report is a copy of the voice's
-  until reports are made generic.
+  until reports are made generic (see Deferred ideas).
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
   length is a maximum, and reaching it ends the take `Full`, which is not
   an error. Only stereo audio is taken: the main out is stereo.
@@ -348,9 +310,6 @@ out in step 8, removed with the old engine (PR #57), and rebuilt on
 - **The main out is written as heard**, after each block is clipped, and
   the end-of-period clean-up ends a take whose audio is full. `record`
   clears the audio and prefaults it first.
-- **Every return is the spec handed back**, for voices too: a refused or
-  ended recording's audio and report go back on the ring, so nothing is
-  freed on the audio thread.
 - **`Stop` names its take by buffer address**, so an old handle cannot
   stop a newer take. That is sound only while the take cannot be freed
   before the stop is applied; today `collect` frees a returned take, so
@@ -389,8 +348,7 @@ out in step 8, removed with the old engine (PR #57), and rebuilt on
 ## Step 8: the real-time side
 
 Built on `src/engine/`: voices, block mixing, the ring back (see the
-render side, above) and recording of the main out (see Recording). The old engine's mixer, release ring and main-out
-recorder went with it in PR #57.
+render side, above) and recording of the main out (see Recording).
 
 What is left:
 - **Recording** (see Recording, above): passing a take back to `take`,
@@ -438,7 +396,7 @@ The project does not know about tiers.
 - **Projects in another stored format** than the engine's, converted on
   load and saved in the engine's.
 - **Warming the small rings.** The ring back's slots are first written
-  by the renderer and an input ring's by the capture thread, so
+  by the renderer (and an input ring's will be by the capture thread), so
   each faults a few pages on its first pushes. rtrb has no hook to
   prefault; pushing and popping a value through every slot at creation
   would do it.
@@ -452,5 +410,10 @@ The project does not know about tiers.
   atomic could report a take's progress.
 - **Saving a take as loaded audio**, a copy into a right-sized buffer,
   for playing a resample at once without reading it back from disk.
-- **A `stereo` fast path** for stereo-as-stored, after a measurement.
+- **Generic reports.** `VoiceReport` and `RecordingReport` become one
+  `Report<T>`, and a `reason!` macro generates each state enum with its
+  `u8` conversions from the variant list, so a feature writes only that
+  list. A macro for the conversions because safe Rust cannot turn a `u8`
+  back into an enum without a `match` per type; a generic for the atomic
+  because it is the same for every feature.
 - **Hardware monitoring** on the target's codec, if it has it.

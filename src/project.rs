@@ -1,11 +1,10 @@
 //! A project: everything the device keeps for one piece of work.
 //!
-//! [`Project`] is a directory and keeps no copy of it: every change is on
-//! disk when the call returns, so there is no save step. It holds no memory
-//! either: a load is paid for from the caller's `AudioMemory`, as a file
-//! read fills the caller's buffer. Audio becomes a sample, with an id, when
-//! it is added. Project and engine never name each other; the caller
-//! carries [`Audio`] between them.
+//! [`Project`] is a directory and keeps no copy of it: every operation
+//! reads the manifest, and every write is synced before the call returns, a
+//! WAV before the manifest names it, so there is no save step. A load is
+//! paid for from the caller's `AudioMemory`, as a file read fills the
+//! caller's buffer.
 //!
 //! ```text
 //! myproject/
@@ -14,8 +13,6 @@
 //!     0.wav           one 48 kHz 32-bit float WAV per sample, named by id
 //! ```
 //!
-//! Nothing is cached: every operation reads the manifest. Every write is
-//! synced before the call returns, a WAV before the manifest names it.
 //! WAV rather than raw bytes so any audio tool opens a sample. A 16-bit
 //! WAV from the old format is refused, yet the version stays 1: nothing
 //! written then was meant to be kept.
@@ -51,10 +48,8 @@ pub enum ProjectError {
     /// Nothing was read.
     #[error(transparent)]
     OverBudget(#[from] OverBudgetError),
-    /// Files that are not a project.
     #[error("not a project: {0}")]
     NotAProject(String),
-    /// A project with parts missing or wrong.
     #[error("project is corrupt: {0}")]
     Corrupt(String),
     #[error("project format version {0} is not supported")]
@@ -94,9 +89,7 @@ impl Project {
         Ok(project)
     }
 
-    /// Reads `id` into RAM; dropping the audio unloads it once nothing
-    /// playing it still holds it. Each load is its own copy, so loading
-    /// twice costs the memory twice.
+    /// Each load is its own copy, so loading twice costs the memory twice.
     pub fn load(&self, id: SampleId, memory: &AudioMemory) -> Result<Audio, ProjectError> {
         if !self.has_sample(id)? {
             return Err(ProjectError::UnknownSample(id));
@@ -107,8 +100,7 @@ impl Project {
         Ok(Audio::new(buffer))
     }
 
-    /// Stores a copy of `audio` as a new sample and mints its id. Ids come
-    /// from a counter that only goes up, so an id is never reused.
+    /// Stores a copy of `audio` as a new sample.
     pub fn add_sample(&mut self, audio: &Audio) -> Result<SampleId, ProjectError> {
         let mut manifest = self.read_manifest()?;
         let id = SampleId(manifest.next_id);

@@ -1,4 +1,4 @@
-//! The new engine as a user sees it today: load a sample from a project,
+//! The engine as a user sees it: load a sample from a project,
 //! make an engine, keep the control, play its audio as voices, and give the
 //! renderer to the audio thread to render periods. One voice plays out, one
 //! is stopped, and each reports how it ended. The main out is recorded
@@ -16,7 +16,7 @@ use std::thread;
 use generations::engine::{self, RecordingState, VoiceState};
 use generations::{AudioMemory, ChannelLayout, Project, SampleId};
 
-/// RAM for audio: a generous guess for a desktop.
+/// A generous guess for a desktop.
 const AUDIO_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn Error>> {

@@ -17,13 +17,13 @@ use rings::SharedRings;
 
 #[derive(Debug, Error)]
 pub enum ControlError {
-    /// The renderer has not caught up; the command was dropped.
+    /// The renderer has not caught up; nothing was sent.
     #[error("the command ring is full")]
     CommandsFull,
 }
 
-/// One renderer, for the control side: makes the handles that act on it.
-/// Clones are the same renderer.
+/// Clones act on the same renderer. Every command, from here or from a
+/// handle, takes effect at the renderer's next period.
 #[derive(Debug, Clone)]
 pub struct Control {
     rings: SharedRings,
@@ -36,26 +36,25 @@ impl Control {
         }
     }
 
-    /// Starts `audio` at the renderer's next period.
     pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
         Voice::play(self.rings.clone(), audio)
     }
 
-    /// Stops every voice playing `audio`, at the renderer's next period.
+    /// Stops every voice playing `audio`.
     pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
         let address = BufferAddress::of(audio.shared());
         self.rings.send(VoiceCommand::RemoveAudio(address))
     }
 
-    /// Stops every voice, at the renderer's next period.
+    /// Stops every voice; a recording runs on.
     pub fn stop_all(&self) -> Result<(), ControlError> {
         self.rings.send(VoiceCommand::RemoveAll)
     }
 
-    /// Records the main out into `audio`, from empty, at the renderer's
-    /// next period. By value: the renderer writes it until it is handed back.
-    /// Refused while another recording runs, as its state shows, and at once
-    /// while a voice holds `audio`.
+    /// Records the main out into `audio`, from empty. By value: the
+    /// renderer writes it until it comes back. Refused while another
+    /// recording runs, as its state shows, and at once while a voice holds
+    /// `audio`.
     pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
         Recording::record(self.rings.clone(), audio)
     }

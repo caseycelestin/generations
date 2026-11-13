@@ -12,7 +12,6 @@ use crate::engine::protocol::Return;
 use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
 use crate::layout::ChannelLayout;
 
-/// A voice while it plays.
 #[derive(Debug)]
 pub(crate) struct Voice {
     spec: VoiceSpec,
@@ -21,13 +20,12 @@ pub(crate) struct Voice {
 }
 
 impl Voice {
-    /// Only moves the spec in, so nothing allocates.
     pub(crate) fn new(spec: VoiceSpec) -> Self {
         Self { spec, position: 0 }
     }
 
-    /// Writes its next frames into `scratch`, then silence once the audio
-    /// runs out. Mono is heard at full level on both sides.
+    /// Silence once the audio runs out. Mono goes to both sides at full
+    /// level.
     pub(crate) fn render(&mut self, scratch: &mut [Frame]) {
         let audio = &self.spec.audio;
         let end = (self.position + scratch.len()).min(audio.frames());
@@ -57,8 +55,7 @@ impl Voice {
         self.position == self.spec.audio.frames()
     }
 
-    /// The one way a voice leaves: reports `why`, then hands its audio and
-    /// report back to be freed on the control side, never here.
+    /// The one way a voice leaves.
     pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Return>) {
         self.spec.report.end(why);
         let pushed = to_control.push(Return::Voice(self.spec));
@@ -68,14 +65,12 @@ impl Voice {
 
 #[derive(Debug)]
 pub(crate) struct Voices {
-    /// A fixed number of places: `None` is free. A boxed slice cannot
-    /// grow, so nothing here reallocates on the audio thread.
+    /// `None` is free. Boxed so it cannot grow on the audio thread.
     places: Box<[Option<Voice>]>,
 }
 
 impl Voices {
-    /// `count` free places, allocated here, on the control side. At least
-    /// one, so `add` always has a place or an oldest to cut.
+    /// At least one, so `add` always has a place or an oldest to cut.
     pub(crate) fn new(count: NonZeroUsize) -> Self {
         Self {
             places: (0..count.get()).map(|_| None).collect(),
@@ -102,12 +97,10 @@ impl Voices {
         }
     }
 
-    /// Every playing voice.
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
         self.places.iter_mut().flatten()
     }
 
-    /// Takes out the voice `id`, if it is still here.
     pub(crate) fn remove(&mut self, id: VoiceId) -> Option<Voice> {
         let found = self
             .places
@@ -127,7 +120,6 @@ impl Voices {
             .filter_map(move |place| place.take_if(|voice| test(voice)))
     }
 
-    /// Takes out every voice.
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = Voice> + '_ {
         self.places.iter_mut().filter_map(Option::take)
     }

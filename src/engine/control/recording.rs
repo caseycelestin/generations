@@ -19,8 +19,7 @@ pub enum RecordError {
     /// The main out is stereo, so mono audio cannot hold it.
     #[error("recording needs stereo audio")]
     NotStereo(Audio),
-    /// A voice still holds the audio, so it cannot be written. Stop its
-    /// voices and try again.
+    /// Stop its voices and try again.
     #[error("a voice still holds the audio")]
     AudioInUse(Audio),
     /// The renderer has not caught up; nothing was sent.
@@ -74,18 +73,15 @@ impl Recording {
         })
     }
 
-    /// Stops the recording at the renderer's next period.
     pub fn stop(&self) -> Result<(), ControlError> {
         self.rings.send(RecordingCommand::Stop(self.address))
     }
 
-    /// What the audio thread has said, as of now.
     pub fn state(&self) -> RecordingState {
         self.report.state()
     }
 
-    /// The recorded audio, once the recording has ended. Before then the
-    /// handle comes back, so it can be asked again.
+    /// Until the recording has ended the handle comes back, to ask again.
     pub fn take(self) -> Result<Audio, Self> {
         todo!("hand back the audio once it has come back")
     }

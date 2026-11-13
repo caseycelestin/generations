@@ -37,15 +37,13 @@ impl Recording {
         self.spec.audio.is_full()
     }
 
-    /// The one way a recording leaves: reports `why`, then hands its audio
-    /// and report back to be freed on the control side, never here.
+    /// The one way a recording leaves.
     pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Return>) {
         self.spec.report.set(RecordingState::Ended(why));
         let pushed = to_control.push(Return::Recording(self.spec));
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 
-    /// For a start that never became a recording: the recorder was busy.
     pub(crate) fn refuse(spec: RecordingSpec, to_control: &mut Producer<Return>) {
         spec.report.set(RecordingState::Refused);
         let pushed = to_control.push(Return::Recording(spec));

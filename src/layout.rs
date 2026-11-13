@@ -1,7 +1,5 @@
-//! Audio in this crate is mono or stereo, and [`ChannelLayout`] says
-//! which, for a buffer and for one source of an input alike. A raw channel
-//! count exists only where a file hands one over, and becomes a layout
-//! there or is refused.
+//! Audio in this crate is mono or stereo. A raw channel count exists only
+//! where a file hands one over, and becomes a layout there or is refused.
 
 use thiserror::Error;
 
@@ -9,14 +7,12 @@ use crate::config::MAX_CHANNELS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ChannelLayoutError {
-    /// A channel count was zero or above [`MAX_CHANNELS`]: no layout.
     #[error("channel count {0} is not in 1..={MAX_CHANNELS}")]
     BadChannelCount(u16),
 }
 
-/// How many channels a frame holds and what they mean: one heard on both
-/// sides, or two heard left and right. Interleaved stereo is left then
-/// right everywhere, so a pair is always the two channels in that order.
+/// Mono is heard on both sides. Interleaved stereo is left then right
+/// everywhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelLayout {
     Mono,
@@ -24,7 +20,6 @@ pub enum ChannelLayout {
 }
 
 impl ChannelLayout {
-    /// How many channels a frame of this layout holds.
     pub fn count(self) -> usize {
         match self {
             ChannelLayout::Mono => 1,
@@ -33,7 +28,6 @@ impl ChannelLayout {
     }
 }
 
-/// The layout of a raw channel count, as a file or decoder gives one.
 impl TryFrom<u16> for ChannelLayout {
     type Error = ChannelLayoutError;
 
@@ -46,7 +40,6 @@ impl TryFrom<u16> for ChannelLayout {
     }
 }
 
-/// The raw channel count of a layout, as a file header wants one.
 impl From<ChannelLayout> for u16 {
     fn from(layout: ChannelLayout) -> u16 {
         match layout {
