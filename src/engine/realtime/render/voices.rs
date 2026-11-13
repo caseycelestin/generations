@@ -9,7 +9,7 @@ use rtrb::Producer;
 use super::{Frame, Renderer};
 use crate::audio::ChannelLayout;
 use crate::engine::protocol::Return;
-use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
 
 /// A voice while it plays.
 #[derive(Debug)]
@@ -21,7 +21,7 @@ pub(crate) struct Voice {
 
 impl Voice {
     /// Only moves the spec in, so nothing allocates.
-    fn new(spec: VoiceSpec) -> Self {
+    pub(crate) fn new(spec: VoiceSpec) -> Self {
         Self { spec, position: 0 }
     }
 
@@ -47,9 +47,14 @@ impl Voice {
         self.position = end;
     }
 
+    /// Its last frame has been rendered.
+    fn finished(&self) -> bool {
+        self.position == self.spec.audio.frames()
+    }
+
     /// The one way a voice leaves: reports `why`, then hands its audio and
     /// report back to be freed on the control side, never here.
-    fn end(self, why: VoiceEnd, to_control: &mut Producer<Return>) {
+    pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Return>) {
         self.spec.report.end(why);
         let pushed = to_control.push(Return::Voice {
             audio: self.spec.audio,
@@ -68,7 +73,7 @@ pub(crate) struct Voices {
 
 impl Voices {
     /// `count` free places, allocated here, on the control side. At least
-    /// one, so an `Add` always has a place or an oldest to cut.
+    /// one, so `add` always has a place or an oldest to cut.
     pub(crate) fn new(count: NonZeroUsize) -> Self {
         Self {
             places: (0..count.get()).map(|_| None).collect(),
@@ -80,19 +85,21 @@ impl Voices {
         self.places.iter_mut().flatten()
     }
 
-    /// Applies one voice command. Anything that leaves is handed back on
-    /// `to_control`.
-    pub(crate) fn apply(&mut self, command: VoiceCommand, to_control: &mut Producer<Return>) {
-        match command {
-            VoiceCommand::Add(spec) => self.add(Voice::new(spec), to_control),
-            VoiceCommand::Remove(id) => self.remove(id, to_control),
-        }
+    /// Takes out every voice that has played to its last frame.
+    pub(crate) fn pop_finished(&mut self) -> impl Iterator<Item = Voice> + '_ {
+        self.places
+            .iter_mut()
+            .filter_map(|place| place.take_if(|voice| voice.finished()))
     }
 
-    /// Takes a free place, or cuts the oldest voice for one.
-    fn add(&mut self, voice: Voice, to_control: &mut Producer<Return>) {
+    /// Takes a free place, or the oldest voice's place, returning the
+    /// voice replaced.
+    pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
         match self.places.iter_mut().find(|place| place.is_none()) {
-            Some(free) => *free = Some(voice),
+            Some(free) => {
+                *free = Some(voice);
+                None
+            }
             None => {
                 let oldest = self
                     .places
@@ -100,20 +107,17 @@ impl Voices {
                     .flatten()
                     .min_by_key(|voice| voice.spec.id)
                     .expect("every place is taken, and there is at least one");
-                let cut = mem::replace(oldest, voice);
-                cut.end(VoiceEnd::Cut, to_control);
+                Some(mem::replace(oldest, voice))
             }
         }
     }
 
-    /// Ends the voice `id` as stopped, if it is still here.
-    fn remove(&mut self, id: VoiceId, to_control: &mut Producer<Return>) {
+    /// Takes out the voice `id`, if it is still here.
+    pub(crate) fn remove(&mut self, id: VoiceId) -> Option<Voice> {
         let found = self
             .places
             .iter_mut()
             .find(|place| matches!(place, Some(voice) if voice.spec.id == id));
-        if let Some(voice) = found.and_then(Option::take) {
-            voice.end(VoiceEnd::Stopped, to_control);
-        }
+        found.and_then(Option::take)
     }
 }

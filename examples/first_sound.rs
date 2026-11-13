@@ -16,12 +16,12 @@
 
 use std::error::Error;
 use std::f32::consts::TAU;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::config::MAX_PERIOD_FRAMES;
-use generations::{Ledger, Project, Renderer, RendererSettings};
+use generations::{Ledger, Project, engine};
 
 mod device;
 use device::Device;
@@ -58,9 +58,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("usage: first_sound <project-dir>")?;
 
     let ledger = Ledger::new(SAMPLE_RAM_BUDGET);
-    let mut project = Project::open(&dir, ledger.clone())?;
-    // The output device renders in pieces of at most this many frames.
-    let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES), ledger);
+    let mut project = Project::open(&dir, ledger)?;
+    // Room for 64 commands in flight and 16 voices at once.
+    let commands = NonZeroUsize::new(64).expect("not zero");
+    let voices = NonZeroUsize::new(16).expect("not zero");
+    let (control, mut renderer) = engine::create(commands, voices);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
     let scratch = tempfile::tempdir()?;
@@ -68,11 +70,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let pluck = project.load(pluck)?;
 
     println!("pluck");
-    control.play(&pluck)?;
+    let first = control.play(&pluck)?;
     sleep(Duration::from_millis(600));
+    println!("first: {:?}", first.state());
     println!("pluck again, over the first one's tail");
-    control.play(&pluck)?;
+    let second = control.play(&pluck)?;
     sleep(Duration::from_millis(1200));
+    // Both have played to their last frame by now.
+    println!("first: {:?}, second: {:?}", first.state(), second.state());
+    control.collect();
 
     // The audio thread queues its complaints; this is where they are read.
     while let Some(e) = stream.error() {

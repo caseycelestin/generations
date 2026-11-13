@@ -8,9 +8,10 @@ use std::num::NonZeroUsize;
 use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
+use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
 use crate::engine::protocol::{Command, Return};
 use math::{add, hard_clip};
-use voices::Voices;
+use voices::{Voice, Voices};
 
 /// One output frame: a sample per side.
 pub(crate) type Frame = [Pcm; Renderer::CHANNELS];
@@ -62,14 +63,31 @@ impl Renderer {
             }
         }
         hard_clip(out);
+        self.clean_up();
     }
 
     /// Applies every command waiting, oldest first.
     fn apply_commands(&mut self) {
         while let Ok(command) = self.from_control.pop() {
             match command {
-                Command::Voice(command) => self.voices.apply(command, &mut self.to_control),
+                Command::Voice(VoiceCommand::Add(spec)) => {
+                    if let Some(replaced) = self.voices.add(Voice::new(spec)) {
+                        replaced.end(VoiceEnd::Cut, &mut self.to_control);
+                    }
+                }
+                Command::Voice(VoiceCommand::Remove(id)) => {
+                    if let Some(stopped) = self.voices.remove(id) {
+                        stopped.end(VoiceEnd::Stopped, &mut self.to_control);
+                    }
+                }
             }
+        }
+    }
+
+    /// End-of-period housekeeping: ends every voice that played to its last frame.
+    fn clean_up(&mut self) {
+        for voice in self.voices.pop_finished() {
+            voice.end(VoiceEnd::Finished, &mut self.to_control);
         }
     }
 }
