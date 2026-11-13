@@ -8,9 +8,9 @@ pub use voice::{Voice, VoiceState};
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
+use crate::audio::Sample;
 use crate::engine::protocol::voice::{BufferAddress, VoiceCommand};
 use crate::engine::protocol::{Command, Return};
-use crate::project::sample::Sample;
 use rings::SharedRings;
 
 #[derive(Debug, Error)]

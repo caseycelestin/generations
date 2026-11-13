@@ -39,8 +39,7 @@ mod tests {
 
     use super::*;
     use crate::audio::ChannelLayout;
-    use crate::project::SampleId;
-    use crate::project::sample::Sample;
+    use crate::audio::Sample;
     use crate::testing::audio;
 
     fn count(n: usize) -> NonZeroUsize {
@@ -48,7 +47,7 @@ mod tests {
     }
 
     fn sample(samples: &[f32]) -> Sample {
-        Sample::new(SampleId(0), audio(ChannelLayout::Mono, samples))
+        Sample::new(audio(ChannelLayout::Mono, samples))
     }
 
     #[test]

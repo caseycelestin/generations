@@ -164,14 +164,13 @@ pub(crate) mod render;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioError, ChannelLayout, Take};
+pub use audio::{AudioError, ChannelLayout, Sample, Take};
 pub use control::input::{Input, InputFeed, InputLayout, InputSound};
 pub use control::recorder::Recorder;
 pub use control::sample_sound::SampleSound;
 pub use control::{Control, ControlError};
 pub use memory::{Ledger, OverBudgetError};
 pub use project::import::{ConvertError, DecodeError, ImportError};
-pub use project::sample::Sample;
 pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};
 pub use render::command::Tap;

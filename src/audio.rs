@@ -17,6 +17,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -153,6 +154,23 @@ impl AudioBuffer {
     /// Empties the buffer. The room comes back; the block stays paid for.
     pub(crate) fn clear(&mut self) {
         self.data.truncate(0);
+    }
+}
+
+/// Audio in RAM that never changes, shared with whatever plays it.
+/// Holding it is what loaded means: drop it and its block repays the
+/// ledger once nothing playing it holds the audio.
+#[derive(Debug)]
+pub struct Sample(Arc<AudioBuffer>);
+
+impl Sample {
+    pub(crate) fn new(audio: AudioBuffer) -> Self {
+        Self(Arc::new(audio))
+    }
+
+    /// The audio, shared: what a playing of it holds.
+    pub(crate) fn audio(&self) -> &Arc<AudioBuffer> {
+        &self.0
     }
 }
 

@@ -15,16 +15,14 @@
 //! one to the other.
 
 pub(crate) mod import;
-pub(crate) mod sample;
 pub(crate) mod storage;
 
 use std::path::Path;
 
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, Take};
+use crate::audio::{AudioBuffer, Sample, Take};
 use crate::memory::Ledger;
-use crate::project::sample::Sample;
 use import::ImportError;
 use storage::{Storage, StorageError};
 
@@ -126,7 +124,7 @@ impl Project {
     /// RAM, so loading a sample twice costs its memory twice. Hold one
     /// per sample.
     pub fn load(&self, id: SampleId) -> Result<Sample, ProjectError> {
-        Ok(Sample::new(id, self.audio(id)?))
+        Ok(Sample::new(self.audio(id)?))
     }
 
     /// Adds audio as a sample and returns its id.
@@ -382,7 +380,6 @@ pub(crate) mod tests {
         let id = p.add_sample(&ramp(4)).unwrap();
 
         let loaded = p.load(id).unwrap();
-        assert_eq!(loaded.id(), id);
         assert_eq!(loaded.audio().samples(), ramp(4).samples());
         assert_eq!(p.ledger().in_use(), ramp_bytes(4));
     }

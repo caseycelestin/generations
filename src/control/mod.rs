@@ -52,14 +52,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
+use crate::audio::Sample;
 use crate::audio::{AudioBuffer, ChannelLayout, Take};
 use crate::config::{MAX_INPUT_CHANNELS, MAX_PERIOD_FRAMES};
 use crate::control::sample_sound::SampleSound;
 use crate::memory::{Ledger, OverBudgetError};
-use crate::project::sample::Sample;
 use crate::render::Renderer;
 use crate::render::command::{
-    Command, InputRing, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap,
+    BufferAddress, Command, InputRing, Released, SoundCommand, SoundId, SoundParam, TakeId, Tap,
 };
 use input::{Input, InputFeed, InputLayout};
 use recorder::Recorder;
@@ -211,7 +211,7 @@ impl Control {
     /// when the eviction is pushed and cannot name a later buffer; see
     /// `BufferAddress`.
     pub fn stop(&self, sample: &Sample) -> Result<(), ControlError> {
-        self.send(Command::Evict(sample.addr()))
+        self.send(Command::Evict(BufferAddress::of(sample.audio())))
     }
 
     /// Stops every sample at the renderer's next period. Inputs keep
@@ -846,7 +846,6 @@ mod tests {
             control.stop(&loaded),
             Err(ControlError::CommandsFull)
         ));
-        assert_eq!(loaded.id(), id);
         assert_eq!(p.ledger().in_use(), ramp_bytes(100));
     }
 
