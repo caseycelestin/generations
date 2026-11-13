@@ -20,11 +20,17 @@ pub struct Renderer {
     from_control: Consumer<Command>,
     to_control: Producer<Return>,
     voices: Voices,
+    /// One sound's frames for the block, before they join the mix.
+    scratch: Box<[Frame]>,
 }
 
 impl Renderer {
     /// Always stereo.
     pub(crate) const CHANNELS: usize = 2;
+
+    /// A period of any length is mixed in blocks this long, so scratch
+    /// never grows.
+    pub(crate) const BLOCK_FRAMES: usize = 64;
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
@@ -37,6 +43,7 @@ impl Renderer {
             from_control,
             to_control,
             voices: Voices::new(voices),
+            scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
 
