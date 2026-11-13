@@ -12,17 +12,15 @@ pub(crate) enum RecordingCommand {
 }
 
 #[derive(Debug)]
-pub(crate) struct RecordingSpec {
-    pub(crate) audio: Arc<AudioBuffer>,
+pub(crate) struct RecordingEvent {
+    pub(crate) state: RecordingState,
+    /// Back only when the renderer lets go: on `Refused` and `Ended`.
+    pub(crate) spec: Option<RecordingSpec>,
 }
 
-/// A recording's new state. The spec comes back with the states that end
-/// it, and only with those.
 #[derive(Debug)]
-pub(crate) enum Returned {
-    Started,
-    Refused(RecordingSpec),
-    Ended(RecordingEnd, RecordingSpec),
+pub(crate) struct RecordingSpec {
+    pub(crate) audio: Arc<AudioBuffer>,
 }
 
 /// What the audio thread last said about a recording.

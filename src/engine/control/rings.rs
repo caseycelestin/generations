@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use rtrb::{Consumer, Producer};
 
 use super::ControlError;
-use crate::engine::protocol::recording::{RecordingState, Returned};
-use crate::engine::protocol::{Command, HandleId, Message, Return};
+use crate::engine::protocol::recording::{RecordingEvent, RecordingState};
+use crate::engine::protocol::voice::VoiceEvent;
+use crate::engine::protocol::{Command, Event, HandleId, Message};
 
 /// One per renderer, shared by its `Control` and every handle.
 #[derive(Debug, Clone)]
@@ -25,7 +26,10 @@ struct Shared {
 }
 
 impl SharedRings {
-    pub(crate) fn new(to_renderer: Producer<Message>, from_renderer: Consumer<Return>) -> Self {
+    pub(crate) fn new(
+        to_renderer: Producer<Message<Command>>,
+        from_renderer: Consumer<Message<Event>>,
+    ) -> Self {
         Self(Arc::new(Shared {
             rings: Mutex::new(Rings::new(to_renderer, from_renderer)),
             ids: AtomicU64::new(0),
@@ -86,7 +90,7 @@ impl Permit<'_> {
     pub(crate) fn send(mut self, id: HandleId, command: impl Into<Command>) {
         let message = Message {
             id,
-            command: command.into(),
+            data: command.into(),
         };
         let pushed = self.0.to_renderer.push(message);
         debug_assert!(pushed.is_ok(), "a permit holds a free slot");
@@ -95,8 +99,8 @@ impl Permit<'_> {
 
 #[derive(Debug)]
 struct Rings {
-    to_renderer: Producer<Message>,
-    from_renderer: Consumer<Return>,
+    to_renderer: Producer<Message<Command>>,
+    from_renderer: Consumer<Message<Event>>,
     /// Which handle's state box an id's returns go to, held until its last
     /// return arrives. Every id held here still has that return coming, so
     /// there are never more than the ring back can hold, and the list takes
@@ -107,7 +111,10 @@ struct Rings {
 type Place = Option<(HandleId, Arc<Mutex<RecordingState>>)>;
 
 impl Rings {
-    fn new(to_renderer: Producer<Message>, from_renderer: Consumer<Return>) -> Self {
+    fn new(
+        to_renderer: Producer<Message<Command>>,
+        from_renderer: Consumer<Message<Event>>,
+    ) -> Self {
         let handles = (0..from_renderer.buffer().capacity())
             .map(|_| None)
             .collect();
@@ -119,23 +126,18 @@ impl Rings {
     }
 
     fn collect(&mut self) {
-        while let Ok(returned) = self.from_renderer.pop() {
-            match returned {
-                Return::Voice(spec) => drop(spec),
-                Return::Recording { id, state } => {
-                    let (now, last) = match state {
-                        Returned::Started => (RecordingState::Recording, false),
-                        Returned::Refused(_) => (RecordingState::Refused, true),
-                        Returned::Ended(why, _) => (RecordingState::Ended(why), true),
-                    };
-                    self.deliver(id, now, last);
+        while let Ok(Message { id, data }) = self.from_renderer.pop() {
+            match data {
+                Event::Voice(VoiceEvent::Ended(spec)) => drop(spec),
+                Event::Recording(RecordingEvent { state, spec }) => {
+                    self.deliver(id, state, spec.is_some());
                 }
             }
         }
     }
 
-    /// Writes `state` into the handle's box; after its `last` return the
-    /// place is freed.
+    /// Writes `state` into the handle's box; after its `last` event, the
+    /// one that hands the spec back, the place is freed.
     fn deliver(&mut self, id: HandleId, state: RecordingState, last: bool) {
         let place = self
             .handles
@@ -160,7 +162,9 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport, VoiceSpec};
+    use crate::engine::protocol::voice::{
+        VoiceCommand, VoiceEvent, VoiceId, VoiceReport, VoiceSpec,
+    };
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -186,11 +190,15 @@ mod tests {
         let (mut to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
         let audio = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        let returned = Return::Voice(VoiceSpec {
+        let spec = VoiceSpec {
             id: VoiceId::next(),
             audio: Arc::clone(&audio),
             report: Arc::new(VoiceReport::new()),
-        });
+        };
+        let returned = Message {
+            id: HandleId(0),
+            data: VoiceEvent::Ended(spec).into(),
+        };
         to_control.push(returned).unwrap();
 
         rings.send(HandleId(0), command()).unwrap();

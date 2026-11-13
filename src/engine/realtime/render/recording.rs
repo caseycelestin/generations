@@ -5,9 +5,10 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use super::Frame;
-use crate::engine::protocol::HandleId;
-use crate::engine::protocol::Return;
-use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, Returned};
+use crate::engine::protocol::recording::{
+    RecordingEnd, RecordingEvent, RecordingSpec, RecordingState,
+};
+use crate::engine::protocol::{Event, HandleId, Message};
 
 #[derive(Debug)]
 pub(crate) struct Recording {
@@ -19,11 +20,15 @@ impl Recording {
     pub(crate) fn start(
         id: HandleId,
         spec: RecordingSpec,
-        to_control: &mut Producer<Return>,
+        to_control: &mut Producer<Message<Event>>,
     ) -> Self {
-        let pushed = to_control.push(Return::Recording {
+        let event = RecordingEvent {
+            state: RecordingState::Recording,
+            spec: None,
+        };
+        let pushed = to_control.push(Message {
             id,
-            state: Returned::Started,
+            data: event.into(),
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
         Self { id, spec }
@@ -47,18 +52,30 @@ impl Recording {
     }
 
     /// The one way a recording leaves.
-    pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Return>) {
-        let pushed = to_control.push(Return::Recording {
+    pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Message<Event>>) {
+        let event = RecordingEvent {
+            state: RecordingState::Ended(why),
+            spec: Some(self.spec),
+        };
+        let pushed = to_control.push(Message {
             id: self.id,
-            state: Returned::Ended(why, self.spec),
+            data: event.into(),
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 
-    pub(crate) fn refuse(id: HandleId, spec: RecordingSpec, to_control: &mut Producer<Return>) {
-        let pushed = to_control.push(Return::Recording {
+    pub(crate) fn refuse(
+        id: HandleId,
+        spec: RecordingSpec,
+        to_control: &mut Producer<Message<Event>>,
+    ) {
+        let event = RecordingEvent {
+            state: RecordingState::Refused,
+            spec: Some(spec),
+        };
+        let pushed = to_control.push(Message {
             id,
-            state: Returned::Refused(spec),
+            data: event.into(),
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }

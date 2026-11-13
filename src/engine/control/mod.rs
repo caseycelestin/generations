@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::audio::Audio;
 use crate::engine::protocol::voice::VoiceCommand;
-use crate::engine::protocol::{BufferAddress, HandleId, Message, Return};
+use crate::engine::protocol::{BufferAddress, Command, Event, HandleId, Message};
 use rings::SharedRings;
 
 #[derive(Debug, Error)]
@@ -31,7 +31,10 @@ pub struct Control {
 }
 
 impl Control {
-    pub(crate) fn new(to_renderer: Producer<Message>, from_renderer: Consumer<Return>) -> Self {
+    pub(crate) fn new(
+        to_renderer: Producer<Message<Command>>,
+        from_renderer: Consumer<Message<Event>>,
+    ) -> Self {
         let rings = SharedRings::new(to_renderer, from_renderer);
         let id = rings.next_id();
         Self { rings, id }

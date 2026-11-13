@@ -17,6 +17,11 @@ pub(crate) enum VoiceCommand {
     RemoveAll,
 }
 
+#[derive(Debug)]
+pub(crate) enum VoiceEvent {
+    Ended(VoiceSpec),
+}
+
 /// Fixed for the voice's life; the renderer keeps it whole beside its
 /// playing state, to hand back.
 #[derive(Debug)]
