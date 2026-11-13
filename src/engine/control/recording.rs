@@ -90,3 +90,17 @@ impl Recording {
         todo!("hand back the audio once it has come back")
     }
 }
+
+/// Stops a recording still running, since nothing could take its audio
+/// once the handle is gone. A full ring loses the stop; the take then runs
+/// until its audio is full.
+impl Drop for Recording {
+    fn drop(&mut self) {
+        if matches!(
+            self.report.state(),
+            RecordingState::Pending | RecordingState::Recording
+        ) {
+            let _ = self.stop();
+        }
+    }
+}
