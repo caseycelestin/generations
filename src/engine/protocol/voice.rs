@@ -10,9 +10,9 @@ pub(crate) enum VoiceCommand {
     Add(VoiceSpec),
     /// Stop the voice, if it is still playing.
     Remove(VoiceId),
-    RemoveAll,
     /// Stop every voice playing this audio.
     RemoveAudio(BufferAddress),
+    RemoveAll,
 }
 
 /// A voice as asked for: what to play and where to report. Fixed for the
@@ -41,17 +41,6 @@ impl BufferAddress {
     pub(crate) fn of(audio: &Arc<AudioBuffer>) -> Self {
         Self(Arc::as_ptr(audio) as usize)
     }
-}
-
-/// Why a voice ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceEnd {
-    /// It played to its last frame.
-    Finished,
-    /// Its `stop` arrived.
-    Stopped,
-    /// It was the oldest when a new voice needed its place.
-    Cut,
 }
 
 /// The audio thread's report on a voice: empty while it plays, then why it
@@ -93,6 +82,17 @@ impl VoiceReport {
             _ => None,
         }
     }
+}
+
+/// Why a voice ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceEnd {
+    /// It played to its last frame.
+    Finished,
+    /// Its `stop` arrived.
+    Stopped,
+    /// It was the oldest when a new voice needed its place.
+    Cut,
 }
 
 #[cfg(test)]
