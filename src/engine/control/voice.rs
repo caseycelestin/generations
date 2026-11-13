@@ -28,7 +28,7 @@ impl Voice {
         let report = Arc::new(VoiceReport::new());
         let spec = VoiceSpec {
             id,
-            audio: Arc::clone(sample.audio()),
+            audio: Arc::clone(sample.shared()),
             report: Arc::clone(&report),
         };
         rings.send(VoiceCommand::Add(spec))?;

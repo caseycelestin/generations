@@ -1,31 +1,20 @@
-//! A project kept as a directory.
+//! Where a project is kept: a directory. Storage answers questions and
+//! does what it is told; the rules live in [`Project`].
 //!
 //! ```text
 //! myproject/
 //!   project.json      the manifest: format version, id counter, samples
 //!   samples/
 //!     0.wav           one 48 kHz 32-bit float WAV per sample, named by id
-//!     1.wav
 //! ```
 //!
-//! The manifest is a private struct here rather than a serde derive on the
-//! project, so the file format is versioned on its own and the model knows
-//! nothing about disk. A WAV is the buffer's bytes behind a header any audio
-//! tool can open; raw bytes would need the channel count stored somewhere
-//! else anyway.
+//! Nothing is cached: every operation reads the manifest. Every write is
+//! synced before the call returns, a WAV before the manifest names it.
+//! WAV rather than raw bytes so any audio tool opens a sample. A 16-bit
+//! WAV from the old format is refused, yet the version stays 1: nothing
+//! written then was meant to be kept.
 //!
-//! Nothing is cached: every operation reads the manifest from disk, so the
-//! project is the disk. Adding a sample writes and syncs its WAV first,
-//! then replaces the manifest through a synced temp file and rename, with
-//! the directory synced after each step, so a power cut leaves the old
-//! manifest or the new one, never half of either. The directory is the
-//! project's; renaming a WAV by hand breaks the sample, and
-//! [`FileStorage::open`] checks the whole project before opening on it.
-//!
-//! The WAV holds the crate's sample type as it is, so a read is a copy
-//! from disk into a block and nothing converts. A 16-bit project written
-//! by `storage` is refused as the wrong format; the format version does
-//! not move because nothing written at version 1 is meant to be kept.
+//! [`Project`]: crate::project::Project
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -37,18 +26,39 @@ use thiserror::Error;
 
 use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::project::ledger::Ledger;
-use crate::project::storage::{Storage, StorageError};
+use crate::project::ledger::{Ledger, OverBudgetError};
 use crate::project::{SampleId, SampleMetadata};
 
-/// Bits in one stored sample, as the WAV header counts them.
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("stored format version {0} is not supported")]
+    UnsupportedVersion(u32),
+    /// Files that are not a project.
+    #[error("storage holds something that is not a project: {0}")]
+    NotAProject(String),
+    /// A project with parts missing or wrong.
+    #[error("stored project is corrupt: {0}")]
+    Corrupt(String),
+    #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
+    BadAudioFormat { id: SampleId, detail: String },
+    /// Nothing was allocated.
+    #[error("reading sample {}: {source}", .id.0)]
+    OverBudget {
+        id: SampleId,
+        #[source]
+        source: OverBudgetError,
+    },
+    /// Something failed underneath: the filesystem or the WAV codec.
+    #[error(transparent)]
+    Backend(Box<dyn std::error::Error + Send + Sync>),
+}
+
 const BITS_PER_SAMPLE: u16 = (size_of::<Pcm>() * 8) as u16;
 
 const MANIFEST: &str = "project.json";
 const SAMPLES_DIR: &str = "samples";
 const FORMAT_VERSION: u32 = 1;
 
-/// A filesystem failure, with the path it happened at.
 #[derive(Debug, Error)]
 #[error("{path}: {source}")]
 struct FileError {
@@ -57,6 +67,7 @@ struct FileError {
     source: Box<dyn std::error::Error + Send + Sync>,
 }
 
+/// A backend error carrying the path it happened at.
 fn at(path: &Path, source: impl std::error::Error + Send + Sync + 'static) -> StorageError {
     StorageError::Backend(Box::new(FileError {
         path: path.to_path_buf(),
@@ -64,10 +75,8 @@ fn at(path: &Path, source: impl std::error::Error + Send + Sync + 'static) -> St
     }))
 }
 
-/// The on-disk description of a project. Everything but the audio.
-///
-/// Samples are a map keyed by id, so an id cannot appear twice and the
-/// file is written in id order.
+/// Everything but the audio. Keyed by id, so an id cannot appear twice and
+/// the file lists samples in order.
 #[derive(Serialize, Deserialize)]
 struct Manifest {
     version: u32,
@@ -75,13 +84,9 @@ struct Manifest {
     samples: BTreeMap<u32, Entry>,
 }
 
-/// A sample's [`SampleMetadata`] as the manifest writes it; its id is the
-/// map key.
-///
-/// Empty for now, as the metadata is: the map's keys record which samples
-/// exist. A new field goes in with `#[serde(default)]` so manifests
-/// written before it still open. Unknown keys are ignored, so manifests
-/// that carry the old `parent` or `loaded` fields open too.
+/// A sample's [`SampleMetadata`] as the manifest writes it. A new field
+/// needs `#[serde(default)]` so older manifests still open; unknown keys
+/// are ignored, so the old `parent` and `loaded` fields are too.
 #[derive(Serialize, Deserialize)]
 struct Entry {}
 
@@ -94,19 +99,16 @@ impl From<&SampleMetadata> for Entry {
     }
 }
 
-/// A project stored as a directory.
+/// Always holds a whole project, so no operation asks whether one is
+/// there.
 #[derive(Debug)]
-pub struct FileStorage {
+pub struct Storage {
     dir: PathBuf,
 }
 
-impl FileStorage {
-    /// Storage at `dir`.
-    ///
-    /// If the directory is empty or missing, an empty project is created
-    /// there. If it holds a project, the whole project is checked before
-    /// this returns. Anything else is an error: a broken project, or files
-    /// that are not a project at all.
+impl Storage {
+    /// Creates an empty project if `dir` is empty or missing, validates
+    /// the one it finds otherwise, and refuses anything else.
     pub fn open(dir: &Path) -> Result<Self, StorageError> {
         let storage = Self {
             dir: dir.to_path_buf(),
@@ -122,6 +124,39 @@ impl FileStorage {
             )));
         }
         Ok(storage)
+    }
+
+    /// From the manifest alone, so true even when the WAV cannot be read.
+    pub fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
+        Ok(self.read_manifest()?.samples.contains_key(&id.0))
+    }
+
+    /// `None` if there is no such sample. The block is sized from the
+    /// header, so a sample over budget is refused before any audio is read.
+    pub fn audio(
+        &self,
+        id: SampleId,
+        ledger: &Ledger,
+    ) -> Result<Option<AudioBuffer>, StorageError> {
+        if !self.has_sample(id)? {
+            return Ok(None);
+        }
+        self.read_wav(id, ledger).map(Some)
+    }
+
+    /// Ids come from a counter that only goes up, so an id is never reused.
+    pub fn add_sample(
+        &mut self,
+        metadata: &SampleMetadata,
+        audio: &AudioBuffer,
+    ) -> Result<SampleId, StorageError> {
+        let mut manifest = self.read_manifest()?;
+        let id = SampleId(manifest.next_id);
+        manifest.next_id += 1;
+        self.write_wav(id, audio)?;
+        manifest.samples.insert(id.0, metadata.into());
+        self.write_manifest(&manifest)?;
+        Ok(id)
     }
 
     fn dir_is_empty_or_missing(&self) -> Result<bool, StorageError> {
@@ -154,9 +189,8 @@ impl FileStorage {
         self.samples_dir().join(format!("{}.wav", id.0))
     }
 
-    /// Checks that what is stored is a whole project: the manifest reads,
-    /// the counter is past every id, and every sample's WAV is present
-    /// with a header in the crate's format.
+    /// The manifest reads, the counter is past every id, and every WAV is
+    /// present in the crate's format.
     fn validate(&self) -> Result<(), StorageError> {
         let manifest = self.read_manifest()?;
         for &id in manifest.samples.keys() {
@@ -183,9 +217,8 @@ impl FileStorage {
         Ok(manifest)
     }
 
-    /// Replaces the manifest atomically and durably: after this returns
-    /// the file on disk is either the old one or the new one, even across
-    /// a power cut.
+    /// Through a synced temp file and rename, so a power cut leaves the old
+    /// manifest or the new one.
     fn write_manifest(&self, manifest: &Manifest) -> Result<(), StorageError> {
         let path = self.manifest_path();
         let json = serde_json::to_vec_pretty(manifest).map_err(|e| at(&path, e))?;
@@ -195,8 +228,6 @@ impl FileStorage {
         sync_dir(&self.dir)
     }
 
-    /// Writes a sample's WAV and syncs it, so that by the time the manifest
-    /// names the sample its audio is on disk.
     fn write_wav(&self, id: SampleId, audio: &AudioBuffer) -> Result<(), StorageError> {
         let path = self.wav_path(id);
         let spec = WavSpec {
@@ -217,7 +248,7 @@ impl FileStorage {
         sync_dir(&self.samples_dir())
     }
 
-    /// Opens a sample's WAV and checks its header, reading no audio.
+    /// Checks the header; reads no audio.
     fn open_wav(&self, id: SampleId) -> Result<WavReader<std::io::BufReader<File>>, StorageError> {
         let path = self.wav_path(id);
         let reader = WavReader::open(&path).map_err(|e| at(&path, e))?;
@@ -225,9 +256,6 @@ impl FileStorage {
         Ok(reader)
     }
 
-    /// Reads a sample's WAV into a block of exactly its sample count,
-    /// allocated from `ledger` after the header is checked and before any
-    /// audio is read.
     fn read_wav(&self, id: SampleId, ledger: &Ledger) -> Result<AudioBuffer, StorageError> {
         let path = self.wav_path(id);
         let mut reader = self.open_wav(id)?;
@@ -242,7 +270,6 @@ impl FileStorage {
     }
 }
 
-/// Refuses a WAV header that is not the crate's one fixed format.
 fn check_spec(id: SampleId, spec: WavSpec) -> Result<(), StorageError> {
     let expected = spec.sample_rate == SAMPLE_RATE
         && spec.bits_per_sample == BITS_PER_SAMPLE
@@ -258,7 +285,6 @@ fn check_spec(id: SampleId, spec: WavSpec) -> Result<(), StorageError> {
     }
 }
 
-/// Writes a whole file and syncs it to disk.
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     use std::io::Write;
     let mut file = File::create(path).map_err(|e| at(path, e))?;
@@ -266,39 +292,11 @@ fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     file.sync_all().map_err(|e| at(path, e))
 }
 
-/// Syncs a directory so that a file created, renamed or removed in it is
-/// durably in it.
+/// So a file created or renamed in it survives a power cut.
 fn sync_dir(dir: &Path) -> Result<(), StorageError> {
     File::open(dir)
         .and_then(|d| d.sync_all())
         .map_err(|e| at(dir, e))
-}
-
-impl Storage for FileStorage {
-    fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
-        Ok(self.read_manifest()?.samples.contains_key(&id.0))
-    }
-
-    fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError> {
-        if !self.has_sample(id)? {
-            return Ok(None);
-        }
-        self.read_wav(id, ledger).map(Some)
-    }
-
-    fn add_sample(
-        &mut self,
-        metadata: &SampleMetadata,
-        audio: &AudioBuffer,
-    ) -> Result<SampleId, StorageError> {
-        let mut manifest = self.read_manifest()?;
-        let id = SampleId(manifest.next_id);
-        manifest.next_id += 1;
-        self.write_wav(id, audio)?;
-        manifest.samples.insert(id.0, metadata.into());
-        self.write_manifest(&manifest)?;
-        Ok(id)
-    }
 }
 
 #[cfg(test)]
@@ -345,19 +343,19 @@ mod tests {
         assert_eq!(a.samples(), b.samples());
     }
 
-    fn created(dir: &Path) -> FileStorage {
-        FileStorage::open(dir).unwrap()
+    fn created(dir: &Path) -> Storage {
+        Storage::open(dir).unwrap()
     }
 
-    /// Reopens the directory, as the next run of the sampler would.
-    fn reopen(dir: &Path) -> Result<FileStorage, StorageError> {
-        FileStorage::open(dir)
+    /// As the next run of the sampler would.
+    fn reopen(dir: &Path) -> Result<Storage, StorageError> {
+        Storage::open(dir)
     }
 
     #[test]
     fn open_on_an_empty_directory_creates_an_empty_project() {
         let dir = tempfile::tempdir().unwrap();
-        let s = FileStorage::open(dir.path()).unwrap();
+        let s = Storage::open(dir.path()).unwrap();
         assert!(dir.path().join(MANIFEST).exists());
         assert!(dir.path().join(SAMPLES_DIR).is_dir());
         assert!(!s.has_sample(SampleId(0)).unwrap());
@@ -368,7 +366,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("notes.txt"), "hi").unwrap();
         assert!(matches!(
-            FileStorage::open(dir.path()),
+            Storage::open(dir.path()),
             Err(StorageError::NotAProject(_))
         ));
         // Nothing was created beside the stranger's files.
@@ -379,7 +377,7 @@ mod tests {
     fn open_on_a_missing_directory_creates_it() {
         let parent = tempfile::tempdir().unwrap();
         let dir = parent.path().join("project");
-        FileStorage::open(&dir).unwrap();
+        Storage::open(&dir).unwrap();
         assert!(dir.join(MANIFEST).exists());
     }
 
@@ -454,7 +452,6 @@ mod tests {
         ));
     }
 
-    /// A project that was written by this crate passes the open check.
     #[test]
     fn open_accepts_a_whole_project() {
         let dir = tempfile::tempdir().unwrap();
@@ -467,9 +464,7 @@ mod tests {
 
     #[test]
     fn a_manifest_with_old_fields_still_opens() {
-        // Manifests written while samples had a `parent` or a `loaded`
-        // flag carry them per entry. Nothing reads them now; they are
-        // ignored, not refused, so the format version does not move.
+        // Older manifests carry `parent` and `loaded` per entry.
         let dir = tempfile::tempdir().unwrap();
         let mut s = created(dir.path());
         s.add_sample(&SampleMetadata {}, &ramp(Mono, 1)).unwrap();

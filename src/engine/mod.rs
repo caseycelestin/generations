@@ -94,7 +94,7 @@ mod tests {
         assert_eq!(first.state(), VoiceState::Ended(VoiceEnd::Stopped));
         assert_eq!(second.state(), VoiceState::Ended(VoiceEnd::Stopped));
         assert_eq!(kept.state(), VoiceState::Playing);
-        assert_eq!(Arc::strong_count(stopped.audio()), 1);
+        assert_eq!(Arc::strong_count(stopped.shared()), 1);
     }
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
 
         assert_eq!(first.state(), VoiceState::Ended(VoiceEnd::Stopped));
         assert_eq!(second.state(), VoiceState::Ended(VoiceEnd::Stopped));
-        assert_eq!(Arc::strong_count(sample.audio()), 1);
+        assert_eq!(Arc::strong_count(sample.shared()), 1);
     }
 
     #[test]
@@ -121,14 +121,14 @@ mod tests {
         let _voice = control.play(&sample).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(
-            Arc::strong_count(sample.audio()),
+            Arc::strong_count(sample.shared()),
             2,
             "handed back, not yet freed"
         );
 
         control.collect();
 
-        assert_eq!(Arc::strong_count(sample.audio()), 1);
+        assert_eq!(Arc::strong_count(sample.shared()), 1);
     }
 
     #[test]

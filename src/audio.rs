@@ -98,7 +98,7 @@ impl AudioBuffer {
     /// Refused audio hands the block back beside the error: nothing is
     /// freed here, so a caller that wants to try again with a different
     /// layout still holds the memory.
-    pub fn new(layout: ChannelLayout, data: Block) -> Result<Self, (AudioError, Block)> {
+    pub(crate) fn new(layout: ChannelLayout, data: Block) -> Result<Self, (AudioError, Block)> {
         if !data.len().is_multiple_of(layout.count()) {
             return Err((
                 AudioError::RaggedFrames {
@@ -134,6 +134,16 @@ impl AudioBuffer {
     pub fn samples(&self) -> &[Pcm] {
         &self.data
     }
+
+    /// Appends interleaved samples until the buffer is full or `samples`
+    /// runs out, and returns how many frames went in. A part frame at the
+    /// end is dropped, so the buffer stays whole frames.
+    pub fn extend(&mut self, samples: impl IntoIterator<Item = Pcm>) -> usize {
+        let before = self.frames();
+        self.data.extend(samples);
+        self.data.truncate(self.frames() * self.layout.count());
+        self.frames() - before
+    }
 }
 
 /// Audio in RAM that never changes, shared with whatever plays it.
@@ -147,8 +157,19 @@ impl Sample {
         Self(Arc::new(audio))
     }
 
+    /// The audio, to read.
+    pub fn audio(&self) -> &AudioBuffer {
+        &self.0
+    }
+
+    /// The audio, to write, or `None` while the engine holds it: a voice
+    /// playing it, or one that ended and has not been collected yet.
+    pub fn write(&mut self) -> Option<&mut AudioBuffer> {
+        Arc::get_mut(&mut self.0)
+    }
+
     /// The audio, shared: what a playing of it holds.
-    pub(crate) fn audio(&self) -> &Arc<AudioBuffer> {
+    pub(crate) fn shared(&self) -> &Arc<AudioBuffer> {
         &self.0
     }
 }
@@ -237,6 +258,25 @@ mod tests {
         assert_eq!(ledger.in_use(), 3 * size_of::<Pcm>());
         drop(block);
         assert_eq!(ledger.in_use(), 0);
+    }
+
+    #[test]
+    fn extend_takes_whole_frames_up_to_the_room() {
+        let ledger = Ledger::new(usize::MAX);
+        let mut b = AudioBuffer::new(Stereo, ledger.alloc(4).unwrap()).unwrap();
+        assert_eq!(b.extend([1.0, 2.0, 3.0]), 1);
+        assert_eq!(b.samples(), &[1.0, 2.0]);
+        assert_eq!(b.extend([5.0, 6.0, 7.0, 8.0]), 1);
+        assert_eq!(b.samples(), &[1.0, 2.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn a_sample_is_written_only_while_nothing_else_holds_it() {
+        let mut sample = Sample::new(buffer(Mono, &[]));
+        let playing = Arc::clone(sample.shared());
+        assert!(sample.write().is_none());
+        drop(playing);
+        assert!(sample.write().is_some());
     }
 
     #[test]

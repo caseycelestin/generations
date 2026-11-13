@@ -16,15 +16,12 @@
 //!                         (AudioBuffer) and Sample (what load returns)
 //!
 //! project/                the disk side and the memory budget
-//!   mod.rs                  Project: opens on a directory, imports, loads;
-//!   │                       the rules over a Storage
+//!   mod.rs                  Project: opens on a directory, allocs, loads;
+//!   │                       the rules over its storage
 //!   ledger.rs               the Ledger every audio-sized Block is paid
 //!   │                       for on; the project makes it
-//!   import/                 the world's audio into the project's
-//!   │   decode.rs             reads a file into plain samples, any format
-//!   │   convert.rs            takes those to the project format: resample
-//!   storage/                the medium: keeps and returns bytes, nothing more
-//!       files.rs              a directory of WAVs and a manifest (the backend)
+//!   storage.rs              the medium: a directory of WAVs and a manifest;
+//!                           keeps and returns bytes, nothing more
 //!
 //! engine/                 everything heard; create() makes both sides
 //!   protocol/               what crosses between the two sides
@@ -66,8 +63,7 @@ pub mod project;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioError, ChannelLayout, Sample};
-pub use project::import::{ConvertError, DecodeError, ImportError};
+pub use audio::{AudioBuffer, AudioError, ChannelLayout, Sample};
 pub use project::ledger::OverBudgetError;
 pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};

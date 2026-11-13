@@ -1,10 +1,8 @@
-//! The first sound: open a project, import a WAV of a tone, load it, and
-//! play it twice through the default audio device.
+//! The first sound: open a project, alloc a sample, write a tone into it,
+//! save it, and play it twice through the default audio device.
 //!
 //! The tone decays, so it sounds like a pluck. The second press lands while
 //! the first is still ringing, which is two sounds summed by the renderer.
-//! The WAV is written at 44.1 kHz, so the import resamples it on the way
-//! in.
 //!
 //! The engine does not know there is a speaker. This file opens the
 //! device, takes the engine's output and hands it over; those are the only
@@ -17,11 +15,12 @@
 use std::error::Error;
 use std::f32::consts::TAU;
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Project, engine};
+use generations::config::SAMPLE_RATE;
+use generations::{ChannelLayout, Project, engine};
 
 mod device;
 use device::Device;
@@ -29,27 +28,6 @@ use device::Device;
 /// RAM for loaded audio. The engine does not know the machine; this
 /// example does not either, so it guesses generously for a desktop.
 const SAMPLE_RAM_BUDGET: usize = 1024 * 1024 * 1024;
-
-/// Rate of the WAV this example writes: not the project's, on purpose.
-const WAV_RATE: u32 = 44_100;
-
-/// One second of A440, decaying from half scale to near silence, as a mono
-/// float WAV at `WAV_RATE`.
-fn pluck_wav(path: &Path) -> Result<PathBuf, Box<dyn Error>> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: WAV_RATE,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut w = hound::WavWriter::create(path, spec)?;
-    for i in 0..WAV_RATE {
-        let t = i as f32 / WAV_RATE as f32;
-        w.write_sample(0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp())?;
-    }
-    w.finalize()?;
-    Ok(path.to_path_buf())
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let dir = std::env::args_os()
@@ -64,9 +42,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (control, mut renderer) = engine::create(commands, voices);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
-    let scratch = tempfile::tempdir()?;
-    let pluck = project.import(&pluck_wav(&scratch.path().join("pluck.wav"))?)?;
-    let pluck = project.load(pluck)?;
+    // One second of A440, decaying from half scale to near silence.
+    let frames = SAMPLE_RATE as usize;
+    let mut pluck = project.alloc(ChannelLayout::Mono, frames)?;
+    let audio = pluck.write().ok_or("the engine holds the sample")?;
+    audio.extend((0..frames).map(|i| {
+        let t = i as f32 / SAMPLE_RATE as f32;
+        0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp()
+    }));
+    let id = project.add_sample(&pluck)?;
+    println!("saved as {id:?}");
 
     println!("pluck");
     let first = control.play(&pluck)?;
