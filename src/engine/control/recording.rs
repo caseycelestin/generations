@@ -39,20 +39,20 @@ pub struct Recording {
 
 impl Recording {
     pub(crate) fn record(rings: SharedRings, audio: Audio) -> Result<Self, RecordError> {
-        // Only this side clones or drops the audio, and the caller gave up
-        // theirs, so after a collect the count cannot rise before the send.
-        rings.collect();
+        let Ok(permit) = rings.reserve() else {
+            return Err(RecordError::CommandsFull(audio));
+        };
+        // Only this side clones or drops the audio, the caller gave up
+        // theirs, and the permit has just collected under the lock, so the
+        // count cannot rise before the send.
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
         let report = Arc::new(RecordingReport::new());
-        let spec = RecordingSpec {
-            audio: Arc::clone(audio.shared()),
+        permit.send(RecordingCommand::Start(RecordingSpec {
+            audio: audio.into_shared(),
             report: Arc::clone(&report),
-        };
-        rings
-            .send(RecordingCommand::Start(spec))
-            .map_err(|_| RecordError::CommandsFull(audio))?;
+        }));
         Ok(Self { rings, report })
     }
 

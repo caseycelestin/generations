@@ -197,6 +197,11 @@ impl Audio {
         Self(Arc::new(buffer))
     }
 
+    /// Gives up this handle's reference, with no copy left behind.
+    pub(crate) fn into_shared(self) -> Arc<AudioBuffer> {
+        self.0
+    }
+
     /// Mono or stereo.
     pub fn layout(&self) -> ChannelLayout {
         self.0.layout()
