@@ -1,17 +1,11 @@
 //! Arithmetic on periods: free functions over slices, no state.
 
-use super::{Frame, Renderer};
+use super::Frame;
 use crate::config::Pcm;
 
-/// Adds `frames` into `out`, interleaved stereo, from its start. Stops at
-/// whichever runs out first. Adds rather than writes, so sources sum.
-pub(crate) fn add(out: &mut [Pcm], frames: impl IntoIterator<Item = Frame>) {
-    debug_assert_eq!(
-        out.len() % Renderer::CHANNELS,
-        0,
-        "output is not whole frames"
-    );
-    let (out, _) = out.as_chunks_mut::<{ Renderer::CHANNELS }>();
+/// Adds `frames` into `out`, from its start. Stops at whichever runs out
+/// first. Adds rather than writes, so sources sum.
+pub(crate) fn add(out: &mut [Frame], frames: &[Frame]) {
     for (out, frame) in out.iter_mut().zip(frames) {
         for (o, s) in out.iter_mut().zip(frame) {
             *o += s;
@@ -33,23 +27,23 @@ mod tests {
 
     #[test]
     fn frames_are_summed_into_what_is_there() {
-        let mut out = vec![1.0; 4];
-        add(&mut out, [[0.5, -0.5], [0.2, 0.4]]);
-        assert_eq!(out, vec![1.5, 0.5, 1.2, 1.4]);
+        let mut out = vec![[1.0, 1.0]; 2];
+        add(&mut out, &[[0.5, -0.5], [0.2, 0.4]]);
+        assert_eq!(out, vec![[1.5, 0.5], [1.2, 1.4]]);
     }
 
     #[test]
     fn a_short_source_leaves_the_rest_untouched() {
-        let mut out = vec![0.0; 6];
-        add(&mut out, [[1.0, 1.0]]);
-        assert_eq!(out, vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0]);
+        let mut out = vec![[0.0, 0.0]; 3];
+        add(&mut out, &[[1.0, 1.0]]);
+        assert_eq!(out, vec![[1.0, 1.0], [0.0, 0.0], [0.0, 0.0]]);
     }
 
     #[test]
     fn a_long_source_is_cut_at_the_period() {
-        let mut out = vec![0.0; 2];
-        add(&mut out, [[1.0, 1.0], [2.0, 2.0]]);
-        assert_eq!(out, vec![1.0, 1.0]);
+        let mut out = vec![[0.0, 0.0]; 1];
+        add(&mut out, &[[1.0, 1.0], [2.0, 2.0]]);
+        assert_eq!(out, vec![[1.0, 1.0]]);
     }
 
     #[test]

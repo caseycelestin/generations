@@ -9,7 +9,7 @@ use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
 use crate::engine::protocol::{Command, Return};
-use math::hard_clip;
+use math::{add, hard_clip};
 use voices::Voices;
 
 /// One output frame: a sample per side.
@@ -48,10 +48,19 @@ impl Renderer {
     }
 
     /// Renders one period into `out`, interleaved stereo, replacing what
-    /// it held. Silence until something can play.
+    /// it held: every playing voice, summed and clipped.
     pub fn render(&mut self, out: &mut [Pcm]) {
+        debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
         self.apply_commands();
-        out.fill(0.0);
+        let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
+        for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
+            block.fill([0.0; Self::CHANNELS]);
+            let scratch = &mut self.scratch[..block.len()];
+            for voice in self.voices.iter_mut() {
+                voice.render(scratch);
+                add(block, scratch);
+            }
+        }
         hard_clip(out);
     }
 
