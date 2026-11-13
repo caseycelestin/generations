@@ -1,10 +1,10 @@
-//! A voice: one playing of a sample.
+//! A voice: one playing of some audio.
 
 use std::sync::Arc;
 
 use super::ControlError;
 use super::rings::SharedRings;
-use crate::audio::Sample;
+use crate::audio::Audio;
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceReport, VoiceSpec};
 
 #[derive(Debug)]
@@ -23,12 +23,12 @@ pub enum VoiceState {
 }
 
 impl Voice {
-    pub(crate) fn play(rings: SharedRings, sample: &Sample) -> Result<Self, ControlError> {
+    pub(crate) fn play(rings: SharedRings, audio: &Audio) -> Result<Self, ControlError> {
         let id = VoiceId::next();
         let report = Arc::new(VoiceReport::new());
         let spec = VoiceSpec {
             id,
-            audio: Arc::clone(sample.shared()),
+            audio: Arc::clone(audio.shared()),
             report: Arc::clone(&report),
         };
         rings.send(VoiceCommand::Add(spec))?;

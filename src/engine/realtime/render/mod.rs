@@ -109,9 +109,10 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::audio::{AudioBuffer, ChannelLayout};
+    use crate::audio::AudioBuffer;
     use crate::engine::protocol::voice::{BufferAddress, VoiceId, VoiceReport, VoiceSpec};
-    use crate::testing::audio;
+    use crate::layout::ChannelLayout;
+    use crate::testing::buffer;
 
     /// A renderer with `voices` places, and the control side's ring ends.
     fn renderer(voices: usize) -> (Producer<Command>, Consumer<Return>, Renderer) {
@@ -124,7 +125,7 @@ mod tests {
 
     /// Sends an add for a mono voice of `samples`, as `Control::play` does.
     fn play(to_renderer: &mut Producer<Command>, samples: &[Pcm]) -> (VoiceId, Arc<VoiceReport>) {
-        play_audio(to_renderer, Arc::new(audio(ChannelLayout::Mono, samples)))
+        play_audio(to_renderer, Arc::new(buffer(ChannelLayout::Mono, samples)))
     }
 
     /// Sends an add for a voice of `audio`, for voices that share it.
@@ -226,7 +227,7 @@ mod tests {
     #[test]
     fn remove_audio_ends_only_the_voices_playing_it() {
         let (mut to_renderer, from_renderer, mut renderer) = renderer(3);
-        let removed = Arc::new(audio(ChannelLayout::Mono, &[0.5; 64]));
+        let removed = Arc::new(buffer(ChannelLayout::Mono, &[0.5; 64]));
         let (_, first) = play_audio(&mut to_renderer, Arc::clone(&removed));
         let (_, second) = play_audio(&mut to_renderer, Arc::clone(&removed));
         let (_, kept) = play(&mut to_renderer, &[0.25; 64]);

@@ -7,9 +7,9 @@ use std::num::NonZeroUsize;
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
-use crate::audio::ChannelLayout;
 use crate::engine::protocol::Return;
 use crate::engine::protocol::voice::{BufferAddress, VoiceEnd, VoiceId, VoiceSpec};
+use crate::layout::ChannelLayout;
 
 /// A voice while it plays.
 #[derive(Debug)]
@@ -141,12 +141,12 @@ mod tests {
 
     use super::*;
     use crate::engine::protocol::voice::VoiceReport;
-    use crate::testing::audio;
+    use crate::testing::buffer;
 
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
         Voice::new(VoiceSpec {
             id: VoiceId::next(),
-            audio: Arc::new(audio(layout, samples)),
+            audio: Arc::new(buffer(layout, samples)),
             report: Arc::new(VoiceReport::new()),
         })
     }
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn a_voice_plays_only_its_own_audio() {
         let voice = voice(ChannelLayout::Mono, &[0.0]);
-        let other = Arc::new(audio(ChannelLayout::Mono, &[0.0]));
+        let other = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
         assert!(voice.plays(BufferAddress::of(&voice.spec.audio)));
         assert!(!voice.plays(BufferAddress::of(&other)));
     }

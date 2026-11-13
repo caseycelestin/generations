@@ -12,13 +12,13 @@
 //! audio between them. The source tree is the picture:
 //!
 //! ```text
-//! config, audio           shared: the one fixed format, the buffer type
-//!                         (AudioBuffer) and Sample (what load returns)
-//! memory                  SampleMemory, where every audio-sized Block
-//!                         comes from; the project makes it
+//! config, layout          shared: the one fixed format; mono or stereo
+//! audio                   AudioMemory, where all audio memory comes from,
+//!                         with an optional budget, and Audio, a user's
+//!                         piece of it
 //!
-//! project/                the disk side and the memory budget
-//!   mod.rs                  Project: opens on a directory, allocs, loads;
+//! project/                the disk side
+//!   mod.rs                  Project: opens on a directory, loads, adds;
 //!   │                       the rules over its storage
 //!   storage.rs              the medium: a directory of WAVs and a manifest;
 //!                           keeps and returns bytes, nothing more
@@ -30,24 +30,27 @@
 //!   realtime/               the audio thread: the Renderer. No lock, no
 //!                           allocation
 //!
-//! (the caller)            opens the project, creates the engine, and owns
-//!                         the audio device, if there is one, handing it the
-//!                         renderer to drive. No code in this crate knows an
-//!                         audio library
+//! (the caller)            makes the AudioMemory, opens the project,
+//!                         creates the engine, and owns the audio device, if
+//!                         there is one, handing it the renderer to drive. No
+//!                         code in this crate knows an audio library
 //! ```
 //!
-//! - **[`project`]** is the disk and the budget. Every read and write goes
-//!   to storage, so changing the project is changing the disk and there is
-//!   no save step. Every byte of audio it brings into RAM is a block from its
-//!   `SampleMemory`, so nothing that scales with audio exists uncounted. A load
-//!   hands out a [`Sample`], whose holder owns it: dropping it unloads.
-//! - **[`engine`]** turns commands and samples into frames. The renderer
+//! - **[`AudioMemory`]** is the one source of audio memory: `alloc` for
+//!   an empty [`Audio`] to write, and every load is paid for from it, so
+//!   nothing that scales with audio exists uncounted. The caller makes one
+//!   for the machine, with a budget if it wants one.
+//! - **[`project`]** is the disk. Every read and write goes to storage, so
+//!   changing the project is changing the disk and there is no save step.
+//!   A load turns a stored sample into [`Audio`], whose holder owns it:
+//!   dropping it unloads.
+//! - **[`engine`]** turns commands and audio into frames. The renderer
 //!   runs wherever it is driven, live in a device callback or offline in a
 //!   loop; the control side sends it commands and frees what it hands
 //!   back, so the audio thread never allocates or frees.
 //! - **The device is not a role of this crate.** `examples/device/` is one
 //!   caller's code, over `cpal`. The library has no audio dependency.
-//! - **`audio`** and **[`config`]** hold the one fixed format: 48 kHz,
+//! - **[`config`]** and **`layout`** hold the one fixed format: 48 kHz,
 //!   `f32`, 1 or 2 channels, on disk, in RAM and on the render path alike.
 //!
 //! # Where to start
@@ -59,12 +62,12 @@
 pub(crate) mod audio;
 pub mod config;
 pub mod engine;
-pub(crate) mod memory;
+pub(crate) mod layout;
 pub mod project;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioBuffer, AudioError, ChannelLayout, Sample};
-pub use memory::OverBudgetError;
+pub use audio::{Audio, AudioMemory, OverBudgetError};
+pub use layout::{AudioError, ChannelLayout};
 pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};

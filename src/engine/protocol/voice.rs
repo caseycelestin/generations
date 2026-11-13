@@ -1,4 +1,4 @@
-//! What crosses for voices: playings of a sample.
+//! What crosses for voices: playings of audio.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -25,7 +25,7 @@ pub(crate) struct VoiceSpec {
 }
 
 id! {
-    /// One playing of a sample. The lowest id is the oldest; a stale
+    /// One playing of audio. The lowest id is the oldest; a stale
     /// remove names nothing and does nothing.
     VoiceId
 }

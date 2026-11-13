@@ -8,7 +8,7 @@ pub use voice::{Voice, VoiceState};
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
-use crate::audio::Sample;
+use crate::audio::Audio;
 use crate::engine::protocol::voice::{BufferAddress, VoiceCommand};
 use crate::engine::protocol::{Command, Return};
 use rings::SharedRings;
@@ -34,15 +34,15 @@ impl Control {
         }
     }
 
-    /// Starts `sample` at the renderer's next period.
-    pub fn play(&self, sample: &Sample) -> Result<Voice, ControlError> {
-        Voice::play(self.rings.clone(), sample)
+    /// Starts `audio` at the renderer's next period.
+    pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
+        Voice::play(self.rings.clone(), audio)
     }
 
-    /// Stops every voice playing `sample`, at the renderer's next period.
-    pub fn stop(&self, sample: &Sample) -> Result<(), ControlError> {
-        let audio = BufferAddress::of(sample.shared());
-        self.rings.send(VoiceCommand::RemoveAudio(audio))
+    /// Stops every voice playing `audio`, at the renderer's next period.
+    pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
+        let address = BufferAddress::of(audio.shared());
+        self.rings.send(VoiceCommand::RemoveAudio(address))
     }
 
     /// Stops every voice, at the renderer's next period.
@@ -51,7 +51,7 @@ impl Control {
     }
 
     /// Frees what the renderer has handed back, returning it to
-    /// `SampleMemory`. Every send does this first; call it when the app goes
+    /// `AudioMemory`. Every send does this first; call it when the app goes
     /// quiet, or before a load that needs the memory.
     pub fn collect(&self) {
         self.rings.collect();
