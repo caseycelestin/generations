@@ -211,11 +211,11 @@ or rejected instead. The history of how a shape was reached is in git.
   that impossible (the control side is unbounded), so it is sized not to
   happen in practice (`RendererSettings::command_capacity`).
 - **The source tree is the architecture.** `src/project/` (disk side:
-  `Project`, `Sample`, `storage/`, `import/`), `src/control/` (the
+  `Project`, `storage/`, `import/`, `ledger.rs`), `src/control/` (the
   control thread: `Control`, `SampleSound`, `Input`, `Recorder`),
   `src/render/` (the audio thread: `Renderer`, `command.rs`, `Sounds`,
   `dsp/`). Shared at the top: `config`,
-  `audio`, `memory`. `render/` imports neither of the others.
+  `audio` (`AudioBuffer`, `Sample`). `render/` imports neither of the others.
 
 ### The render side
 

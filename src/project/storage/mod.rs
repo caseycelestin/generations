@@ -12,7 +12,7 @@
 //! sample type.
 //!
 //! [`Project`]: crate::project::Project
-//! [`Block`]: crate::memory::Block
+//! [`Block`]: crate::project::ledger::Block
 
 pub mod files;
 
@@ -22,7 +22,7 @@ use std::path::Path;
 use thiserror::Error as ThisError;
 
 use crate::audio::AudioBuffer;
-use crate::memory::{Ledger, OverBudgetError};
+use crate::project::ledger::{Ledger, OverBudgetError};
 use crate::project::{SampleId, SampleMetadata};
 
 /// Reasons storage cannot do what was asked.

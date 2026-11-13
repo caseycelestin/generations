@@ -17,11 +17,12 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 
 use thiserror::Error;
 
 use crate::config::{MAX_CHANNELS, Pcm};
-use crate::memory::Block;
+use crate::project::ledger::Block;
 
 /// Reasons a buffer cannot be constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -87,7 +88,7 @@ impl From<ChannelLayout> for u16 {
 /// changes and a buffer is always whole frames.
 pub struct AudioBuffer {
     layout: ChannelLayout,
-    data: Block<Pcm>,
+    data: Block,
 }
 
 impl AudioBuffer {
@@ -97,7 +98,7 @@ impl AudioBuffer {
     /// Refused audio hands the block back beside the error: nothing is
     /// freed here, so a caller that wants to try again with a different
     /// layout still holds the memory.
-    pub fn new(layout: ChannelLayout, data: Block<Pcm>) -> Result<Self, (AudioError, Block<Pcm>)> {
+    pub fn new(layout: ChannelLayout, data: Block) -> Result<Self, (AudioError, Block)> {
         if !data.len().is_multiple_of(layout.count()) {
             return Err((
                 AudioError::RaggedFrames {
@@ -156,6 +157,23 @@ impl AudioBuffer {
     }
 }
 
+/// Audio in RAM that never changes, shared with whatever plays it.
+/// Holding it is what loaded means: drop it and its block repays the
+/// ledger once nothing playing it holds the audio.
+#[derive(Debug)]
+pub struct Sample(Arc<AudioBuffer>);
+
+impl Sample {
+    pub(crate) fn new(audio: AudioBuffer) -> Self {
+        Self(Arc::new(audio))
+    }
+
+    /// The audio, shared: what a playing of it holds.
+    pub(crate) fn audio(&self) -> &Arc<AudioBuffer> {
+        &self.0
+    }
+}
+
 /// A finished take: what a [`Recorder`](crate::Recorder) kept, before
 /// it is saved.
 ///
@@ -197,10 +215,10 @@ impl fmt::Debug for AudioBuffer {
 mod tests {
     use super::ChannelLayout::{Mono, Stereo};
     use super::*;
-    use crate::memory::Ledger;
+    use crate::project::ledger::Ledger;
 
     /// A block holding `data`, from a ledger that refuses nothing.
-    fn block(data: &[Pcm]) -> (Ledger, Block<Pcm>) {
+    fn block(data: &[Pcm]) -> (Ledger, Block) {
         let ledger = Ledger::new(usize::MAX);
         let mut block = ledger.alloc(data.len()).unwrap();
         block.extend(data.iter().copied());
@@ -230,7 +248,7 @@ mod tests {
     #[test]
     fn the_audio_is_the_length_and_the_payment_is_the_capacity() {
         let ledger = Ledger::new(usize::MAX);
-        let mut block: Block<Pcm> = ledger.alloc(10).unwrap();
+        let mut block: Block = ledger.alloc(10).unwrap();
         block.extend([1.0, 2.0, 3.0, 4.0]);
         let b = AudioBuffer::new(Mono, block).unwrap();
         assert_eq!(b.frames(), 4);
@@ -273,7 +291,7 @@ mod tests {
     #[test]
     fn an_owner_writes_whole_frames_up_to_the_room_and_clears() {
         let ledger = Ledger::new(usize::MAX);
-        let block: Block<Pcm> = ledger.alloc(5).unwrap();
+        let block: Block = ledger.alloc(5).unwrap();
         let mut b = AudioBuffer::new(Stereo, block).unwrap();
         assert_eq!(b.room(), 2);
         assert!(b.push_frame(&[1.0, 2.0]));

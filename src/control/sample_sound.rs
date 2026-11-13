@@ -10,7 +10,7 @@
 //! audio is the [`Sample`]'s and the place it plays in is the renderer's.
 //!
 //!
-//! [`Sample`]: crate::project::sample::Sample
+//! [`Sample`]: crate::Sample
 
 use crate::control::Control;
 use crate::control::ControlError;

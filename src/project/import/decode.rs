@@ -1,7 +1,7 @@
 //! Reading audio files into samples, paid for against the ledger.
 //!
 //! One function, [`decode`], takes a path and returns a [`DecodedAudio`]: the
-//! file's audio as interleaved [`Pcm`] samples at the file's own rate
+//! file's audio as interleaved [`Pcm`](crate::config::Pcm) samples at the file's own rate
 //! and channel count, in a [`Block`] the decoder paid for itself. The one
 //! format read is WAV: RIFF/WAVE with integer PCM at 8 to 32 bits, or
 //! 32-bit float. A second format brings its own dispatch when it comes.
@@ -19,8 +19,7 @@ use std::path::Path;
 use hound::{SampleFormat, WavReader};
 use thiserror::Error;
 
-use crate::config::Pcm;
-use crate::memory::{Block, Ledger, OverBudgetError};
+use crate::project::ledger::{Block, Ledger, OverBudgetError};
 
 /// Audio as a decoder found it: the engine's sample type at the file's
 /// own rate and channel count.
@@ -31,7 +30,7 @@ pub struct DecodedAudio {
     /// Interleaved channel count of the source.
     pub channels: u16,
     /// Interleaved samples, `channels` per frame, paid for by the decoder.
-    pub samples: Block<Pcm>,
+    pub samples: Block,
 }
 
 /// Reasons a file could not be read into samples.
@@ -114,7 +113,7 @@ fn check_width(path: &Path, spec: hound::WavSpec) -> Result<Width, DecodeError> 
 /// the block was sized from, so every sample fits.
 fn fill(
     path: &Path,
-    block: &mut Block<Pcm>,
+    block: &mut Block,
     samples: impl Iterator<Item = hound::Result<f32>>,
 ) -> Result<(), DecodeError> {
     for sample in samples {
@@ -149,6 +148,7 @@ mod tests {
     use hound::{WavSpec, WavWriter};
 
     use super::*;
+    use crate::config::Pcm;
 
     /// Decodes against a ledger that refuses nothing.
     fn decode(path: &Path) -> Result<DecodedAudio, DecodeError> {

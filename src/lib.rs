@@ -8,18 +8,18 @@
 //!
 //! # Architecture
 //!
-//! Two sides that never name each other, a ledger they share, and the
-//! caller carrying things between them. The source tree is the picture:
+//! Two sides that never name each other, and the caller carrying things
+//! between them. The source tree is the picture:
 //!
 //! ```text
-//! config, audio, memory   shared: the one fixed format, the one buffer type
-//!                         (AudioBuffer), and the Ledger every audio-sized
-//!                         block is paid for on. The caller makes the ledger
+//! config, audio           shared: the one fixed format, the buffer type
+//!                         (AudioBuffer) and Sample (what load returns)
 //!
 //! project/                the disk side. Allocates and writes, sends nothing
 //!   mod.rs                  Project: opens on a directory, imports, loads;
 //!   │                       the rules over a Storage
-//!   sample.rs               Sample: plain owned audio, what load returns
+//!   ledger.rs               the Ledger every audio-sized Block is paid
+//!   │                       for on; the project makes it
 //!   import/                 the world's audio into the project's
 //!   │   decode.rs             reads a file into plain samples, any format
 //!   │   convert.rs            takes those to the project format: resample
@@ -111,8 +111,9 @@
 //!   today, perhaps a database later) without the rules moving. A storage
 //!   always holds a whole, valid project; opening one creates or validates
 //!   it.
-//! - **`memory`** is the one memory budget, the [`Ledger`]. The caller
-//!   makes it with the machine's figure and hands it to the project.
+//! - **`project/ledger`** is the one memory budget, the [`Ledger`]. The project
+//!   makes it from the machine's figure, which the caller passes to
+//!   `Project::open`.
 //!   Decode, convert and the storage read each allocate their block from
 //!   it and are refused what does not fit, so nothing that scales with
 //!   audio exists uncounted. Audio never leaves the crate as plain samples
@@ -131,8 +132,8 @@
 //! # Opening a project, and hearing it
 //!
 //! ```text
-//! Ledger::new(budget)          the caller knows the machine's RAM; the crate does not
-//! Project::open(dir, ledger)   the disk side: import and load
+//! Project::open(dir, budget)   the disk side: import and load; the caller
+//!                              knows the machine's RAM, the crate does not
 //!   └─ storage::open(dir)      the one place that knows what a path means
 //!
 //! Renderer::new(settings, ledger)
@@ -158,20 +159,18 @@ pub(crate) mod audio;
 pub mod config;
 pub(crate) mod control;
 pub mod engine;
-pub(crate) mod memory;
 pub mod project;
 pub(crate) mod render;
 #[cfg(test)]
 pub(crate) mod testing;
 
-pub use audio::{AudioError, ChannelLayout, Take};
+pub use audio::{AudioError, ChannelLayout, Sample, Take};
 pub use control::input::{Input, InputFeed, InputLayout, InputSound};
 pub use control::recorder::Recorder;
 pub use control::sample_sound::SampleSound;
 pub use control::{Control, ControlError};
-pub use memory::{Ledger, OverBudgetError};
 pub use project::import::{ConvertError, DecodeError, ImportError};
-pub use project::sample::Sample;
+pub use project::ledger::{Ledger, OverBudgetError};
 pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};
 pub use render::command::Tap;

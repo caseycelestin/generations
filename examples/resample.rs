@@ -58,8 +58,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: resample <project-dir>")?;
 
+    let mut project = Project::open(&dir, SAMPLE_RAM_BUDGET)?;
+    // The renderer pays for the recorder from a budget of its own.
     let ledger = Ledger::new(SAMPLE_RAM_BUDGET);
-    let mut project = Project::open(&dir, ledger.clone())?;
     // The output device renders in pieces of at most this many frames.
     let (mut renderer, control) = Renderer::new(RendererSettings::new(MAX_PERIOD_FRAMES), ledger);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;

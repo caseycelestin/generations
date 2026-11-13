@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::{Ledger, Project, engine};
+use generations::{Project, engine};
 
 mod device;
 use device::Device;
@@ -57,8 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: first_sound <project-dir>")?;
 
-    let ledger = Ledger::new(SAMPLE_RAM_BUDGET);
-    let mut project = Project::open(&dir, ledger)?;
+    let mut project = Project::open(&dir, SAMPLE_RAM_BUDGET)?;
     // Room for 64 commands in flight and 16 voices at once.
     let commands = NonZeroUsize::new(64).expect("not zero");
     let voices = NonZeroUsize::new(16).expect("not zero");

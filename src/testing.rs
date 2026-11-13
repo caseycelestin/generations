@@ -3,7 +3,7 @@
 
 use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::Pcm;
-use crate::memory::Ledger;
+use crate::project::ledger::Ledger;
 use crate::render::Renderer;
 use crate::render::dsp::math::add;
 use crate::render::dsp::{Recorder, Source};

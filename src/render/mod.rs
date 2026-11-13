@@ -67,7 +67,7 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::config::{MAX_PERIOD_FRAMES, Pcm};
 use crate::control::Control;
-use crate::memory::Ledger;
+use crate::project::ledger::Ledger;
 use crate::render::dsp::math::{add, as_frames, hard_clip};
 use crate::render::dsp::{Gain, InputReader, Recorder, SampleReader, Source};
 #[cfg(test)]

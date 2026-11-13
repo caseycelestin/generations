@@ -12,7 +12,7 @@ use std::path::Path;
 use thiserror::Error;
 
 use crate::audio::AudioBuffer;
-use crate::memory::Ledger;
+use crate::project::ledger::Ledger;
 
 pub mod convert;
 pub mod decode;

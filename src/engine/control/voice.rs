@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use super::ControlError;
 use super::rings::SharedRings;
+use crate::audio::Sample;
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceReport, VoiceSpec};
-use crate::project::sample::Sample;
 
 #[derive(Debug)]
 pub struct Voice {
