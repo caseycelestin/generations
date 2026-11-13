@@ -1,37 +1,39 @@
 //! The recording on the render side, while it runs.
 
-use std::sync::Arc;
-
 use rtrb::Producer;
 
 use crate::engine::protocol::Return;
-use crate::engine::protocol::recording::{RecordingEnd, RecordingReport, RecordingState};
+use crate::engine::protocol::recording::{RecordingEnd, RecordingSpec, RecordingState};
 
 #[derive(Debug)]
 pub(crate) struct Recording {
-    report: Arc<RecordingReport>,
+    spec: RecordingSpec,
 }
 
 impl Recording {
-    pub(crate) fn start(report: Arc<RecordingReport>) -> Self {
-        report.set(RecordingState::Recording);
-        Self { report }
+    pub(crate) fn start(spec: RecordingSpec) -> Self {
+        spec.report.set(RecordingState::Recording);
+        Self { spec }
     }
 
     /// The one way a recording leaves: reports `why`, then hands its report
-    /// back to be freed on the control side, never here.
+    /// back to be freed on the control side, never here. Placeholder until
+    /// the audio goes back too: dropping it here can free it on this thread.
     pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Return>) {
-        self.report.set(RecordingState::Ended(why));
+        self.spec.report.set(RecordingState::Ended(why));
         let pushed = to_control.push(Return::Recording {
-            report: self.report,
+            report: self.spec.report,
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 
     /// For a start that never became a recording: the recorder was busy.
-    pub(crate) fn refuse(report: Arc<RecordingReport>, to_control: &mut Producer<Return>) {
-        report.set(RecordingState::Refused);
-        let pushed = to_control.push(Return::Recording { report });
+    /// Drops the audio here, as `end` does.
+    pub(crate) fn refuse(spec: RecordingSpec, to_control: &mut Producer<Return>) {
+        spec.report.set(RecordingState::Refused);
+        let pushed = to_control.push(Return::Recording {
+            report: spec.report,
+        });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 }

@@ -5,7 +5,9 @@ use std::sync::Arc;
 use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
-use crate::engine::protocol::recording::{RecordingCommand, RecordingReport, RecordingState};
+use crate::engine::protocol::recording::{
+    RecordingCommand, RecordingReport, RecordingSpec, RecordingState,
+};
 
 #[derive(Debug)]
 pub struct Recording {
@@ -14,9 +16,13 @@ pub struct Recording {
 }
 
 impl Recording {
-    pub(crate) fn record(rings: SharedRings, _audio: Audio) -> Result<Self, ControlError> {
+    pub(crate) fn record(rings: SharedRings, audio: Audio) -> Result<Self, ControlError> {
         let report = Arc::new(RecordingReport::new());
-        rings.send(RecordingCommand::Start(Arc::clone(&report)))?;
+        let spec = RecordingSpec {
+            audio: Arc::clone(audio.shared()),
+            report: Arc::clone(&report),
+        };
+        rings.send(RecordingCommand::Start(spec))?;
         Ok(Self { rings, report })
     }
 

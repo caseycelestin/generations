@@ -96,11 +96,11 @@ impl Renderer {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
-                Command::Recording(RecordingCommand::Start(report)) => {
+                Command::Recording(RecordingCommand::Start(spec)) => {
                     if self.recording.is_some() {
-                        Recording::refuse(report, &mut self.to_control);
+                        Recording::refuse(spec, &mut self.to_control);
                     } else {
-                        self.recording = Some(Recording::start(report));
+                        self.recording = Some(Recording::start(spec));
                     }
                 }
                 Command::Recording(RecordingCommand::Stop) => {
