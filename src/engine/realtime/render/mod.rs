@@ -53,8 +53,7 @@ impl Renderer {
     fn apply_commands(&mut self) {
         while let Ok(command) = self.from_control.pop() {
             match command {
-                // Dropped until voices have somewhere to live.
-                Command::Voice(_) => {}
+                Command::Voice(command) => self.voices.apply(command, &mut self.to_control),
             }
         }
     }
