@@ -14,7 +14,7 @@ use math::{add, hard_clip};
 use voices::{Voice, Voices};
 
 /// One output frame: a sample per side.
-pub(crate) type Frame = [Pcm; Renderer::CHANNELS];
+type Frame = [Pcm; Renderer::CHANNELS];
 
 #[derive(Debug)]
 pub struct Renderer {
@@ -31,7 +31,7 @@ impl Renderer {
 
     /// A period of any length is mixed in blocks this long, so scratch
     /// never grows.
-    pub(crate) const BLOCK_FRAMES: usize = 64;
+    const BLOCK_FRAMES: usize = 64;
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.

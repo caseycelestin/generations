@@ -133,12 +133,12 @@ pub(crate) struct AudioBuffer {
 
 impl AudioBuffer {
     /// Mono or stereo.
-    pub fn layout(&self) -> ChannelLayout {
+    pub(crate) fn layout(&self) -> ChannelLayout {
         self.layout
     }
 
     /// Number of frames, where one frame holds one sample per channel.
-    pub fn frames(&self) -> usize {
+    pub(crate) fn frames(&self) -> usize {
         self.data.len() / self.layout.count()
     }
 
@@ -146,20 +146,20 @@ impl AudioBuffer {
     /// reads: a period's worth at a time, straight from the buffer.
     ///
     /// Panics if the range runs past the end.
-    pub fn frames_in(&self, frames: Range<usize>) -> &[Pcm] {
+    pub(crate) fn frames_in(&self, frames: Range<usize>) -> &[Pcm] {
         let c = self.layout.count();
         &self.data[frames.start * c..frames.end * c]
     }
 
     /// All samples, interleaved.
-    pub fn samples(&self) -> &[Pcm] {
+    fn samples(&self) -> &[Pcm] {
         &self.data
     }
 
     /// Appends interleaved samples until the buffer is full or `samples`
     /// runs out, and returns how many frames went in. A part frame at the
     /// end is dropped, so the buffer stays whole frames.
-    pub fn extend(&mut self, samples: impl IntoIterator<Item = Pcm>) -> usize {
+    pub(crate) fn extend(&mut self, samples: impl IntoIterator<Item = Pcm>) -> usize {
         let before = self.frames();
         let capacity = self.data.capacity();
         self.data
@@ -218,10 +218,6 @@ impl Audio {
     /// a voice playing it, or one that ended and has not been collected.
     pub fn extend(&mut self, samples: impl IntoIterator<Item = Pcm>) -> Option<usize> {
         Arc::get_mut(&mut self.0).map(|buffer| buffer.extend(samples))
-    }
-
-    pub(crate) fn buffer(&self) -> &AudioBuffer {
-        &self.0
     }
 
     /// What a playing of it holds.
