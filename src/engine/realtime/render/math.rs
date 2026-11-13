@@ -1,7 +1,6 @@
 //! Arithmetic on periods: free functions over slices, no state.
 
 use super::Frame;
-use crate::config::Pcm;
 
 /// Adds `frames` into `out`, from its start. Stops at whichever runs out
 /// first. Adds rather than writes, so sources sum.
@@ -15,8 +14,8 @@ pub(crate) fn add(out: &mut [Frame], frames: &[Frame]) {
 
 /// Clamps every sample to `-1.0..=1.0`, last thing before the output, so
 /// every device and an offline bounce clip the same way.
-pub(crate) fn hard_clip(samples: &mut [Pcm]) {
-    for s in samples.iter_mut() {
+pub(crate) fn hard_clip(frames: &mut [Frame]) {
+    for s in frames.as_flattened_mut() {
         *s = s.clamp(-1.0, 1.0);
     }
 }
@@ -48,8 +47,8 @@ mod tests {
 
     #[test]
     fn a_hard_clip_clamps_to_the_unit_range() {
-        let mut samples = vec![1.5, -3.0, 0.5, 1.0];
-        hard_clip(&mut samples);
-        assert_eq!(samples, vec![1.0, -1.0, 0.5, 1.0]);
+        let mut frames = vec![[1.5, -3.0], [0.5, 1.0]];
+        hard_clip(&mut frames);
+        assert_eq!(frames, vec![[1.0, -1.0], [0.5, 1.0]]);
     }
 }
