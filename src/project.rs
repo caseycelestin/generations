@@ -228,14 +228,12 @@ impl Project {
                 id,
                 detail: format!("{spec:?}"),
             })?;
-        let samples = reader.len() as usize;
-        if !samples.is_multiple_of(layout.count()) {
-            return Err(ends_mid_frame(id));
-        }
+        // Whole frames: hound refuses to open a WAV that ends mid-frame.
+        let frames = reader.duration() as usize;
         Ok(Wav {
             reader,
             layout,
-            frames: samples / layout.count(),
+            frames,
         })
     }
 
@@ -245,16 +243,12 @@ impl Project {
         let path = self.wav_path(id);
         let c = wav.layout.count();
         let mut reader = wav.reader;
-        let mut samples = reader.samples::<Pcm>();
         let mut frame = [0.0; MAX_CHANNELS as usize];
-        for _ in 0..wav.frames {
-            for s in &mut frame[..c] {
-                *s = samples
-                    .next()
-                    .ok_or_else(|| ends_mid_frame(id))?
-                    .map_err(|e| at(&path, e))?;
+        for (i, sample) in reader.samples::<Pcm>().enumerate() {
+            frame[i % c] = sample.map_err(|e| at(&path, e))?;
+            if i % c == c - 1 {
+                buffer.extend(frame[..c].iter().copied());
             }
-            buffer.extend(frame[..c].iter().copied());
         }
         Ok(())
     }
@@ -298,10 +292,6 @@ fn at(path: &Path, source: impl std::error::Error + Send + Sync + 'static) -> Pr
         path: path.to_path_buf(),
         source: Box::new(source),
     }))
-}
-
-fn ends_mid_frame(id: SampleId) -> ProjectError {
-    ProjectError::Corrupt(format!("audio for sample {} ends mid-frame", id.0))
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> Result<(), ProjectError> {
@@ -600,5 +590,28 @@ mod tests {
             reopen(&dir),
             Err(ProjectError::BadAudioFormat { .. })
         ));
+    }
+
+    #[test]
+    fn open_refuses_a_wav_that_ends_mid_frame() {
+        let (dir, mut p) = project();
+        let id = p.add_sample(&ramp(Stereo, 2)).unwrap();
+        let path = p.wav_path(id);
+        drop(p);
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: SAMPLE_RATE,
+            bits_per_sample: BITS_PER_SAMPLE,
+            sample_format: SampleFormat::Float,
+        };
+        let mut w = WavWriter::create(&path, spec).unwrap();
+        for _ in 0..3 {
+            w.write_sample(0.0 as Pcm).unwrap();
+        }
+        // Writes the header and then reports the part frame it just wrote.
+        assert!(w.finalize().is_err());
+
+        // hound refuses it before the project looks.
+        assert!(matches!(reopen(&dir), Err(ProjectError::File(_))));
     }
 }
