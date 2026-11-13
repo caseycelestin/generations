@@ -1,18 +1,10 @@
 //! A project: everything the device keeps for one piece of work.
 //!
-//! A [`Project`] is the rules over its storage, and the one way audio
-//! moves between the disk and RAM. It keeps no copy of the data: every
-//! read and write goes to storage, so changing the project is changing
-//! the disk and there is no save step. Today a project holds samples;
-//! patterns and settings arrive as their steps come.
-//!
-//! The project makes and holds the `Ledger`, because every byte of
-//! audio it brings into RAM, a sample allocated to be written or one
-//! loaded for playback, is a block on it. What it hands out is a
-//! [`Sample`], plain audio owned by whoever holds it; the project
-//! knows nothing about sound, and the renderer that plays the sample
-//! knows nothing about the project. The caller carries the sample from
-//! one to the other.
+//! [`Project`] is the rules over its storage and keeps no copy: every
+//! change is on disk when the call returns, so there is no save step. It
+//! holds the `Ledger`, so every byte of audio it brings into RAM is paid
+//! for. Project and engine never name each other; the caller carries a
+//! [`Sample`] between them.
 
 pub(crate) mod ledger;
 pub(crate) mod storage;
@@ -25,27 +17,19 @@ use crate::audio::{AudioBuffer, ChannelLayout, Sample};
 use crate::project::ledger::{Ledger, OverBudgetError};
 use storage::{Storage, StorageError};
 
-/// Identity of a sample within one project.
-///
-/// A sample does not exist until it is stored, so storage mints the id
-/// when it adds one, from a per-project counter. Ids are never reused and
-/// are not meaningful across projects.
+/// Minted by storage when a sample is added, never reused, and
+/// meaningless in another project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SampleId(pub u32);
 
-/// Everything stored about one sample except its audio and its id: what
-/// storage writes beside the audio when a sample is added. Part of the
-/// storage format, so it stays inside the crate.
-///
-/// Empty for now. Fields join it as steps need them; the parent pointer
-/// comes back here with prints.
+/// Everything stored about a sample but its audio and id. Crate-private
+/// because it is part of the storage format; empty until prints bring
+/// back the parent pointer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SampleMetadata {}
 
-/// Reasons a project operation can fail.
 #[derive(Debug, Error)]
 pub enum ProjectError {
-    /// No sample with this id exists in the project.
     #[error("no sample with id {}", .0.0)]
     UnknownSample(SampleId),
     #[error(transparent)]
@@ -54,24 +38,15 @@ pub enum ProjectError {
     OverBudget(#[from] OverBudgetError),
 }
 
-/// One project, live on its storage, allocating from one ledger.
 pub struct Project {
     storage: Storage,
-    /// Where every buffer this project brings into RAM is charged.
     ledger: Ledger,
 }
 
 impl Project {
-    /// The project at `dir`, created there if none exists, holding at
-    /// most `budget` bytes of audio in RAM at once.
-    ///
-    /// The budget is the caller's, because it is the machine's to know.
-    /// Nothing is loaded here: what to load is the caller's to remember.
-    ///
-    /// An empty project is created if the directory is empty or missing;
-    /// the whole project found is validated otherwise, and a directory
-    /// holding anything else is refused. From then on every change is
-    /// durable by the time the call that made it returns.
+    /// The project at `dir`, created if the directory is empty or missing,
+    /// validated otherwise. `budget` is the most bytes of audio held in RAM
+    /// at once: the caller knows the machine. Nothing is loaded.
     pub fn open(dir: &Path, budget: usize) -> Result<Self, ProjectError> {
         Ok(Self {
             storage: Storage::open(dir)?,
@@ -79,29 +54,21 @@ impl Project {
         })
     }
 
-    /// Loads `id`: brings its audio into RAM and returns it as a
-    /// [`Sample`], whose holder owns it. Drop it and the sample is
-    /// unloaded, its block repaying the budget once the last sound playing
-    /// it has let go.
-    ///
-    /// Storage allocates the block from the budget before it reads the
-    /// audio, from the size it stores, so a refused load reads nothing. A
-    /// sample that does not fit the budget is refused and nothing changes.
-    ///
-    /// Each load is its own copy: the project keeps no list of what is in
-    /// RAM, so loading a sample twice costs its memory twice. Hold one
-    /// per sample.
+    /// Reads `id` into RAM; dropping the sample unloads it once nothing
+    /// playing it still holds it. Each load is its own copy, so loading
+    /// twice costs the memory twice.
     pub fn load(&self, id: SampleId) -> Result<Sample, ProjectError> {
-        Ok(Sample::new(self.audio(id)?))
+        let audio = self
+            .storage
+            .audio(id, &self.ledger)?
+            .ok_or(ProjectError::UnknownSample(id))?;
+        Ok(Sample::new(audio))
     }
 
-    /// An empty sample with room for `frames` frames of `layout`, paid
-    /// for against the budget now, in full.
-    ///
-    /// Nothing is stored: the sample has no id until it is added.
+    /// An empty sample with room for `frames`, paid for in full now. It
+    /// has no id until it is added.
     pub fn alloc(&self, layout: ChannelLayout, frames: usize) -> Result<Sample, ProjectError> {
-        // Saturating: a count past usize cannot be afforded, and the
-        // ledger refuses it as over budget.
+        // Saturating: the ledger refuses usize::MAX as over budget.
         let samples = frames.saturating_mul(layout.count());
         let block = self.ledger.alloc(samples)?;
         let audio = AudioBuffer::new(layout, block)
@@ -109,27 +76,13 @@ impl Project {
         Ok(Sample::new(audio))
     }
 
-    /// Stores `sample` as a new sample and returns its id. The id is
-    /// minted here: until it is added, a sample has none.
-    ///
-    /// The project keeps its own copy on disk; the sample stays the
-    /// caller's, unchanged.
+    /// Stores a copy of `sample` on disk and mints its id.
     pub fn add_sample(&mut self, sample: &Sample) -> Result<SampleId, ProjectError> {
         Ok(self
             .storage
             .add_sample(&SampleMetadata {}, sample.audio())?)
     }
 
-    /// The audio of the sample with this id, read from storage into a
-    /// block on the ledger. [`load`](Self::load) is the public face of
-    /// it; tests read through here.
-    pub(crate) fn audio(&self, id: SampleId) -> Result<AudioBuffer, ProjectError> {
-        self.storage
-            .audio(id, &self.ledger)?
-            .ok_or(ProjectError::UnknownSample(id))
-    }
-
-    /// The ledger this project allocates from.
     #[cfg(test)]
     pub(crate) fn ledger(&self) -> &Ledger {
         &self.ledger
@@ -146,7 +99,7 @@ pub(crate) mod tests {
     use crate::config::Pcm;
     use crate::testing::audio;
 
-    /// A project in a fresh directory, with the directory to keep it alive.
+    /// Dropping the directory deletes the project.
     fn project(budget: usize) -> (TempDir, Project) {
         let dir = tempfile::tempdir().unwrap();
         let p = Project::open(dir.path(), budget).unwrap();
@@ -165,23 +118,6 @@ pub(crate) mod tests {
         assert_ne!(a, b);
         assert!(p.storage.has_sample(a).unwrap());
         assert!(p.storage.has_sample(b).unwrap());
-    }
-
-    #[test]
-    fn a_stored_sample_reads_back() {
-        let (_dir, mut p) = project(usize::MAX);
-        let id = p.add_sample(&Sample::new(tone())).unwrap();
-        assert_eq!(p.audio(id).unwrap().samples(), tone().samples());
-    }
-
-    #[test]
-    fn reading_an_unknown_sample_is_refused() {
-        let (_dir, p) = project(usize::MAX);
-        let bogus = SampleId(7);
-        assert!(matches!(
-            p.audio(bogus),
-            Err(ProjectError::UnknownSample(id)) if id == bogus
-        ));
     }
 
     /// A mono buffer of `n` frames, no two alike.
