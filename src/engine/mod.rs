@@ -207,4 +207,59 @@ mod tests {
 
         assert_eq!(second.state(), RecordingState::Recording);
     }
+
+    #[test]
+    fn take_hands_back_what_was_heard() {
+        let (control, mut renderer) = create(count(4), count(1));
+        let heard = audio(&[0.25; 64]);
+        let _voice = control.play(&heard).unwrap();
+        let mut recording = control.record(room(64)).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        recording.stop().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        let taken = recording.take().unwrap();
+        assert_eq!(taken.samples(), [0.25; 4 * 2]);
+    }
+
+    #[test]
+    fn take_is_none_until_the_recording_ends_and_once_taken() {
+        let (control, mut renderer) = create(count(4), count(1));
+        let mut recording = control.record(room(64)).unwrap();
+        assert!(recording.take().is_none());
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert!(recording.take().is_none());
+
+        recording.stop().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert!(recording.take().is_some());
+        assert!(recording.take().is_none());
+    }
+
+    #[test]
+    fn a_recording_starts_from_empty() {
+        let (control, mut renderer) = create(count(4), count(1));
+        let mut used = room(4);
+        used.extend([0.9; 4 * 2]);
+        let mut recording = control.record(used).unwrap();
+        renderer.render(&mut [0.0; 2 * 2]);
+
+        recording.stop().unwrap();
+        renderer.render(&mut [0.0; 2 * 2]);
+
+        assert_eq!(recording.take().unwrap().samples(), [0.0; 2 * 2]);
+    }
+
+    #[test]
+    fn a_refused_recording_hands_its_audio_back() {
+        let (control, mut renderer) = create(count(4), count(1));
+        let _first = control.record(room(64)).unwrap();
+        let mut second = control.record(room(8)).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(second.state(), RecordingState::Refused);
+        assert_eq!(second.take().unwrap().frames(), 0);
+    }
 }
