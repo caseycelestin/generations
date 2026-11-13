@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use rtrb::{Consumer, Producer, PushError};
+use rtrb::{Consumer, Producer};
 
 use super::ControlError;
 use crate::engine::protocol::{Command, Return};
@@ -22,9 +22,19 @@ impl SharedRings {
     }
 
     pub(crate) fn send(&self, command: impl Into<Command>) -> Result<(), ControlError> {
-        self.lock()
-            .send(command.into())
-            .map_err(|_| ControlError::CommandsFull)
+        self.reserve()?.send(command);
+        Ok(())
+    }
+
+    /// Collects, then holds a free slot, so a caller can give up what it
+    /// sends only once the send cannot fail.
+    pub(crate) fn reserve(&self) -> Result<Permit<'_>, ControlError> {
+        let mut rings = self.lock();
+        rings.collect();
+        if rings.to_renderer.is_full() {
+            return Err(ControlError::CommandsFull);
+        }
+        Ok(Permit(rings))
     }
 
     pub(crate) fn collect(&self) {
@@ -35,6 +45,17 @@ impl SharedRings {
     /// is taken anyway.
     fn lock(&self) -> MutexGuard<'_, Rings> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A free slot on the ring to the renderer. Holds the lock, and only the
+/// control side pushes, so the slot stays free until `send`.
+pub(crate) struct Permit<'a>(MutexGuard<'a, Rings>);
+
+impl Permit<'_> {
+    pub(crate) fn send(mut self, command: impl Into<Command>) {
+        let pushed = self.0.to_renderer.push(command.into());
+        debug_assert!(pushed.is_ok(), "a permit holds a free slot");
     }
 }
 
@@ -52,20 +73,12 @@ impl Rings {
         }
     }
 
-    /// Collects, then pushes. A full ring hands the command back.
-    fn send(&mut self, command: Command) -> Result<(), Command> {
-        self.collect();
-        self.to_renderer
-            .push(command)
-            .map_err(|PushError::Full(command)| command)
-    }
-
     /// Frees everything handed back.
     fn collect(&mut self) {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {
-                Return::Voice { audio, report } => drop((audio, report)),
-                Return::Recording { report } => drop(report),
+                Return::Voice(spec) => drop(spec),
+                Return::Recording(spec) => drop(spec),
             }
         }
     }
@@ -78,7 +91,7 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport};
+    use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport, VoiceSpec};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -104,10 +117,11 @@ mod tests {
         let (mut to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
         let audio = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        let returned = Return::Voice {
+        let returned = Return::Voice(VoiceSpec {
+            id: VoiceId::next(),
             audio: Arc::clone(&audio),
             report: Arc::new(VoiceReport::new()),
-        };
+        });
         to_control.push(returned).unwrap();
 
         rings.send(command()).unwrap();

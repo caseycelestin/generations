@@ -11,7 +11,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
-| 6 | Recording: audio input as a new root | built twice, removed both times; to be rebuilt on `src/engine/` |
+| 6 | Recording: audio input as a new root | main out rebuilt on `src/engine/`, no `take` yet; inputs to come |
 | 7 | Input monitoring: hear the input through the output | done on the old engine, removed with it; to be rebuilt |
 | 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
 | 9 | Arrangement and more effects | |
@@ -140,8 +140,8 @@ or rejected instead. The history of how a shape was reached is in git.
   `Arc::get_mut`: refused while the engine holds the audio, which is what
   `Audio` protects; a read by the project is protected by an ordinary
   borrow. A voice that has ended still holds it until its return is
-  collected. Recording
-  cannot share it this way and will take the audio by value.
+  collected. Recording cannot share it this way, so `record` takes the
+  audio by value (see Recording).
 
 ### Memory
 
@@ -176,10 +176,11 @@ or rejected instead. The history of how a shape was reached is in git.
   while the kernel finds one. Memory the control side fills (loaded audio,
   the renderer's pool) is backed before the audio thread sees it; memory
   the audio thread is first to write (a recording, later a delay line) is
-  written once at allocation, on the control side. Nothing does that
-  today: `Block::prefault` went with the old recorder and returns with
-  recording. Prefaulting everything was rejected as work with nothing to
-  gain.
+  written once on the control side before the audio thread has it:
+  `record` prefaults its audio. Prefaulting every allocation was rejected
+  as work with nothing to gain, and weighed again for the wait it puts on
+  a record press; arming will take it off the press instead (see
+  Recording).
 - **Review rule:** every new audio-length allocation comes from
   `AudioMemory`, or the figure is a lie; one the audio thread fills is
   prefaulted.
@@ -322,30 +323,57 @@ input's ring must be freed on the control side like any other return.
 ### Recording
 
 Built in step 6, removed in the memory port (PR #40), rebuilt for the main
-out in step 8, and removed again with the old engine (PR #57). To be
-rebuilt on `src/engine/`, main out before inputs: it stays on the two
-threads there are and forces the return-path decision inputs also need.
-How a recording gets its buffer from `AudioMemory` is open.
+out in step 8, removed with the old engine (PR #57), and rebuilt on
+`src/engine/` for the main out (PR #66 and the buffer PR). Inputs follow.
 
-- **How a take reaches its handle is undecided.** A voice's outcome
-  reaches its handle through a shared report: one atomic byte the
-  renderer stores and the handle loads, with no ring. A take could follow
-  the report pattern with a write-once `Slot<T>` behind an `Arc`: the
-  renderer moves the buffer in (wins EMPTY -> WRITING, publishes READY
-  with Release), the handle takes it out once (wins READY -> TAKEN with
-  Acquire), and the renderer's `Arc` goes back on the ring back, so
-  nothing is freed on the audio thread. A byte can be copied by both
-  sides; a buffer must move once, hence the cell, and `take()` returns it
-  once rather than reading it repeatedly. The cell needs `unsafe` (an
-  `UnsafeCell` and `unsafe impl Sync`), but only inside `Slot`: its
-  fields are private and `put`/`take` are sound in any order (a second
-  put hands the value back), so its `// SAFETY:` comments guard edits to
-  `Slot`, not its callers. Check it with Miri and loom. Ruled out:
-  `oneshot`, whose sender frees the channel when the receiver is gone,
-  which would be on the audio thread; `OnceLock`, which only lends the
-  value. The alternative: the take rides the ring back and collect hands
-  it to the recording feature, with no new primitive but delivery only at
-  a collect.
+- **A recording is a handle, as a voice is.** `control.record(audio)`
+  returns a `Recording` with `stop`, `state` and `take`. Its report holds
+  the latest state: `Pending`, `Recording`, then `Ended(Full)` or
+  `Ended(Stopped)`, or `Refused`. The report is a copy of the voice's
+  until reports are made generic.
+- **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
+  length is a maximum, and reaching it ends the take `Full`, which is not
+  an error. Only stereo audio is taken: the main out is stereo.
+- **The renderer holds the only reference while it writes**, through
+  `Arc::get_mut`. Only the control side clones or drops audio and the
+  caller gives theirs up, so `record` knows exactly whether a voice still
+  holds it and refuses at once. Every refusal hands the audio back in a
+  `RecordError`, as `TrySendError` does. The rings reserve, then send, as
+  tokio's `try_reserve` does: the audio is given up only once the send
+  cannot fail, and no copy of it is ever left behind.
+- **One recorder, and the rule is the renderer's.** `record` always
+  sends; a start while a take runs is refused and shows as `Refused`. A
+  running take is never cut. Whether the recorder is free and whether the
+  audio is free are two rules, each kept where it is known exactly.
+- **The main out is written as heard**, after each block is clipped, and
+  the end-of-period clean-up ends a take whose audio is full. `record`
+  clears the audio and prefaults it first.
+- **Every return is the spec handed back**, for voices too: a refused or
+  ended recording's audio and report go back on the ring, so nothing is
+  freed on the audio thread.
+- **`Stop` names its take by buffer address**, so an old handle cannot
+  stop a newer take. That is sound only while the take cannot be freed
+  before the stop is applied; today `collect` frees a returned take, so
+  it holds once passback keeps the take until `take`.
+- **Dropping a recording stops it**, unlike a voice, which plays out: no
+  one could take its audio. A stop lost to a full ring ends `Full`.
+- **How a take reaches `take` is open (next PR).** Either a mailbox in
+  the spec, which the handle shares and `collect` fills on the control
+  side: no new primitive, provided the renderer hands the spec back
+  before it reports the end, so a handle that sees an end always finds
+  the take. Or a write-once `Slot<T>` the renderer moves the audio into:
+  `unsafe` inside the cell, checked with Miri and loom. Ruled out:
+  `oneshot`, whose sender frees the channel on the audio thread when the
+  receiver is gone, and `OnceLock`, which only lends the value.
+- **Arming comes later, with the features that need it.** An armed
+  recording is held by the renderer, which starts it itself: at the frame
+  the input crosses a level (threshold start), on the next beat or bar
+  once there is a clock (quantized start), or with the second before the
+  press kept from a ring written while armed (pre-roll). Only the audio
+  thread can time these. Arming also claims the recorder early, so a busy
+  one is refused before the press, and takes `record`'s prefault off the
+  press. Until then the user waits for the prefault, a few milliseconds
+  per 30 s of stereo; accepted for now (2026-11-13).
 
 ### Process
 
@@ -360,12 +388,13 @@ How a recording gets its buffer from `AudioMemory` is open.
 
 ## Step 8: the real-time side
 
-Built on `src/engine/`: voices, block mixing and the ring back (see the
-render side, above). The old engine's mixer, release ring and main-out
+Built on `src/engine/`: voices, block mixing, the ring back (see the
+render side, above) and recording of the main out (see Recording). The old engine's mixer, release ring and main-out
 recorder went with it in PR #57.
 
 What is left:
-- **Recording** (see Recording, above): the main out first, then inputs.
+- **Recording** (see Recording, above): passing a take back to `take`,
+  then recording inputs.
 - **Inputs and monitoring** (see above), with the capture thread.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on
   the command.

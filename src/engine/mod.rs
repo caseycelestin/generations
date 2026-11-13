@@ -6,7 +6,7 @@ mod control;
 mod protocol;
 mod realtime;
 
-pub use control::{Control, ControlError, Recording, Voice, VoiceState};
+pub use control::{Control, ControlError, RecordError, Recording, Voice, VoiceState};
 pub use protocol::recording::{RecordingEnd, RecordingState};
 pub use protocol::voice::VoiceEnd;
 pub use realtime::render::Renderer;
@@ -39,7 +39,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::audio::Audio;
+    use crate::audio::{Audio, AudioMemory};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -49,6 +49,13 @@ mod tests {
 
     fn audio(samples: &[f32]) -> Audio {
         Audio::new(buffer(ChannelLayout::Mono, samples))
+    }
+
+    /// Empty stereo audio with room for `frames`, as a take needs.
+    fn room(frames: usize) -> Audio {
+        AudioMemory::new()
+            .alloc(ChannelLayout::Stereo, frames)
+            .unwrap()
     }
 
     #[test]
@@ -141,5 +148,65 @@ mod tests {
             control.play(&audio),
             Err(ControlError::CommandsFull)
         ));
+    }
+
+    #[test]
+    fn a_recording_runs_until_stopped() {
+        let (control, mut renderer) = create(count(4), count(1));
+        let recording = control.record(room(64)).unwrap();
+        assert_eq!(recording.state(), RecordingState::Pending);
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(recording.state(), RecordingState::Recording);
+
+        recording.stop().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(
+            recording.state(),
+            RecordingState::Ended(RecordingEnd::Stopped)
+        );
+    }
+
+    #[test]
+    fn record_refuses_mono_audio_and_hands_it_back() {
+        let (control, _renderer) = create(count(4), count(1));
+        let mono = AudioMemory::new().alloc(ChannelLayout::Mono, 4).unwrap();
+        let error = control.record(mono).unwrap_err();
+        assert!(matches!(error, RecordError::NotStereo(_)));
+        assert_eq!(error.into_audio().layout(), ChannelLayout::Mono);
+    }
+
+    #[test]
+    fn record_refuses_audio_a_voice_holds() {
+        let (control, _renderer) = create(count(4), count(1));
+        let audio = room(4);
+        let _voice = control.play(&audio).unwrap();
+        assert!(matches!(
+            control.record(audio),
+            Err(RecordError::AudioInUse(_))
+        ));
+    }
+
+    #[test]
+    fn record_hands_the_audio_back_when_the_ring_is_full() {
+        let (control, _renderer) = create(count(1), count(1));
+        control.stop_all().unwrap();
+        assert!(matches!(
+            control.record(room(4)),
+            Err(RecordError::CommandsFull(_))
+        ));
+    }
+
+    #[test]
+    fn dropping_a_recording_frees_the_recorder() {
+        let (control, mut renderer) = create(count(4), count(1));
+        let first = control.record(room(64)).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        drop(first);
+        let second = control.record(room(64)).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(second.state(), RecordingState::Recording);
     }
 }

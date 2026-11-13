@@ -13,6 +13,7 @@
 //! side mixes in, so a read is a slice and nothing converts.
 
 use std::fmt;
+use std::hint;
 use std::mem::size_of;
 use std::ops::Range;
 use std::sync::Arc;
@@ -142,6 +143,11 @@ impl AudioBuffer {
         self.data.len() / self.layout.count()
     }
 
+    /// No room left for a whole frame.
+    pub(crate) fn is_full(&self) -> bool {
+        self.data.capacity() - self.data.len() < self.layout.count()
+    }
+
     /// The samples of frames `frames`, interleaved. This is how playback
     /// reads: a period's worth at a time, straight from the buffer.
     ///
@@ -167,6 +173,21 @@ impl AudioBuffer {
         self.data.truncate(self.frames() * self.layout.count());
         debug_assert_eq!(self.data.capacity(), capacity, "a buffer grew");
         self.frames() - before
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    /// Writes the unfilled room once, so the pages behind it are backed.
+    /// Fresh memory is only reserved: the first write to each page stalls
+    /// while the kernel finds one, which must not happen on the audio thread.
+    pub(crate) fn prefault(&mut self) {
+        let room = self.data.spare_capacity_mut();
+        for sample in room.iter_mut() {
+            sample.write(0.0);
+        }
+        hint::black_box(room);
     }
 }
 
@@ -195,6 +216,11 @@ pub struct Audio(Arc<AudioBuffer>);
 impl Audio {
     pub(crate) fn new(buffer: AudioBuffer) -> Self {
         Self(Arc::new(buffer))
+    }
+
+    /// Gives up this handle's reference, with no copy left behind.
+    pub(crate) fn into_shared(self) -> Arc<AudioBuffer> {
+        self.0
     }
 
     /// Mono or stereo.
@@ -361,5 +387,31 @@ mod tests {
             format!("{b:?}"),
             "AudioBuffer { layout: Stereo, frames: 2, .. }"
         );
+    }
+
+    #[test]
+    fn a_buffer_is_full_once_no_whole_frame_fits() {
+        let mut audio = AudioMemory::new().alloc_buffer(Stereo, 2).unwrap();
+        assert!(!audio.is_full());
+        audio.extend([0.0; 4]);
+        assert!(audio.is_full());
+    }
+
+    #[test]
+    fn clear_empties_the_buffer_and_keeps_its_room() {
+        let mut filled = buffer(Stereo, &[0.5; 4]);
+        filled.clear();
+        assert_eq!(filled.frames(), 0);
+        assert_eq!(filled.extend([0.25; 4]), 2);
+    }
+
+    #[test]
+    fn prefault_leaves_the_buffer_empty_with_all_its_room() {
+        let memory = AudioMemory::new();
+        let mut audio = memory.alloc_buffer(Stereo, 4).unwrap();
+        audio.prefault();
+        assert_eq!(audio.frames(), 0);
+        assert_eq!(audio.extend([0.5; 8]), 4);
+        assert_eq!(memory.in_use(), 8 * S);
     }
 }

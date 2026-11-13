@@ -7,8 +7,9 @@ use std::num::NonZeroUsize;
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
+use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::Return;
-use crate::engine::protocol::voice::{BufferAddress, VoiceEnd, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
 use crate::layout::ChannelLayout;
 
 /// A voice while it plays.
@@ -60,10 +61,7 @@ impl Voice {
     /// report back to be freed on the control side, never here.
     pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Return>) {
         self.spec.report.end(why);
-        let pushed = to_control.push(Return::Voice {
-            audio: self.spec.audio,
-            report: self.spec.report,
-        });
+        let pushed = to_control.push(Return::Voice(self.spec));
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 }

@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::audio::AudioBuffer;
 
+use super::BufferAddress;
+
 #[derive(Debug)]
 pub(crate) enum VoiceCommand {
     Add(VoiceSpec),
@@ -28,19 +30,6 @@ id! {
     /// One playing of audio. The lowest id is the oldest; a stale
     /// remove names nothing and does nothing.
     VoiceId
-}
-
-/// Names audio to the renderer without sending it, so nothing comes back
-/// to be freed. Sent while the caller still holds the audio, so the
-/// address is still that audio's when the command is applied: a later
-/// buffer at the same address is started by a play behind it on the ring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BufferAddress(usize);
-
-impl BufferAddress {
-    pub(crate) fn of(audio: &Arc<AudioBuffer>) -> Self {
-        Self(Arc::as_ptr(audio) as usize)
-    }
 }
 
 /// The audio thread's report on a voice: empty while it plays, then why it
