@@ -15,17 +15,3 @@ pub const SAMPLE_RATE: u32 = 48_000;
 
 /// The largest channel count a buffer may have.
 pub const MAX_CHANNELS: u16 = 2;
-
-/// The widest input the engine takes: the most channels one capture
-/// device may deliver per frame.
-pub const MAX_INPUT_CHANNELS: usize = 8;
-
-/// The longest period, in frames, the engine takes from a device: the
-/// most frames one callback may deliver. A bound, not a device fact; the
-/// caller gets the period from the device and the engine refuses one
-/// past this. It is what makes the input rings, which are sized from the
-/// period, fixed overhead with a worst case known at compile time rather
-/// than audio-sized memory for the ledger: see `input::MAX_RING_BYTES`.
-/// 4096 frames is 85 ms at 48 kHz, already more latency than a sampler
-/// wants.
-pub const MAX_PERIOD_FRAMES: usize = 4096;

@@ -134,27 +134,6 @@ impl AudioBuffer {
     pub fn samples(&self) -> &[Pcm] {
         &self.data
     }
-
-    /// How many more frames fit before the block is full.
-    pub(crate) fn room(&self) -> usize {
-        self.data.room() / self.layout.count()
-    }
-
-    /// Appends one frame, a sample per channel, or drops it if there is
-    /// no room for the whole frame. Returns whether it went in.
-    pub(crate) fn push_frame(&mut self, frame: &[Pcm]) -> bool {
-        debug_assert_eq!(frame.len(), self.layout.count(), "a frame of the layout");
-        if self.room() == 0 {
-            return false;
-        }
-        self.data.extend(frame.iter().copied());
-        true
-    }
-
-    /// Empties the buffer. The room comes back; the block stays paid for.
-    pub(crate) fn clear(&mut self) {
-        self.data.truncate(0);
-    }
 }
 
 /// Audio in RAM that never changes, shared with whatever plays it.
@@ -171,34 +150,6 @@ impl Sample {
     /// The audio, shared: what a playing of it holds.
     pub(crate) fn audio(&self) -> &Arc<AudioBuffer> {
         &self.0
-    }
-}
-
-/// A finished take: what a [`Recorder`](crate::Recorder) kept, before
-/// it is saved.
-///
-/// It is the recorder's own buffer, so it lasts until the recorder
-/// records again, which records over it. Save it with
-/// [`Project::save_take`](crate::Project::save_take) to keep it: that
-/// makes it a sample, with an id, that can be loaded and played. The
-/// audio stays inside the crate, as a loaded sample's does.
-#[derive(Debug)]
-pub struct Take(AudioBuffer);
-
-impl Take {
-    /// The take held in `audio`.
-    pub(crate) fn new(audio: AudioBuffer) -> Self {
-        Self(audio)
-    }
-
-    /// The audio, to read.
-    pub(crate) fn audio(&self) -> &AudioBuffer {
-        &self.0
-    }
-
-    /// The buffer, to record into again.
-    pub(crate) fn into_audio(self) -> AudioBuffer {
-        self.0
     }
 }
 
@@ -286,22 +237,6 @@ mod tests {
         assert_eq!(ledger.in_use(), 3 * size_of::<Pcm>());
         drop(block);
         assert_eq!(ledger.in_use(), 0);
-    }
-
-    #[test]
-    fn an_owner_writes_whole_frames_up_to_the_room_and_clears() {
-        let ledger = Ledger::new(usize::MAX);
-        let block: Block = ledger.alloc(5).unwrap();
-        let mut b = AudioBuffer::new(Stereo, block).unwrap();
-        assert_eq!(b.room(), 2);
-        assert!(b.push_frame(&[1.0, 2.0]));
-        assert!(b.push_frame(&[3.0, 4.0]));
-        assert!(!b.push_frame(&[5.0, 6.0]), "half a frame of room is none");
-        assert_eq!(b.samples(), &[1.0, 2.0, 3.0, 4.0]);
-        b.clear();
-        assert_eq!(b.frames(), 0);
-        assert_eq!(b.room(), 2);
-        assert_eq!(ledger.in_use(), 5 * size_of::<Pcm>());
     }
 
     #[test]

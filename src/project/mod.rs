@@ -6,7 +6,7 @@
 //! the disk and there is no save step. Today a project holds samples;
 //! patterns and settings arrive as their steps come.
 //!
-//! The project makes and holds the [`Ledger`], because every byte of
+//! The project makes and holds the `Ledger`, because every byte of
 //! audio it brings into RAM, an import on its way to disk or a sample
 //! loaded for playback, is a block on it. What it hands out is a
 //! [`Sample`], plain audio owned by whoever holds it; the project
@@ -22,7 +22,7 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, Sample, Take};
+use crate::audio::{AudioBuffer, Sample};
 use crate::project::ledger::Ledger;
 use import::ImportError;
 use storage::{Storage, StorageError};
@@ -93,9 +93,7 @@ impl Project {
     /// project format and stored. The file itself is not kept or
     /// referenced: the project holds its own copy. The new sample is not
     /// loaded; that is a separate decision, so an import lands on disk
-    /// whether or not it fits in RAM. The add itself is
-    /// `add_sample`; [`save_take`](Self::save_take) makes the same call
-    /// with a take, and once in, the two are indistinguishable.
+    /// whether or not it fits in RAM.
     ///
     /// The import passes through the budget on its way to disk; a file
     /// too large to pass through RAM beside what is loaded is refused,
@@ -103,14 +101,6 @@ impl Project {
     pub fn import(&mut self, file: &Path) -> Result<SampleId, ProjectError> {
         let audio = import::import(file, &self.ledger)?;
         self.add_sample(&audio)
-    }
-
-    /// Saves `take` as a new sample and returns its id: the frames it
-    /// kept, not the room after them. The take is read where it is, in
-    /// its recorder's buffer, and nothing is copied into RAM. The new
-    /// sample is not loaded; [`load`](Self::load) it to play it.
-    pub fn save_take(&mut self, take: &Take) -> Result<SampleId, ProjectError> {
-        self.add_sample(take.audio())
     }
 
     /// Loads `id`: brings its audio into RAM and returns it as a

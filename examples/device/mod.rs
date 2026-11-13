@@ -39,8 +39,8 @@ use cpal::{
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use generations::Renderer;
 use generations::config::SAMPLE_RATE;
+use generations::engine::Renderer;
 
 /// Frames per period the capture device is asked for, so the period is
 /// known before the stream runs and the engine can size its rings from
