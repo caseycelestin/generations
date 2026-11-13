@@ -9,7 +9,6 @@
 //! project at `project/` that already holds sample 0.
 
 use std::error::Error;
-use std::num::NonZeroUsize;
 use std::path::Path;
 use std::thread;
 
@@ -25,9 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let audio = project.load(SampleId(0), &memory)?;
 
     // Room for 64 commands in flight and 16 voices at once.
-    let commands = NonZeroUsize::new(64).expect("not zero");
-    let voices = NonZeroUsize::new(16).expect("not zero");
-    let (control, renderer) = engine::create(commands, voices);
+    let (control, renderer) = engine::create(64, 16);
 
     // Clones are the same engine.
     let _ui = control.clone();

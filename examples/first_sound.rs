@@ -7,7 +7,6 @@
 
 use std::error::Error;
 use std::f32::consts::TAU;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
@@ -30,9 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
     let mut project = Project::open(&dir)?;
     // Room for 64 commands in flight and 16 voices at once.
-    let commands = NonZeroUsize::new(64).expect("not zero");
-    let voices = NonZeroUsize::new(16).expect("not zero");
-    let (control, mut renderer) = engine::create(commands, voices);
+    let (control, mut renderer) = engine::create(64, 16);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
     // One second of A440, decaying from half scale to near silence.
