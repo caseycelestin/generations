@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use rtrb::{Consumer, Producer};
 
 use super::ControlError;
-use crate::engine::protocol::recording::{RecordingEvent, RecordingState};
+use crate::engine::protocol::recording::RecordingEvent;
 use crate::engine::protocol::voice::VoiceEvent;
 use crate::engine::protocol::{Command, Event, HandleId, Message};
 
@@ -79,11 +79,11 @@ pub(crate) struct Permit<'a>(MutexGuard<'a, Rings>);
 impl Permit<'_> {
     /// Before the send, under the same lock, so no return for `id` can be
     /// collected before its place exists.
-    pub(crate) fn register(&mut self, id: HandleId, state: Arc<Mutex<RecordingState>>) {
+    pub(crate) fn register(&mut self, id: HandleId, event: Arc<Mutex<RecordingEvent>>) {
         let free = self.0.handles.iter_mut().find(|place| place.is_none());
         debug_assert!(free.is_some(), "sized for every id still owed a return");
         if let Some(place) = free {
-            *place = Some((id, state));
+            *place = Some((id, event));
         }
     }
 
@@ -105,10 +105,10 @@ struct Rings {
     /// return arrives. Every id held here still has that return coming, so
     /// there are never more than the ring back can hold, and the list takes
     /// its size.
-    handles: Box<[Place]>,
+    handles: Box<[Record]>,
 }
 
-type Place = Option<(HandleId, Arc<Mutex<RecordingState>>)>;
+type Record = Option<(HandleId, Arc<Mutex<RecordingEvent>>)>;
 
 impl Rings {
     fn new(
@@ -129,28 +129,27 @@ impl Rings {
         while let Ok(Message { id, data }) = self.from_renderer.pop() {
             match data {
                 Event::Voice(VoiceEvent::Ended(spec)) => drop(spec),
-                Event::Recording(RecordingEvent { state, spec }) => {
-                    self.deliver(id, state, spec.is_some());
-                }
+                Event::Recording(event) => self.deliver(id, event),
             }
         }
     }
 
-    /// Writes `state` into the handle's box; after its `last` event, the
-    /// one that hands the spec back, the place is freed.
-    fn deliver(&mut self, id: HandleId, state: RecordingState, last: bool) {
-        let place = self
+    /// Stores `event` in the handle's box. The event that hands the spec
+    /// back is the last, so its record is freed.
+    fn deliver(&mut self, id: HandleId, event: RecordingEvent) {
+        let record = self
             .handles
             .iter_mut()
-            .find(|place| matches!(place, Some((held, _)) if *held == id));
-        let Some(place) = place else {
+            .find(|record| matches!(record, Some((held, _)) if *held == id));
+        let Some(record) = record else {
             return;
         };
-        if let Some((_, handle)) = place {
-            *handle.lock().unwrap_or_else(PoisonError::into_inner) = state;
+        let last = event.spec.is_some();
+        if let Some((_, handle)) = record {
+            *handle.lock().unwrap_or_else(PoisonError::into_inner) = event;
         }
         if last {
-            *place = None;
+            *record = None;
         }
     }
 }

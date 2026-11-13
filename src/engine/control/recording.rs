@@ -8,7 +8,9 @@ use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
 use crate::engine::protocol::HandleId;
-use crate::engine::protocol::recording::{RecordingCommand, RecordingSpec, RecordingState};
+use crate::engine::protocol::recording::{
+    RecordingCommand, RecordingEvent, RecordingSpec, RecordingState,
+};
 use crate::layout::ChannelLayout;
 
 /// A refused `record`, holding the audio it was given.
@@ -37,8 +39,8 @@ impl RecordError {
 pub struct Recording {
     rings: SharedRings,
     id: HandleId,
-    /// Written by `collect` when the renderer reports this recording.
-    state: Arc<Mutex<RecordingState>>,
+    /// The last one `collect` heard for this recording.
+    event: Arc<Mutex<RecordingEvent>>,
 }
 
 impl Recording {
@@ -61,10 +63,13 @@ impl Recording {
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
-        let state = Arc::new(Mutex::new(RecordingState::Pending));
-        permit.register(id, Arc::clone(&state));
+        let event = Arc::new(Mutex::new(RecordingEvent {
+            state: RecordingState::Pending,
+            spec: None,
+        }));
+        permit.register(id, Arc::clone(&event));
         permit.send(id, RecordingCommand::Start(RecordingSpec { audio }));
-        Ok(Self { rings, id, state })
+        Ok(Self { rings, id, event })
     }
 
     pub fn stop(&self) -> Result<(), ControlError> {
@@ -73,7 +78,10 @@ impl Recording {
 
     pub fn state(&self) -> RecordingState {
         self.rings.collect();
-        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.event
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state
     }
 
     /// Until the recording has ended the handle comes back, to ask again.
