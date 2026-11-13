@@ -22,8 +22,8 @@ use std::path::Path;
 
 use thiserror::Error;
 
-use crate::audio::{AudioBuffer, Sample};
-use crate::project::ledger::Ledger;
+use crate::audio::{AudioBuffer, ChannelLayout, Sample};
+use crate::project::ledger::{Ledger, OverBudgetError};
 use import::ImportError;
 use storage::{Storage, StorageError};
 
@@ -54,6 +54,8 @@ pub enum ProjectError {
     Storage(#[from] StorageError),
     #[error(transparent)]
     Import(#[from] ImportError),
+    #[error(transparent)]
+    OverBudget(#[from] OverBudgetError),
 }
 
 /// One project, live on its storage, allocating from one ledger.
@@ -117,6 +119,20 @@ impl Project {
     /// per sample.
     pub fn load(&self, id: SampleId) -> Result<Sample, ProjectError> {
         Ok(Sample::new(self.audio(id)?))
+    }
+
+    /// An empty sample with room for `frames` frames of `layout`, paid
+    /// for against the budget now, in full.
+    ///
+    /// Nothing is stored: the sample has no id until it is added.
+    pub fn alloc(&self, layout: ChannelLayout, frames: usize) -> Result<Sample, ProjectError> {
+        // Saturating: a count past usize cannot be afforded, and the
+        // ledger refuses it as over budget.
+        let samples = frames.saturating_mul(layout.count());
+        let block = self.ledger.alloc(samples)?;
+        let audio = AudioBuffer::new(layout, block)
+            .unwrap_or_else(|_| unreachable!("an empty block is whole frames"));
+        Ok(Sample::new(audio))
     }
 
     /// Adds audio as a sample and returns its id.
@@ -423,6 +439,31 @@ pub(crate) mod tests {
         assert!(matches!(
             p.load(bogus),
             Err(ProjectError::UnknownSample(id)) if id == bogus
+        ));
+        assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn alloc_pays_for_the_room_and_holds_nothing() {
+        let p = memory_project();
+        let sample = p.alloc(ChannelLayout::Stereo, 4).unwrap();
+        assert_eq!(sample.audio().frames(), 0);
+        assert_eq!(p.ledger().in_use(), 2 * ramp_bytes(4));
+        drop(sample);
+        assert_eq!(p.ledger().in_use(), 0);
+    }
+
+    #[test]
+    fn alloc_over_budget_is_refused() {
+        let (_state, storage) = memory_storage();
+        let p = Project::on(storage, ramp_bytes(4));
+        assert!(matches!(
+            p.alloc(ChannelLayout::Mono, 5),
+            Err(ProjectError::OverBudget(_))
+        ));
+        assert!(matches!(
+            p.alloc(ChannelLayout::Stereo, usize::MAX),
+            Err(ProjectError::OverBudget(_))
         ));
         assert_eq!(p.ledger().in_use(), 0);
     }
