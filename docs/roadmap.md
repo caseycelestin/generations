@@ -31,17 +31,20 @@ or rejected instead. The history of how a shape was reached is in git.
 
 ### The project
 
-- **The project is the disk.** `Project` holds a `Storage` and no
+- **The project is the disk.** `Project` is a directory and holds no
   in-memory copy of the project, not even a cache. Every change is
   durable when the call returns, so there is no save step; on the device
   the active project lives on eMMC and a "save" is a copy to the SD card.
   The first model kept everything in RAM and treated persistence as a
   dump; step 3 replaced it.
-- **The project holds the rules, storage is dumb.** The project enforces
-  what may change (that a parent exists, once lineage returns); storage
-  answers questions and does what it is told. Rules in storage would
-  drift from the project's.
-- **Storage mints sample ids.** A sample does not exist until it is
+- **Project and storage are one type.** `Project` and `Storage` were
+  split as rules over a dumb medium, for swappable backends. The backend
+  trait went first, then the rules went with lineage, leaving `Project`
+  passing every call through with two nested error types; merged
+  2026-11-13, in one file, `project.rs`: the public methods, then the
+  private ones that read and write the files. When lineage returns, its
+  rules are checks against the manifest before a write, on `Project`.
+- **The project mints sample ids.** A sample does not exist until it is
   stored, like a database insert returning the row id. The counter is on
   disk, only goes up, and never reuses an id.
 - **A sample is named by its `SampleId`; a sound is not.** A sample
@@ -54,24 +57,21 @@ or rejected instead. The history of how a shape was reached is in git.
   and an optional parent id; lineage is the tree of parent pointers. It
   was built in step 3 and removed after step 8, because nothing had made
   a child since prints went in step 5. It returns with prints: `parent`
-  joins the crate-private `SampleMetadata` that `Storage::add_sample`
-  writes beside the audio (empty until then), goes in the manifest's
-  per-sample `Entry` with `#[serde(default)]`, and gets its rule on
-  `Project`; `metadata(id)` comes back to read it. Other fields join the
+  goes in the manifest's per-sample `Entry` with `#[serde(default)]`
+  (empty until then), and gets its rule on `Project`; `metadata(id)` comes back to read it. Other fields join the
   sample the same way as steps need them. (A `loaded` flag was the first
   and was removed under Handles. Removing samples was built and cut in
   the memory port: no caller.)
 - **"Project"** is what every sampler calls the unit a user opens and
   copies to a card. It will hold patterns, settings and pad layouts too.
 
-### Storage
+### Files
 
-- **One concrete type, `Storage`: a directory.** It answers the questions
-  the project asks and makes its writes durable; rules stay above it. The
-  `Storage` trait (files now, perhaps SQLite later) was removed
-  2026-11-13: it had one implementation, and the project's tests run on a
-  temporary directory instead of an in-memory stub.
-- **A storage always holds a whole project.** `open(dir)` creates an empty
+- **No backend abstraction.** The `Storage` trait (files now, perhaps
+  SQLite later) was removed 2026-11-13: it had one implementation, and
+  the project's tests run on a temporary directory instead of an
+  in-memory stub.
+- **A `Project` is always a whole project.** `open(dir)` creates an empty
   project in an empty or missing directory, validates a whole project
   otherwise, and refuses anything else. Validation happens on open, not
   per call: the manifest reads, the counter is past every id, every WAV
@@ -84,10 +84,10 @@ or rejected instead. The history of how a shape was reached is in git.
   WAV the manifest does not name is ignored.
 - **The on-disk form is a directory:** `project.json` (format version, id
   counter, samples keyed by id) and `samples/<id>.wav`. The manifest is a
-  private struct in storage, not a serde derive on the model, so the
+  private struct in `project.rs`, not a serde derive on the model, so the
   file format is versioned on its own. WAV rather than raw bytes so any
   audio tool can open a sample.
-- **Nothing is cached in storage.** The OS caches the file and nothing
+- **Nothing is cached by the project.** The OS caches the file and nothing
   real-time reads it.
 - **The directory belongs to the engine.** A hand-renamed WAV makes open
   refuse the project; recovering is content-hash territory (Deferred).
@@ -500,7 +500,7 @@ eMMC      the active project; every change lands here at once
 RAM       loaded samples, under the ledger
 ```
 
-The storage layer does not know about tiers.
+The project does not know about tiers.
 
 ## Deferred ideas
 

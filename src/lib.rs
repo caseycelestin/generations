@@ -17,11 +17,8 @@
 //!                         with an optional budget, and Audio, a user's
 //!                         piece of it
 //!
-//! project/                the disk side
-//!   mod.rs                  Project: opens on a directory, loads, adds;
-//!   │                       the rules over its storage
-//!   storage.rs              the medium: a directory of WAVs and a manifest;
-//!                           keeps and returns bytes, nothing more
+//! project                 the disk side: Project, a directory of WAVs and
+//!                         a manifest; opens, loads, adds
 //!
 //! engine/                 everything heard; create() makes both sides
 //!   protocol/               what crosses between the two sides
@@ -40,8 +37,9 @@
 //!   an empty [`Audio`] to write, and every load is paid for from it, so
 //!   nothing that scales with audio exists uncounted. The caller makes one
 //!   for the machine, with a budget if it wants one.
-//! - **[`project`]** is the disk. Every read and write goes to storage, so
-//!   changing the project is changing the disk and there is no save step.
+//! - **[`project`]** is the disk. Every read and write goes to its files,
+//!   so changing the project is changing the disk and there is no save
+//!   step.
 //!   A load turns a stored sample into [`Audio`], whose holder owns it:
 //!   dropping it unloads.
 //! - **[`engine`]** turns commands and audio into frames. The renderer
@@ -69,5 +67,4 @@ pub(crate) mod testing;
 
 pub use audio::{Audio, AudioMemory, OverBudgetError};
 pub use layout::{AudioError, ChannelLayout};
-pub use project::storage::StorageError;
 pub use project::{Project, ProjectError, SampleId};
