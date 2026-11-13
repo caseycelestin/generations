@@ -80,13 +80,23 @@ impl Renderer {
                         stopped.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
+                Command::Voice(VoiceCommand::RemoveAll) => {
+                    for voice in self.voices.drain() {
+                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                    }
+                }
+                Command::Voice(VoiceCommand::RemoveAudio(audio)) => {
+                    for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
+                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                    }
+                }
             }
         }
     }
 
     /// End-of-period housekeeping: ends every voice that played to its last frame.
     fn clean_up(&mut self) {
-        for voice in self.voices.pop_finished() {
+        for voice in self.voices.extract_if(|voice| voice.finished()) {
             voice.end(VoiceEnd::Finished, &mut self.to_control);
         }
     }
@@ -99,8 +109,8 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::audio::ChannelLayout;
-    use crate::engine::protocol::voice::{VoiceId, VoiceReport, VoiceSpec};
+    use crate::audio::{AudioBuffer, ChannelLayout};
+    use crate::engine::protocol::voice::{BufferAddress, VoiceId, VoiceReport, VoiceSpec};
     use crate::testing::audio;
 
     /// A renderer with `voices` places, and the control side's ring ends.
@@ -114,11 +124,19 @@ mod tests {
 
     /// Sends an add for a mono voice of `samples`, as `Control::play` does.
     fn play(to_renderer: &mut Producer<Command>, samples: &[Pcm]) -> (VoiceId, Arc<VoiceReport>) {
+        play_audio(to_renderer, Arc::new(audio(ChannelLayout::Mono, samples)))
+    }
+
+    /// Sends an add for a voice of `audio`, for voices that share it.
+    fn play_audio(
+        to_renderer: &mut Producer<Command>,
+        audio: Arc<AudioBuffer>,
+    ) -> (VoiceId, Arc<VoiceReport>) {
         let id = VoiceId::next();
         let report = Arc::new(VoiceReport::new());
         let spec = VoiceSpec {
             id,
-            audio: Arc::new(audio(ChannelLayout::Mono, samples)),
+            audio,
             report: Arc::clone(&report),
         };
         to_renderer.push(VoiceCommand::Add(spec).into()).unwrap();
@@ -188,6 +206,42 @@ mod tests {
         assert_eq!(report.ended(), Some(VoiceEnd::Stopped));
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+    }
+
+    #[test]
+    fn remove_all_ends_every_voice_stopped_and_falls_silent() {
+        let (mut to_renderer, from_renderer, mut renderer) = renderer(2);
+        let (_, first) = play(&mut to_renderer, &[0.5; 64]);
+        let (_, second) = play(&mut to_renderer, &[0.5; 64]);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&mut out);
+        to_renderer.push(VoiceCommand::RemoveAll.into()).unwrap();
+        renderer.render(&mut out);
+        assert_eq!(first.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(second.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(out, vec![0.0; 4 * 2]);
+        assert_eq!(from_renderer.slots(), 2);
+    }
+
+    #[test]
+    fn remove_audio_ends_only_the_voices_playing_it() {
+        let (mut to_renderer, from_renderer, mut renderer) = renderer(3);
+        let removed = Arc::new(audio(ChannelLayout::Mono, &[0.5; 64]));
+        let (_, first) = play_audio(&mut to_renderer, Arc::clone(&removed));
+        let (_, second) = play_audio(&mut to_renderer, Arc::clone(&removed));
+        let (_, kept) = play(&mut to_renderer, &[0.25; 64]);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&mut out);
+        let address = BufferAddress::of(&removed);
+        to_renderer
+            .push(VoiceCommand::RemoveAudio(address).into())
+            .unwrap();
+        renderer.render(&mut out);
+        assert_eq!(first.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(second.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(kept.ended(), None);
+        assert_eq!(out, vec![0.25; 4 * 2]);
+        assert_eq!(from_renderer.slots(), 2);
     }
 
     #[test]

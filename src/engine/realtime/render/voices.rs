@@ -9,7 +9,7 @@ use rtrb::Producer;
 use super::{Frame, Renderer};
 use crate::audio::ChannelLayout;
 use crate::engine::protocol::Return;
-use crate::engine::protocol::voice::{VoiceEnd, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{BufferAddress, VoiceEnd, VoiceId, VoiceSpec};
 
 /// A voice while it plays.
 #[derive(Debug)]
@@ -47,8 +47,12 @@ impl Voice {
         self.position = end;
     }
 
+    pub(crate) fn plays(&self, audio: BufferAddress) -> bool {
+        BufferAddress::of(&self.spec.audio) == audio
+    }
+
     /// Its last frame has been rendered.
-    fn finished(&self) -> bool {
+    pub(crate) fn finished(&self) -> bool {
         self.position == self.spec.audio.frames()
     }
 
@@ -80,18 +84,6 @@ impl Voices {
         }
     }
 
-    /// Every playing voice.
-    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
-        self.places.iter_mut().flatten()
-    }
-
-    /// Takes out every voice that has played to its last frame.
-    pub(crate) fn pop_finished(&mut self) -> impl Iterator<Item = Voice> + '_ {
-        self.places
-            .iter_mut()
-            .filter_map(|place| place.take_if(|voice| voice.finished()))
-    }
-
     /// Takes a free place, or the oldest voice's place, returning the
     /// voice replaced.
     pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
@@ -112,6 +104,11 @@ impl Voices {
         }
     }
 
+    /// Every playing voice.
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
+        self.places.iter_mut().flatten()
+    }
+
     /// Takes out the voice `id`, if it is still here.
     pub(crate) fn remove(&mut self, id: VoiceId) -> Option<Voice> {
         let found = self
@@ -119,6 +116,22 @@ impl Voices {
             .iter_mut()
             .find(|place| matches!(place, Some(voice) if voice.spec.id == id));
         found.and_then(Option::take)
+    }
+
+    /// Takes out every voice `test` picks, as `Vec::extract_if`: stopped
+    /// early, the rest stay.
+    pub(crate) fn extract_if(
+        &mut self,
+        mut test: impl FnMut(&mut Voice) -> bool,
+    ) -> impl Iterator<Item = Voice> {
+        self.places
+            .iter_mut()
+            .filter_map(move |place| place.take_if(|voice| test(voice)))
+    }
+
+    /// Takes out every voice.
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = Voice> + '_ {
+        self.places.iter_mut().filter_map(Option::take)
     }
 }
 
@@ -176,6 +189,14 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_plays_only_its_own_audio() {
+        let voice = voice(ChannelLayout::Mono, &[0.0]);
+        let other = Arc::new(audio(ChannelLayout::Mono, &[0.0]));
+        assert!(voice.plays(BufferAddress::of(&voice.spec.audio)));
+        assert!(!voice.plays(BufferAddress::of(&other)));
+    }
+
+    #[test]
     fn a_voice_is_finished_once_its_last_frame_renders() {
         let mut voice = voice(ChannelLayout::Mono, &[0.0; 4]);
         let mut scratch = [[0.0; 2]; 2];
@@ -216,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn pop_finished_takes_only_finished_voices() {
+    fn extract_if_takes_only_the_voices_picked() {
         let mut voices = voices(2);
         let short = voice(ChannelLayout::Mono, &[0.0]);
         let short_id = short.spec.id;
@@ -226,8 +247,20 @@ mod tests {
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let popped: Vec<VoiceId> = voices.pop_finished().map(|voice| voice.spec.id).collect();
-        assert_eq!(popped, [short_id]);
+        let extracted: Vec<VoiceId> = voices
+            .extract_if(|voice| voice.finished())
+            .map(|voice| voice.spec.id)
+            .collect();
+        assert_eq!(extracted, [short_id]);
         assert_eq!(voices.iter_mut().count(), 1);
+    }
+
+    #[test]
+    fn drain_takes_out_every_voice() {
+        let mut voices = voices(3);
+        voices.add(voice(ChannelLayout::Mono, &[0.0]));
+        voices.add(voice(ChannelLayout::Mono, &[0.0]));
+        assert_eq!(voices.drain().count(), 2);
+        assert_eq!(voices.iter_mut().count(), 0);
     }
 }
