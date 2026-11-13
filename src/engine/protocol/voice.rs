@@ -10,6 +10,7 @@ pub(crate) enum VoiceCommand {
     Add(VoiceSpec),
     /// Stop the voice, if it is still playing.
     Remove(VoiceId),
+    RemoveAll,
 }
 
 /// A voice as asked for: what to play and where to report. Fixed for the

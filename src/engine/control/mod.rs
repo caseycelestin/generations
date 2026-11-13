@@ -8,6 +8,7 @@ pub use voice::{Voice, VoiceState};
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
+use crate::engine::protocol::voice::VoiceCommand;
 use crate::engine::protocol::{Command, Return};
 use crate::project::sample::Sample;
 use rings::SharedRings;
@@ -36,6 +37,11 @@ impl Control {
     /// Starts `sample` at the renderer's next period.
     pub fn play(&self, sample: &Sample) -> Result<Voice, ControlError> {
         Voice::play(self.rings.clone(), sample)
+    }
+
+    /// Stops every voice, at the renderer's next period.
+    pub fn stop_all(&self) -> Result<(), ControlError> {
+        self.rings.send(VoiceCommand::RemoveAll)
     }
 
     /// Frees what the renderer has handed back, returning its memory to

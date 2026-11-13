@@ -79,6 +79,23 @@ mod tests {
     }
 
     #[test]
+    fn stop_all_ends_every_voice_stopped() {
+        let (control, mut renderer) = create(count(4), count(2));
+        let sample = sample(&[0.5; 64]);
+        let first = control.play(&sample).unwrap();
+        let second = control.play(&sample).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        control.stop_all().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        control.collect();
+
+        assert_eq!(first.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(second.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(Arc::strong_count(sample.audio()), 1);
+    }
+
+    #[test]
     fn collect_frees_the_audio_of_an_ended_voice() {
         let (control, mut renderer) = create(count(4), count(2));
         let sample = sample(&[0.5; 2]);

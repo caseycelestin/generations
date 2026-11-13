@@ -124,6 +124,11 @@ impl Voices {
             .iter_mut()
             .filter_map(move |place| place.take_if(|voice| test(voice)))
     }
+
+    /// Takes out every voice.
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = Voice> + '_ {
+        self.places.iter_mut().filter_map(Option::take)
+    }
 }
 
 #[cfg(test)]
@@ -236,5 +241,14 @@ mod tests {
             .collect();
         assert_eq!(extracted, [short_id]);
         assert_eq!(voices.iter_mut().count(), 1);
+    }
+
+    #[test]
+    fn drain_takes_out_every_voice() {
+        let mut voices = voices(3);
+        voices.add(voice(ChannelLayout::Mono, &[0.0]));
+        voices.add(voice(ChannelLayout::Mono, &[0.0]));
+        assert_eq!(voices.drain().count(), 2);
+        assert_eq!(voices.iter_mut().count(), 0);
     }
 }

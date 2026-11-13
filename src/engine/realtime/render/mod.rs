@@ -80,6 +80,11 @@ impl Renderer {
                         stopped.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
+                Command::Voice(VoiceCommand::RemoveAll) => {
+                    for voice in self.voices.drain() {
+                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                    }
+                }
             }
         }
     }
@@ -188,6 +193,21 @@ mod tests {
         assert_eq!(report.ended(), Some(VoiceEnd::Stopped));
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+    }
+
+    #[test]
+    fn remove_all_ends_every_voice_stopped_and_falls_silent() {
+        let (mut to_renderer, from_renderer, mut renderer) = renderer(2);
+        let (_, first) = play(&mut to_renderer, &[0.5; 64]);
+        let (_, second) = play(&mut to_renderer, &[0.5; 64]);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&mut out);
+        to_renderer.push(VoiceCommand::RemoveAll.into()).unwrap();
+        renderer.render(&mut out);
+        assert_eq!(first.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(second.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(out, vec![0.0; 4 * 2]);
+        assert_eq!(from_renderer.slots(), 2);
     }
 
     #[test]
