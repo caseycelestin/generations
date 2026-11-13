@@ -91,3 +91,113 @@ impl Renderer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rtrb::RingBuffer;
+
+    use super::*;
+    use crate::audio::ChannelLayout;
+    use crate::engine::protocol::voice::{VoiceId, VoiceReport, VoiceSpec};
+    use crate::testing::audio;
+
+    /// A renderer with `voices` places, and the control side's ring ends.
+    fn renderer(voices: usize) -> (Producer<Command>, Consumer<Return>, Renderer) {
+        let (to_renderer, from_control) = RingBuffer::new(16);
+        let (to_control, from_renderer) = RingBuffer::new(32);
+        let voices = NonZeroUsize::new(voices).unwrap();
+        let renderer = Renderer::new(from_control, to_control, voices);
+        (to_renderer, from_renderer, renderer)
+    }
+
+    /// Sends an add for a mono voice of `samples`, as `Control::play` does.
+    fn play(to_renderer: &mut Producer<Command>, samples: &[Pcm]) -> (VoiceId, Arc<VoiceReport>) {
+        let id = VoiceId::next();
+        let report = Arc::new(VoiceReport::new());
+        let spec = VoiceSpec {
+            id,
+            audio: Arc::new(audio(ChannelLayout::Mono, samples)),
+            report: Arc::clone(&report),
+        };
+        to_renderer.push(VoiceCommand::Add(spec).into()).unwrap();
+        (id, report)
+    }
+
+    #[test]
+    fn voices_are_summed() {
+        let (mut to_renderer, _from_renderer, mut renderer) = renderer(2);
+        play(&mut to_renderer, &[0.25; 8]);
+        play(&mut to_renderer, &[0.5; 8]);
+        let mut out = vec![0.0; 8 * 2];
+        renderer.render(&mut out);
+        assert_eq!(out, vec![0.75; 8 * 2]);
+    }
+
+    #[test]
+    fn the_sum_is_clipped() {
+        let (mut to_renderer, _from_renderer, mut renderer) = renderer(2);
+        play(&mut to_renderer, &[0.75; 4]);
+        play(&mut to_renderer, &[0.75; 4]);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&mut out);
+        assert_eq!(out, vec![1.0; 4 * 2]);
+    }
+
+    #[test]
+    fn a_period_longer_than_a_block_plays_on_without_a_gap() {
+        let frames = Renderer::BLOCK_FRAMES * 2 + 10;
+        let ramp: Vec<Pcm> = (0..frames).map(|i| i as Pcm / 1000.0).collect();
+        let (mut to_renderer, _from_renderer, mut renderer) = renderer(1);
+        play(&mut to_renderer, &ramp);
+        let mut out = vec![0.0; frames * 2];
+        renderer.render(&mut out);
+        let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
+        assert_eq!(heard, ramp);
+    }
+
+    #[test]
+    fn periods_shorter_than_a_block_play_on_without_a_gap() {
+        let (mut to_renderer, _from_renderer, mut renderer) = renderer(1);
+        play(&mut to_renderer, &[0.1, 0.2, 0.3, 0.4]);
+        let mut out = vec![0.0; 2 * 2];
+        renderer.render(&mut out);
+        renderer.render(&mut out);
+        assert_eq!(out, vec![0.3, 0.3, 0.4, 0.4]);
+    }
+
+    #[test]
+    fn a_voice_that_plays_out_ends_finished_and_is_handed_back() {
+        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
+        let (_, report) = play(&mut to_renderer, &[0.5; 4]);
+        let mut out = vec![0.0; 8 * 2];
+        renderer.render(&mut out);
+        assert_eq!(report.ended(), Some(VoiceEnd::Finished));
+        assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+    }
+
+    #[test]
+    fn a_removed_voice_ends_stopped_and_falls_silent() {
+        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
+        let (id, report) = play(&mut to_renderer, &[0.5; 64]);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&mut out);
+        to_renderer.push(VoiceCommand::Remove(id).into()).unwrap();
+        renderer.render(&mut out);
+        assert_eq!(report.ended(), Some(VoiceEnd::Stopped));
+        assert_eq!(out, vec![0.0; 4 * 2]);
+        assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+    }
+
+    #[test]
+    fn a_new_voice_in_a_full_pool_cuts_the_oldest() {
+        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
+        let (_, oldest) = play(&mut to_renderer, &[0.5; 64]);
+        let (_, newest) = play(&mut to_renderer, &[0.5; 64]);
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(oldest.ended(), Some(VoiceEnd::Cut));
+        assert_eq!(newest.ended(), None);
+        assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+    }
+}

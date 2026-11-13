@@ -121,3 +121,113 @@ impl Voices {
         found.and_then(Option::take)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::engine::protocol::voice::VoiceReport;
+    use crate::testing::audio;
+
+    fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
+        Voice::new(VoiceSpec {
+            id: VoiceId::next(),
+            audio: Arc::new(audio(layout, samples)),
+            report: Arc::new(VoiceReport::new()),
+        })
+    }
+
+    fn voices(count: usize) -> Voices {
+        Voices::new(NonZeroUsize::new(count).unwrap())
+    }
+
+    #[test]
+    fn mono_is_heard_on_both_sides() {
+        let mut voice = voice(ChannelLayout::Mono, &[0.1, 0.2]);
+        let mut scratch = [[0.0; 2]; 2];
+        voice.render(&mut scratch);
+        assert_eq!(scratch, [[0.1, 0.1], [0.2, 0.2]]);
+    }
+
+    #[test]
+    fn stereo_is_heard_as_stored() {
+        let mut voice = voice(ChannelLayout::Stereo, &[0.1, 0.2, 0.3, 0.4]);
+        let mut scratch = [[0.0; 2]; 2];
+        voice.render(&mut scratch);
+        assert_eq!(scratch, [[0.1, 0.2], [0.3, 0.4]]);
+    }
+
+    #[test]
+    fn silence_follows_the_last_frame() {
+        let mut voice = voice(ChannelLayout::Mono, &[0.5]);
+        let mut scratch = [[9.0; 2]; 3];
+        voice.render(&mut scratch);
+        assert_eq!(scratch, [[0.5, 0.5], [0.0, 0.0], [0.0, 0.0]]);
+    }
+
+    #[test]
+    fn each_render_continues_where_the_last_stopped() {
+        let mut voice = voice(ChannelLayout::Mono, &[1.0, 2.0, 3.0, 4.0]);
+        let mut scratch = [[0.0; 2]; 2];
+        voice.render(&mut scratch);
+        voice.render(&mut scratch);
+        assert_eq!(scratch, [[3.0, 3.0], [4.0, 4.0]]);
+    }
+
+    #[test]
+    fn a_voice_is_finished_once_its_last_frame_renders() {
+        let mut voice = voice(ChannelLayout::Mono, &[0.0; 4]);
+        let mut scratch = [[0.0; 2]; 2];
+        voice.render(&mut scratch);
+        assert!(!voice.finished());
+        voice.render(&mut scratch);
+        assert!(voice.finished());
+    }
+
+    #[test]
+    fn add_takes_a_free_place() {
+        let mut voices = voices(2);
+        assert!(voices.add(voice(ChannelLayout::Mono, &[0.0])).is_none());
+        assert!(voices.add(voice(ChannelLayout::Mono, &[0.0])).is_none());
+        assert_eq!(voices.iter_mut().count(), 2);
+    }
+
+    #[test]
+    fn add_when_full_replaces_the_oldest() {
+        let mut voices = voices(2);
+        let oldest = voice(ChannelLayout::Mono, &[0.0]);
+        let oldest_id = oldest.spec.id;
+        voices.add(oldest);
+        voices.add(voice(ChannelLayout::Mono, &[0.0]));
+        let replaced = voices.add(voice(ChannelLayout::Mono, &[0.0]));
+        assert_eq!(replaced.map(|voice| voice.spec.id), Some(oldest_id));
+        assert_eq!(voices.iter_mut().count(), 2);
+    }
+
+    #[test]
+    fn remove_takes_the_voice_out_once() {
+        let mut voices = voices(1);
+        let voice = voice(ChannelLayout::Mono, &[0.0]);
+        let id = voice.spec.id;
+        voices.add(voice);
+        assert!(voices.remove(id).is_some());
+        assert!(voices.remove(id).is_none());
+    }
+
+    #[test]
+    fn pop_finished_takes_only_finished_voices() {
+        let mut voices = voices(2);
+        let short = voice(ChannelLayout::Mono, &[0.0]);
+        let short_id = short.spec.id;
+        voices.add(short);
+        voices.add(voice(ChannelLayout::Mono, &[0.0; 4]));
+        let mut scratch = [[0.0; 2]; 2];
+        for voice in voices.iter_mut() {
+            voice.render(&mut scratch);
+        }
+        let popped: Vec<VoiceId> = voices.pop_finished().map(|voice| voice.spec.id).collect();
+        assert_eq!(popped, [short_id]);
+        assert_eq!(voices.iter_mut().count(), 1);
+    }
+}
