@@ -6,7 +6,7 @@ use super::ControlError;
 use super::rings::SharedRings;
 use crate::audio::Audio;
 use crate::engine::protocol::HandleId;
-use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd, VoiceId, VoiceReport, VoiceSpec};
+use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport, VoiceSpec, VoiceState};
 
 #[derive(Debug)]
 pub struct Voice {
@@ -15,14 +15,6 @@ pub struct Voice {
     handle_id: HandleId,
     rings: SharedRings,
     report: Arc<VoiceReport>,
-}
-
-/// What the audio thread last said about a voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceState {
-    /// Not reported ended yet: playing, or about to.
-    Playing,
-    Ended(VoiceEnd),
 }
 
 impl Voice {

@@ -18,8 +18,9 @@ pub(crate) enum VoiceCommand {
 }
 
 #[derive(Debug)]
-pub(crate) enum VoiceEvent {
-    Ended(VoiceSpec),
+pub(crate) struct VoiceEvent {
+    pub(crate) state: VoiceState,
+    pub(crate) spec: VoiceSpec,
 }
 
 /// Fixed for the voice's life; the renderer keeps it whole beside its
@@ -65,6 +66,14 @@ impl VoiceReport {
             _ => None,
         }
     }
+}
+
+/// What the audio thread last said about a voice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceState {
+    /// Not reported ended yet: playing, or about to.
+    Playing,
+    Ended(VoiceEnd),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

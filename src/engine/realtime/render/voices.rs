@@ -7,7 +7,7 @@ use std::num::NonZeroUsize;
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
-use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceId, VoiceSpec};
+use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceId, VoiceSpec, VoiceState};
 use crate::engine::protocol::{BufferAddress, Event, HandleId, Message};
 use crate::layout::ChannelLayout;
 
@@ -64,7 +64,11 @@ impl Voice {
         self.spec.report.end(why);
         let pushed = to_control.push(Message {
             id: self.id,
-            data: VoiceEvent::Ended(self.spec).into(),
+            data: VoiceEvent {
+                state: VoiceState::Ended(why),
+                spec: self.spec,
+            }
+            .into(),
         });
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }

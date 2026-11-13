@@ -128,7 +128,7 @@ impl Rings {
     fn collect(&mut self) {
         while let Ok(Message { id, data }) = self.from_renderer.pop() {
             match data {
-                Event::Voice(VoiceEvent::Ended(spec)) => drop(spec),
+                Event::Voice(VoiceEvent { state: _, spec }) => drop(spec),
                 Event::Recording(event) => self.deliver(id, event),
             }
         }
@@ -162,7 +162,7 @@ mod tests {
 
     use super::*;
     use crate::engine::protocol::voice::{
-        VoiceCommand, VoiceEvent, VoiceId, VoiceReport, VoiceSpec,
+        VoiceCommand, VoiceEnd, VoiceEvent, VoiceId, VoiceReport, VoiceSpec, VoiceState,
     };
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
@@ -196,7 +196,11 @@ mod tests {
         };
         let returned = Message {
             id: HandleId(0),
-            data: VoiceEvent::Ended(spec).into(),
+            data: VoiceEvent {
+                state: VoiceState::Ended(VoiceEnd::Finished),
+                spec,
+            }
+            .into(),
         };
         to_control.push(returned).unwrap();
 

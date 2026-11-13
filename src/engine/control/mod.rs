@@ -5,7 +5,7 @@ mod rings;
 mod voice;
 
 pub use recording::{RecordError, Recording};
-pub use voice::{Voice, VoiceState};
+pub use voice::Voice;
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
