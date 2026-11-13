@@ -17,11 +17,11 @@
 //!
 //! project/                the disk side and the memory budget
 //!   mod.rs                  Project: opens on a directory, allocs, loads;
-//!   │                       the rules over a Storage
+//!   │                       the rules over its storage
 //!   ledger.rs               the Ledger every audio-sized Block is paid
 //!   │                       for on; the project makes it
-//!   storage/                the medium: keeps and returns bytes, nothing more
-//!       files.rs              a directory of WAVs and a manifest (the backend)
+//!   storage.rs              the medium: a directory of WAVs and a manifest;
+//!                           keeps and returns bytes, nothing more
 //!
 //! engine/                 everything heard; create() makes both sides
 //!   protocol/               what crosses between the two sides

@@ -1,4 +1,9 @@
-//! A project kept as a directory.
+//! Where a project is kept: a directory.
+//!
+//! There is no in-memory copy of a project. A [`Project`] holds its
+//! storage and every read and write goes through it, so the project is
+//! the disk. Storage answers questions and does what it is told; the rules
+//! about what is allowed live in the project.
 //!
 //! ```text
 //! myproject/
@@ -20,12 +25,16 @@
 //! the directory synced after each step, so a power cut leaves the old
 //! manifest or the new one, never half of either. The directory is the
 //! project's; renaming a WAV by hand breaks the sample, and
-//! [`FileStorage::open`] checks the whole project before opening on it.
+//! [`Storage::open`] checks the whole project before opening on it.
 //!
 //! The WAV holds the crate's sample type as it is, so a read is a copy
 //! from disk into a block and nothing converts. A 16-bit project written
 //! by `storage` is refused as the wrong format; the format version does
-//! not move because nothing written at version 1 is meant to be kept.
+//! not move because nothing written at version 1 is meant to be kept. A
+//! read is a [`Block`] from the ledger.
+//!
+//! [`Project`]: crate::project::Project
+//! [`Block`]: crate::project::ledger::Block
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -37,9 +46,36 @@ use thiserror::Error;
 
 use crate::audio::{AudioBuffer, ChannelLayout};
 use crate::config::{Pcm, SAMPLE_RATE};
-use crate::project::ledger::Ledger;
-use crate::project::storage::{Storage, StorageError};
+use crate::project::ledger::{Ledger, OverBudgetError};
 use crate::project::{SampleId, SampleMetadata};
+
+/// Reasons storage cannot do what was asked.
+#[derive(Debug, Error)]
+pub enum StorageError {
+    /// The stored project was written by a format this build does not read.
+    #[error("stored format version {0} is not supported")]
+    UnsupportedVersion(u32),
+    /// Something is stored here, and it is not a project at all.
+    #[error("storage holds something that is not a project: {0}")]
+    NotAProject(String),
+    /// Something is stored here, but it is not a whole project.
+    #[error("stored project is corrupt: {0}")]
+    Corrupt(String),
+    /// Stored audio is not in the crate's one fixed format.
+    #[error("audio for sample {} is not in the engine's format: {detail}", .id.0)]
+    BadAudioFormat { id: SampleId, detail: String },
+    /// The sample's audio would put audio memory over its budget.
+    /// Nothing was allocated.
+    #[error("reading sample {}: {source}", .id.0)]
+    OverBudget {
+        id: SampleId,
+        #[source]
+        source: OverBudgetError,
+    },
+    /// Something failed underneath: the filesystem or the WAV codec.
+    #[error(transparent)]
+    Backend(Box<dyn std::error::Error + Send + Sync>),
+}
 
 /// Bits in one stored sample, as the WAV header counts them.
 const BITS_PER_SAMPLE: u16 = (size_of::<Pcm>() * 8) as u16;
@@ -94,13 +130,14 @@ impl From<&SampleMetadata> for Entry {
     }
 }
 
-/// A project stored as a directory.
+/// A project stored as a directory. A storage always holds a whole
+/// project, so its operations never ask whether one is there.
 #[derive(Debug)]
-pub struct FileStorage {
+pub struct Storage {
     dir: PathBuf,
 }
 
-impl FileStorage {
+impl Storage {
     /// Storage at `dir`.
     ///
     /// If the directory is empty or missing, an empty project is created
@@ -274,19 +311,33 @@ fn sync_dir(dir: &Path) -> Result<(), StorageError> {
         .map_err(|e| at(dir, e))
 }
 
-impl Storage for FileStorage {
-    fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
+impl Storage {
+    /// Whether a sample with this id is stored. Answered from the record
+    /// alone, so it holds even when the sample's audio cannot be read.
+    pub fn has_sample(&self, id: SampleId) -> Result<bool, StorageError> {
         Ok(self.read_manifest()?.samples.contains_key(&id.0))
     }
 
-    fn audio(&self, id: SampleId, ledger: &Ledger) -> Result<Option<AudioBuffer>, StorageError> {
+    /// The stored audio of the sample with this id in a block from
+    /// `ledger`, or `None` if there is none.
+    ///
+    /// The block is sized from what is stored before any audio is read,
+    /// so a sample that does not fit is refused with nothing allocated.
+    pub fn audio(
+        &self,
+        id: SampleId,
+        ledger: &Ledger,
+    ) -> Result<Option<AudioBuffer>, StorageError> {
         if !self.has_sample(id)? {
             return Ok(None);
         }
         self.read_wav(id, ledger).map(Some)
     }
 
-    fn add_sample(
+    /// Stores a sample, its metadata beside its audio, and returns its new
+    /// id. Ids come from a counter that only goes up, so an id is never
+    /// reused.
+    pub fn add_sample(
         &mut self,
         metadata: &SampleMetadata,
         audio: &AudioBuffer,
@@ -345,19 +396,19 @@ mod tests {
         assert_eq!(a.samples(), b.samples());
     }
 
-    fn created(dir: &Path) -> FileStorage {
-        FileStorage::open(dir).unwrap()
+    fn created(dir: &Path) -> Storage {
+        Storage::open(dir).unwrap()
     }
 
     /// Reopens the directory, as the next run of the sampler would.
-    fn reopen(dir: &Path) -> Result<FileStorage, StorageError> {
-        FileStorage::open(dir)
+    fn reopen(dir: &Path) -> Result<Storage, StorageError> {
+        Storage::open(dir)
     }
 
     #[test]
     fn open_on_an_empty_directory_creates_an_empty_project() {
         let dir = tempfile::tempdir().unwrap();
-        let s = FileStorage::open(dir.path()).unwrap();
+        let s = Storage::open(dir.path()).unwrap();
         assert!(dir.path().join(MANIFEST).exists());
         assert!(dir.path().join(SAMPLES_DIR).is_dir());
         assert!(!s.has_sample(SampleId(0)).unwrap());
@@ -368,7 +419,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("notes.txt"), "hi").unwrap();
         assert!(matches!(
-            FileStorage::open(dir.path()),
+            Storage::open(dir.path()),
             Err(StorageError::NotAProject(_))
         ));
         // Nothing was created beside the stranger's files.
@@ -379,7 +430,7 @@ mod tests {
     fn open_on_a_missing_directory_creates_it() {
         let parent = tempfile::tempdir().unwrap();
         let dir = parent.path().join("project");
-        FileStorage::open(&dir).unwrap();
+        Storage::open(&dir).unwrap();
         assert!(dir.join(MANIFEST).exists());
     }
 

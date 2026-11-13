@@ -39,8 +39,8 @@ or rejected instead. The history of how a shape was reached is in git.
   dump; step 3 replaced it.
 - **The project holds the rules, storage is dumb.** The project enforces
   what may change (that a parent exists, once lineage returns); storage
-  answers questions and does what it is told. Rules in storage would be
-  repeated in every backend and drift.
+  answers questions and does what it is told. Rules in storage would
+  drift from the project's.
 - **Storage mints sample ids.** A sample does not exist until it is
   stored, like a database insert returning the row id. The counter is on
   disk, only goes up, and never reuses an id.
@@ -66,9 +66,11 @@ or rejected instead. The history of how a shape was reached is in git.
 
 ### Storage
 
-- **A trait, so the medium can change.** Files now, perhaps SQLite later.
-  The trait is the questions a backend answers efficiently and the writes
-  it must make durable; rules stay above it.
+- **One concrete type, `Storage`: a directory.** It answers the questions
+  the project asks and makes its writes durable; rules stay above it. The
+  `Storage` trait (files now, perhaps SQLite later) was removed
+  2026-11-13: it had one implementation, and the project's tests run on a
+  temporary directory instead of an in-memory stub.
 - **A storage always holds a whole project.** `open(dir)` creates an empty
   project in an empty or missing directory, validates a whole project
   otherwise, and refuses anything else. Validation happens on open, not
@@ -82,10 +84,10 @@ or rejected instead. The history of how a shape was reached is in git.
   WAV the manifest does not name is ignored.
 - **The on-disk form is a directory:** `project.json` (format version, id
   counter, samples keyed by id) and `samples/<id>.wav`. The manifest is a
-  private struct in the backend, not a serde derive on the model, so the
+  private struct in storage, not a serde derive on the model, so the
   file format is versioned on its own. WAV rather than raw bytes so any
   audio tool can open a sample.
-- **Nothing is cached in the backend.** The OS caches the file and nothing
+- **Nothing is cached in storage.** The OS caches the file and nothing
   real-time reads it.
 - **The directory belongs to the engine.** A hand-renamed WAV makes open
   refuse the project; recovering is content-hash territory (Deferred).
@@ -431,7 +433,7 @@ is needed.
 
 - **One product, opinionated, with clean seams.** Build what this sampler
   needs when a step needs it; keep the seams that testing and the hardware
-  require (storage trait, no device in the crate, generic dsp pieces). The
+  require (no device in the crate, generic dsp pieces). The
   renderer pair is justified by the bounce and step 8; a many-renderer API
   is not.
 - **The public surface is minimal.** Convenience methods arrive with a
@@ -507,8 +509,8 @@ The storage layer does not know about tiers.
 - **Content-hash dedup** on add, and on import if it returns, also
   matching a renamed WAV back to its sample.
 - **Removing a whole lineage** as one operation.
-- **A SQLite backend**, if a single-file project or transactions are worth
-  it.
+- **A SQLite medium**, a trait over storage again, if a single-file
+  project or transactions are worth it.
 - **Streaming long recordings** from eMMC instead of holding them
   resident.
 - **A budget read from the device's configuration** once the CM4 variant
