@@ -1,13 +1,14 @@
 //! A recording: the main out written into audio the renderer holds.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use thiserror::Error;
 
 use super::ControlError;
+use super::handle::{Handle, Inbox};
 use super::rings::SharedRings;
 use crate::audio::Audio;
-use crate::engine::protocol::HandleId;
+use crate::engine::protocol::Event;
 use crate::engine::protocol::recording::{
     RecordingCommand, RecordingEvent, RecordingSpec, RecordingState,
 };
@@ -37,10 +38,7 @@ impl RecordError {
 
 #[derive(Debug)]
 pub struct Recording {
-    rings: SharedRings,
-    id: HandleId,
-    /// The last one `collect` heard for this recording.
-    event: Arc<Mutex<RecordingEvent>>,
+    handle: Handle<RecordingEvent>,
 }
 
 impl Recording {
@@ -55,47 +53,53 @@ impl Recording {
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
-        let Ok(mut permit) = rings.reserve() else {
-            return Err(RecordError::CommandsFull(audio));
-        };
-        let id = rings.next_id();
         let mut audio = audio.into_shared();
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
-        let event = Arc::new(Mutex::new(RecordingEvent {
-            state: RecordingState::Pending,
-            spec: None,
-        }));
-        permit.register(id, Arc::clone(&event));
-        permit.send(id, RecordingCommand::Start(RecordingSpec { audio }));
-        Ok(Self { rings, id, event })
+        let spec = RecordingSpec { audio };
+        match Handle::open(&rings, spec, RecordingCommand::Start) {
+            Ok(handle) => Ok(Self { handle }),
+            Err(spec) => Err(RecordError::CommandsFull(Audio::from_shared(spec.audio))),
+        }
     }
 
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.rings.send(self.id, RecordingCommand::Stop)
+        self.handle.send(RecordingCommand::Stop)
     }
 
     pub fn state(&self) -> RecordingState {
-        self.rings.collect();
-        self.event
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .state
+        self.handle.inbox().state
     }
 
     /// The audio, once the renderer has let go of it: after the recording
     /// ends, or at once if it was refused. `None` until then, and after it
     /// has been taken.
     pub fn take(&mut self) -> Option<Audio> {
-        self.rings.collect();
-        let spec = self
-            .event
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .spec
-            .take();
+        let spec = self.handle.inbox().spec.take();
         spec.map(|spec| Audio::from_shared(spec.audio))
+    }
+}
+
+impl Default for RecordingEvent {
+    fn default() -> Self {
+        Self {
+            state: RecordingState::Pending,
+            spec: None,
+        }
+    }
+}
+
+/// Keeps the last event whole, so its spec waits here for `take`. The event
+/// that hands the spec back is the last.
+impl Inbox for RecordingEvent {
+    fn deliver(&mut self, event: Event) -> bool {
+        let Event::Recording(event) = event else {
+            unreachable!("an id belongs to one feature");
+        };
+        let last = event.spec.is_some();
+        *self = event;
+        last
     }
 }
 

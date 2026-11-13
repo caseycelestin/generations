@@ -1,5 +1,6 @@
 //! The control side: runs on UI or event threads. May lock and allocate.
 
+mod handle;
 mod recording;
 mod rings;
 mod voice;
