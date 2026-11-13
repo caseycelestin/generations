@@ -211,7 +211,7 @@ mod tests {
         let mut out = vec![0.0; 8 * 2];
         renderer.render(&mut out);
         assert_eq!(report.ended(), Some(VoiceEnd::Finished));
-        assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+        assert!(matches!(from_renderer.pop(), Ok(Return::Voice(_))));
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
         renderer.render(&mut out);
         assert_eq!(report.ended(), Some(VoiceEnd::Stopped));
         assert_eq!(out, vec![0.0; 4 * 2]);
-        assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+        assert!(matches!(from_renderer.pop(), Ok(Return::Voice(_))));
     }
 
     #[test]
@@ -271,6 +271,6 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(oldest.ended(), Some(VoiceEnd::Cut));
         assert_eq!(newest.ended(), None);
-        assert!(matches!(from_renderer.pop(), Ok(Return::Voice { .. })));
+        assert!(matches!(from_renderer.pop(), Ok(Return::Voice(_))));
     }
 }

@@ -64,8 +64,8 @@ impl Rings {
     fn collect(&mut self) {
         while let Ok(returned) = self.from_renderer.pop() {
             match returned {
-                Return::Voice { audio, report } => drop((audio, report)),
-                Return::Recording { report } => drop(report),
+                Return::Voice(spec) => drop(spec),
+                Return::Recording(spec) => drop(spec),
             }
         }
     }
@@ -78,7 +78,7 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport};
+    use crate::engine::protocol::voice::{VoiceCommand, VoiceId, VoiceReport, VoiceSpec};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -104,10 +104,11 @@ mod tests {
         let (mut to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
         let audio = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        let returned = Return::Voice {
+        let returned = Return::Voice(VoiceSpec {
+            id: VoiceId::next(),
             audio: Arc::clone(&audio),
             report: Arc::new(VoiceReport::new()),
-        };
+        });
         to_control.push(returned).unwrap();
 
         rings.send(command()).unwrap();

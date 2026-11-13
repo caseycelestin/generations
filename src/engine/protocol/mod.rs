@@ -9,10 +9,6 @@
 //! they share. The rings carry one type each way, so [`Command`] and
 //! [`Return`] list a variant per feature.
 
-use std::sync::Arc;
-
-use crate::audio::AudioBuffer;
-
 /// Defines an id type minted by `next()` from its own process-wide
 /// counter, as `std::thread::ThreadId` is: unique and in order across
 /// every engine, never reused, not starting at 0 per engine. A macro
@@ -37,8 +33,8 @@ macro_rules! id {
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use recording::{RecordingCommand, RecordingReport};
-use voice::{VoiceCommand, VoiceReport};
+use recording::{RecordingCommand, RecordingSpec};
+use voice::{VoiceCommand, VoiceSpec};
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -63,12 +59,9 @@ impl From<RecordingCommand> for Command {
 #[derive(Debug)]
 pub(crate) enum Return {
     /// A voice ended; its report is already filled in.
-    Voice {
-        audio: Arc<AudioBuffer>,
-        report: Arc<VoiceReport>,
-    },
+    Voice(VoiceSpec),
     /// A recording was refused or ended; its report is already filled in.
-    Recording { report: Arc<RecordingReport> },
+    Recording(RecordingSpec),
 }
 
 #[cfg(test)]
