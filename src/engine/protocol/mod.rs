@@ -37,7 +37,7 @@ macro_rules! id {
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use recording::RecordingCommand;
+use recording::{RecordingCommand, RecordingReport};
 use voice::{VoiceCommand, VoiceReport};
 
 #[derive(Debug)]
@@ -67,6 +67,8 @@ pub(crate) enum Return {
         audio: Arc<AudioBuffer>,
         report: Arc<VoiceReport>,
     },
+    /// A recording was refused or ended; its report is already filled in.
+    Recording { report: Arc<RecordingReport> },
 }
 
 #[cfg(test)]

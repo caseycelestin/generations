@@ -28,10 +28,10 @@ pub fn create(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> (Control,
 }
 
 /// Depth of the ring back, so the renderer never finds it full. Every send
-/// collects first, so between collects it holds at most every voice the
-/// renderer holds, plus one return per queued command.
+/// collects first, so between collects it holds at most every voice and
+/// the one recording the renderer holds, plus one return per queued command.
 fn return_capacity(command_capacity: NonZeroUsize, voices: NonZeroUsize) -> usize {
-    voices.get() + command_capacity.get()
+    voices.get() + 1 + command_capacity.get()
 }
 
 #[cfg(test)]

@@ -1,20 +1,19 @@
 //! The audio thread: turns commands and audio into periods of output.
 
 mod math;
+mod recording;
 mod voices;
 
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 use rtrb::{Consumer, Producer};
 
 use crate::config::Pcm;
-use crate::engine::protocol::recording::{
-    RecordingCommand, RecordingEnd, RecordingReport, RecordingState,
-};
+use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
 use crate::engine::protocol::{Command, Return};
 use math::{add, hard_clip};
+use recording::Recording;
 use voices::{Voice, Voices};
 
 /// One output frame: a sample per side.
@@ -26,7 +25,7 @@ pub struct Renderer {
     to_control: Producer<Return>,
     voices: Voices,
     /// The one recording, if running.
-    recording: Option<Arc<RecordingReport>>,
+    recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -97,19 +96,16 @@ impl Renderer {
                         voice.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
                 }
-                // Placeholder until reports go back on the ring: dropping a
-                // refused or stopped one here can free it on the audio thread.
                 Command::Recording(RecordingCommand::Start(report)) => {
                     if self.recording.is_some() {
-                        report.set(RecordingState::Refused);
+                        Recording::refuse(report, &mut self.to_control);
                     } else {
-                        report.set(RecordingState::Recording);
-                        self.recording = Some(report);
+                        self.recording = Some(Recording::start(report));
                     }
                 }
                 Command::Recording(RecordingCommand::Stop) => {
                     if let Some(stopped) = self.recording.take() {
-                        stopped.set(RecordingState::Ended(RecordingEnd::Stopped));
+                        stopped.end(RecordingEnd::Stopped, &mut self.to_control);
                     }
                 }
             }
