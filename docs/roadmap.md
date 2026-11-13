@@ -107,28 +107,32 @@ or rejected instead. The history of how a shape was reached is in git.
   live on the render side, and the offline form was the one allocation the
   ledger could not see.
 
-### Import
+### Audio in
 
-- **The project takes the file.** `Project::import(path)` decodes,
-  converts and stores; the caller never sees a decoder or the project
-  format. File formats are product knowledge, the same on every machine,
-  unlike the device.
-- **Two crate-private stages, one entry point.** `decode` reads a file to
-  rate, channels and `f32` samples; `convert` resamples to the project
-  rate. Neither knows the other's job. One decoder (WAV, integer 8–32 bit
-  and 32-bit float), so no format sniffing or decoder trait until a second
-  format arrives.
-- **Resampling is `rubato`'s synchronous FFT resampler** over the whole
-  clip, writing into a ledger-paid buffer. Audio already at 48 kHz is
-  wrapped without a copy.
-- **Channels are kept, not mixed.** Mono stays mono, stereo stays stereo,
-  more than two is refused; a downmix is the user's decision.
+- **Audio enters a project by being written.** `project.alloc(layout,
+  frames)` hands out an empty `Sample`, paid for in full against the
+  budget; `sample.write()` lends its `AudioBuffer` to fill; and
+  `project.add_sample(&sample)` stores it and mints its id. Nothing is
+  stored and no id exists until the add. `alloc` is named for what it
+  does: it takes memory and touches no disk.
+- **WAV import was removed 2026-11-13** (the `decode` and `convert`
+  stages, `rubato`, `Project::import`); it is in the history before
+  97e8eff if a file format is needed again.
+- **The rule is that every byte of audio in RAM is counted, not that the
+  user never touches audio.** `AudioBuffer` is public and readable; only
+  the crate can make one, so every buffer still comes from the ledger.
+- **One type is written, played and saved.** `Sample` is an
+  `Arc<AudioBuffer>` with no `Clone`. `write()` is `Arc::get_mut`: `None`
+  while the engine holds the audio, which is what `Sample` protects; a
+  read by the project is protected by an ordinary borrow. A voice that
+  has ended still holds it until its return is collected. Recording
+  cannot share it this way and will take the sample by value.
 
 ### Memory
 
 - **One figure covers all audio-length memory.** `Ledger::new(budget)` is
   made by the caller, one per machine, and shared as a cloneable handle.
-  Resident samples, import buffers and later effect state all count
+  Resident samples, samples being written and later effect state all count
   against it. A per-sample length bound was the earlier plan and was
   rejected: the worst case was a multiple that depended on the operation.
 - **The ledger hands out `Block`s, and a block is the only way to get
@@ -142,7 +146,7 @@ or rejected instead. The history of how a shape was reached is in git.
   a parameter, not a global, because the signature is the permission and
   tests need their own budgets.
 - **Track what scales with audio; bound the rest.** Fixed overhead (the
-  manifest, input rings, resampler state) stays off the ledger, with a
+  manifest, input rings) stays off the ledger, with a
   worst case computed at compile time where it matters
   (`input::MAX_RING_BYTES`). Ledgering the input rings was tried and
   reverted as one mechanism too many.
@@ -172,7 +176,7 @@ or rejected instead. The history of how a shape was reached is in git.
 ### The two sides
 
 - **The engine is two sides that never name each other.** The disk side is
-  `Project` (`open`, `import`, `load`, `save_take`). The sound side is
+  `Project` (`open`, `alloc`, `load`, `add_sample`). The sound side is
   `Renderer::new(settings, ledger) -> (Renderer, Control)`: the renderer
   moves to the audio thread, `Control` stays (`play`, `stop`, `stop_all`,
   `input`, `recorder`). What crosses is a `Sample` one way and a `Take`
@@ -211,7 +215,7 @@ or rejected instead. The history of how a shape was reached is in git.
   that impossible (the control side is unbounded), so it is sized not to
   happen in practice (`RendererSettings::command_capacity`).
 - **The source tree is the architecture.** `src/project/` (disk side:
-  `Project`, `storage/`, `import/`, `ledger.rs`), `src/control/` (the
+  `Project`, `storage/`, `ledger.rs`), `src/control/` (the
   control thread: `Control`, `SampleSound`, `Input`, `Recorder`),
   `src/render/` (the audio thread: `Renderer`, `command.rs`, `Sounds`,
   `dsp/`). Shared at the top: `config`,
@@ -416,7 +420,7 @@ is needed.
 - **A take is not a sample until it is saved.** `last_take()` lends the
   finished `Take`, which lasts until the next `record(tap)`, and
   `project.save_take(&take)` stores the frames it kept as a new root
-  through the same crate-private add as import. To play it, load the id:
+  through `add_sample`. To play it, load the id:
   playing shares a buffer, and the recorder's must stay its own.
   Returning a loaded `Sample` from the save was considered and left until
   a caller needs it.
@@ -500,8 +504,8 @@ The storage layer does not know about tiers.
 - **Taps and busses** on the hard-coded path.
 - **Master gain and bus limiter** before the clip.
 - **Stream errors** reported to a front panel.
-- **Content-hash dedup** on import, also matching a renamed WAV back to
-  its sample.
+- **Content-hash dedup** on add, and on import if it returns, also
+  matching a renamed WAV back to its sample.
 - **Removing a whole lineage** as one operation.
 - **A SQLite backend**, if a single-file project or transactions are worth
   it.

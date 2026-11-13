@@ -1,5 +1,5 @@
 //! The first sound: open a project, alloc a sample, write a tone into it,
-//! and play it twice through the default audio device.
+//! save it, and play it twice through the default audio device.
 //!
 //! The tone decays, so it sounds like a pluck. The second press lands while
 //! the first is still ringing, which is two sounds summed by the renderer.
@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("usage: first_sound <project-dir>")?;
 
-    let project = Project::open(&dir, SAMPLE_RAM_BUDGET)?;
+    let mut project = Project::open(&dir, SAMPLE_RAM_BUDGET)?;
     // Room for 64 commands in flight and 16 voices at once.
     let commands = NonZeroUsize::new(64).expect("not zero");
     let voices = NonZeroUsize::new(16).expect("not zero");
@@ -50,6 +50,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let t = i as f32 / SAMPLE_RATE as f32;
         0.5 * (TAU * 440.0 * t).sin() * (-4.0 * t).exp()
     }));
+    let id = project.add_sample(&pluck)?;
+    println!("saved as {id:?}");
 
     println!("pluck");
     let first = control.play(&pluck)?;
