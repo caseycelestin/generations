@@ -38,7 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Room for a second of the main out, paid for now.
     let take = memory.alloc(ChannelLayout::Stereo, 48_000)?;
-    let recording = control.record(take)?;
+    let mut recording = control.record(take)?;
 
     // A device callback would own the renderer.
     let audio_thread = thread::spawn(move || {
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Once it has ended, the audio comes back, here to be kept.
-    if let Ok(recorded) = recording.take() {
+    if let Some(recorded) = recording.take() {
         project.add_sample(&recorded)?;
     }
 

@@ -84,9 +84,18 @@ impl Recording {
             .state
     }
 
-    /// Until the recording has ended the handle comes back, to ask again.
-    pub fn take(self) -> Result<Audio, Self> {
-        todo!("hand back the audio once it has come back")
+    /// The audio, once the renderer has let go of it: after the recording
+    /// ends, or at once if it was refused. `None` until then, and after it
+    /// has been taken.
+    pub fn take(&mut self) -> Option<Audio> {
+        self.rings.collect();
+        let spec = self
+            .event
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .spec
+            .take();
+        spec.map(|spec| Audio::from_shared(spec.audio))
     }
 }
 
