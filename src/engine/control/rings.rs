@@ -162,7 +162,7 @@ mod tests {
 
     use super::*;
     use crate::engine::protocol::voice::{
-        VoiceCommand, VoiceEnd, VoiceEvent, VoiceId, VoiceReport, VoiceSpec, VoiceState,
+        VoiceCommand, VoiceEnd, VoiceEvent, VoiceId, VoiceSpec, VoiceState,
     };
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
@@ -192,7 +192,6 @@ mod tests {
         let spec = VoiceSpec {
             id: VoiceId::next(),
             audio: Arc::clone(&audio),
-            report: Arc::new(VoiceReport::new()),
         };
         let returned = Message {
             id: HandleId(0),

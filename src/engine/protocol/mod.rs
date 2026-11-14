@@ -2,8 +2,7 @@
 //!
 //! Commands are operations on what the renderer holds (add, remove), not
 //! user intents; handles translate one into the other. Only plain data
-//! crosses: audio, ids, values, and reports the renderer fills with one
-//! atomic store. Each feature has its own file and its own variant in
+//! crosses: audio, ids and values. Each feature has its own file and its own variant in
 //! [`Command`] and [`Event`], since each ring carries one type.
 
 /// An id type minted by `next()` from its own process-wide counter, like

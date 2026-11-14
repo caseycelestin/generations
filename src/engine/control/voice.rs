@@ -7,9 +7,7 @@ use super::handle::{Handle, Inbox};
 use super::rings::SharedRings;
 use crate::audio::Audio;
 use crate::engine::protocol::Event;
-use crate::engine::protocol::voice::{
-    VoiceCommand, VoiceEvent, VoiceId, VoiceReport, VoiceSpec, VoiceState,
-};
+use crate::engine::protocol::voice::{VoiceCommand, VoiceEvent, VoiceId, VoiceSpec, VoiceState};
 
 #[derive(Debug)]
 pub struct Voice {
@@ -24,7 +22,6 @@ impl Voice {
         let spec = VoiceSpec {
             id,
             audio: Arc::clone(audio.shared()),
-            report: Arc::new(VoiceReport::new()),
         };
         let Ok(handle) = Handle::open(&rings, spec, VoiceCommand::Add) else {
             return Err(ControlError::CommandsFull);

@@ -61,7 +61,6 @@ impl Voice {
 
     /// The one way a voice leaves.
     pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Message<Event>>) {
-        self.spec.report.end(why);
         let pushed = to_control.push(Message {
             id: self.id,
             data: VoiceEvent {
@@ -141,7 +140,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::engine::protocol::voice::VoiceReport;
     use crate::testing::buffer;
 
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
@@ -150,7 +148,6 @@ mod tests {
             VoiceSpec {
                 id: VoiceId::next(),
                 audio: Arc::new(buffer(layout, samples)),
-                report: Arc::new(VoiceReport::new()),
             },
         )
     }
