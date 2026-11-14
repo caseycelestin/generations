@@ -3,27 +3,29 @@
 
 use std::mem;
 use std::num::NonZeroUsize;
-
-use rtrb::Producer;
+use std::sync::Arc;
 
 use super::{Frame, Renderer};
-use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceSpec, VoiceState};
-use crate::engine::protocol::{BufferAddress, Event, HandleId, Message};
+use crate::audio::AudioBuffer;
+use crate::collector::Disposer;
+use crate::duplex::{Id, RealtimeEnd};
+use crate::engine::protocol::voice::VoiceEnd;
+use crate::engine::protocol::{BufferAddress, Command, Event};
 use crate::layout::ChannelLayout;
 
 #[derive(Debug)]
 pub(crate) struct Voice {
-    id: HandleId,
-    spec: VoiceSpec,
+    id: Id,
+    audio: Arc<AudioBuffer>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(id: HandleId, spec: VoiceSpec) -> Self {
+    pub(crate) fn new(id: Id, audio: Arc<AudioBuffer>) -> Self {
         Self {
             id,
-            spec,
+            audio,
             position: 0,
         }
     }
@@ -31,7 +33,7 @@ impl Voice {
     /// Silence once the audio runs out. Mono goes to both sides at full
     /// level.
     pub(crate) fn render(&mut self, scratch: &mut [Frame]) {
-        let audio = &self.spec.audio;
+        let audio = &self.audio;
         let end = (self.position + scratch.len()).min(audio.frames());
         let samples = audio.frames_in(self.position..end);
         let (sound, silence) = scratch.split_at_mut(end - self.position);
@@ -51,32 +53,38 @@ impl Voice {
     }
 
     pub(crate) fn plays(&self, audio: BufferAddress) -> bool {
-        BufferAddress::of(&self.spec.audio) == audio
+        BufferAddress::of(&self.audio) == audio
     }
 
     /// Its last frame has been rendered.
     pub(crate) fn finished(&self) -> bool {
-        self.position == self.spec.audio.frames()
+        self.position == self.audio.frames()
     }
 
-    /// The one way a voice leaves.
-    pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Message<Event>>) {
-        let pushed = to_control.push(Message {
-            id: self.id,
-            data: VoiceEvent {
-                state: VoiceState::Ended(why),
-                spec: Some(self.spec),
-            }
-            .into(),
-        });
-        debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
+    /// The one way a voice leaves. Its audio goes to the collector before
+    /// its end goes out, so a voice reported ended has let go of it.
+    pub(crate) fn end(
+        self,
+        why: VoiceEnd,
+        channel: &mut RealtimeEnd<Command, Event>,
+        disposer: &mut Disposer<Arc<AudioBuffer>>,
+    ) {
+        let disposed = disposer.dispose(self.audio);
+        debug_assert!(disposed.is_ok(), "the collector is sized for every voice");
+        let ended = channel.end(self.id, why);
+        debug_assert!(ended.is_ok(), "a voice reserves its end");
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct Voices {
-    /// `None` is free. Boxed so it cannot grow on the audio thread.
-    places: Box<[Option<Voice>]>,
+    /// `None` is free; a taken place holds its voice's number in the order
+    /// voices were added, lower being older. Boxed so it cannot grow on the
+    /// audio thread.
+    places: Box<[Option<(u64, Voice)>]>,
+    /// How many voices have been added, so the next one's number. A `u64`
+    /// cannot run out: a million a second lasts half a million years.
+    added: u64,
 }
 
 impl Voices {
@@ -84,15 +92,18 @@ impl Voices {
     pub(crate) fn new(count: NonZeroUsize) -> Self {
         Self {
             places: (0..count.get()).map(|_| None).collect(),
+            added: 0,
         }
     }
 
     /// Takes a free place, or the oldest voice's place, returning the
     /// voice replaced.
     pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
+        let numbered = (self.added, voice);
+        self.added += 1;
         match self.places.iter_mut().find(|place| place.is_none()) {
             Some(free) => {
-                *free = Some(voice);
+                *free = Some(numbered);
                 None
             }
             None => {
@@ -100,23 +111,25 @@ impl Voices {
                     .places
                     .iter_mut()
                     .flatten()
-                    .min_by_key(|voice| voice.id)
+                    .min_by_key(|(number, _)| *number)
                     .expect("every place is taken, and there is at least one");
-                Some(mem::replace(oldest, voice))
+                let (_, replaced) = mem::replace(oldest, numbered);
+                Some(replaced)
             }
         }
     }
 
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
-        self.places.iter_mut().flatten()
+        self.places.iter_mut().flatten().map(|(_, voice)| voice)
     }
 
-    pub(crate) fn remove(&mut self, id: HandleId) -> Option<Voice> {
+    pub(crate) fn remove(&mut self, id: Id) -> Option<Voice> {
         let found = self
             .places
             .iter_mut()
-            .find(|place| matches!(place, Some(voice) if voice.id == id));
-        found.and_then(Option::take)
+            .find(|place| matches!(place, Some((_, voice)) if voice.id == id));
+        let (_, voice) = found?.take()?;
+        Some(voice)
     }
 
     /// Takes out every voice `test` picks, as `Vec::extract_if`: stopped
@@ -127,11 +140,15 @@ impl Voices {
     ) -> impl Iterator<Item = Voice> {
         self.places
             .iter_mut()
-            .filter_map(move |place| place.take_if(|voice| test(voice)))
+            .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
+            .map(|(_, voice)| voice)
     }
 
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = Voice> + '_ {
-        self.places.iter_mut().filter_map(Option::take)
+        self.places
+            .iter_mut()
+            .filter_map(Option::take)
+            .map(|(_, voice)| voice)
     }
 }
 
@@ -143,13 +160,13 @@ mod tests {
     use crate::testing::buffer;
 
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
-        voice_from(HandleId(0), layout, samples)
+        voice_from(Id(0), layout, samples)
     }
 
     /// For tests that tell voices apart by their sender.
-    fn voice_from(id: HandleId, layout: ChannelLayout, samples: &[f32]) -> Voice {
+    fn voice_from(id: Id, layout: ChannelLayout, samples: &[f32]) -> Voice {
         let audio = Arc::new(buffer(layout, samples));
-        Voice::new(id, VoiceSpec { audio })
+        Voice::new(id, audio)
     }
 
     fn voices(count: usize) -> Voices {
@@ -193,7 +210,7 @@ mod tests {
     fn a_voice_plays_only_its_own_audio() {
         let voice = voice(ChannelLayout::Mono, &[0.0]);
         let other = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        assert!(voice.plays(BufferAddress::of(&voice.spec.audio)));
+        assert!(voice.plays(BufferAddress::of(&voice.audio)));
         assert!(!voice.plays(BufferAddress::of(&other)));
     }
 
@@ -216,38 +233,38 @@ mod tests {
     }
 
     #[test]
-    fn add_when_full_replaces_the_oldest() {
+    fn add_when_full_replaces_the_first_added() {
         let mut voices = voices(2);
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(HandleId(1), ChannelLayout::Mono, &[0.0]));
-        let newest = voice_from(HandleId(2), ChannelLayout::Mono, &[0.0]);
+        voices.add(voice_from(Id(1), ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
+        let newest = voice_from(Id(2), ChannelLayout::Mono, &[0.0]);
         let replaced = voices.add(newest);
-        assert_eq!(replaced.map(|voice| voice.id), Some(HandleId(0)));
+        assert_eq!(replaced.map(|voice| voice.id), Some(Id(1)));
         assert_eq!(voices.iter_mut().count(), 2);
     }
 
     #[test]
     fn remove_takes_the_voice_out_once() {
         let mut voices = voices(1);
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
-        assert!(voices.remove(HandleId(0)).is_some());
-        assert!(voices.remove(HandleId(0)).is_none());
+        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
+        assert!(voices.remove(Id(0)).is_some());
+        assert!(voices.remove(Id(0)).is_none());
     }
 
     #[test]
     fn extract_if_takes_only_the_voices_picked() {
         let mut voices = voices(2);
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(HandleId(1), ChannelLayout::Mono, &[0.0; 4]));
+        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(Id(1), ChannelLayout::Mono, &[0.0; 4]));
         let mut scratch = [[0.0; 2]; 2];
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let extracted: Vec<HandleId> = voices
+        let extracted: Vec<Id> = voices
             .extract_if(|voice| voice.finished())
             .map(|voice| voice.id)
             .collect();
-        assert_eq!(extracted, [HandleId(0)]);
+        assert_eq!(extracted, [Id(0)]);
         assert_eq!(voices.iter_mut().count(), 1);
     }
 

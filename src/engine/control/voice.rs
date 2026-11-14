@@ -3,47 +3,45 @@
 use std::sync::Arc;
 
 use super::ControlError;
-use super::handle::{Handle, Inbox};
-use super::rings::SharedRings;
 use crate::audio::Audio;
-use crate::engine::protocol::Event;
-use crate::engine::protocol::voice::{VoiceCommand, VoiceEvent, VoiceSpec, VoiceState};
+use crate::duplex::{ControlEnd, Handle};
+use crate::engine::protocol::voice::{VoiceCommand, VoiceState};
+use crate::engine::protocol::{Command, Event};
 
 #[derive(Debug)]
 pub struct Voice {
-    handle: Handle<VoiceEvent>,
+    handle: Handle<Command, Event>,
+    state: VoiceState,
 }
 
 impl Voice {
-    pub(crate) fn play(rings: SharedRings, audio: &Audio) -> Result<Self, ControlError> {
-        let spec = VoiceSpec {
-            audio: Arc::clone(audio.shared()),
-        };
-        let Ok(handle) = Handle::open(&rings, spec, VoiceCommand::Add) else {
-            return Err(ControlError::CommandsFull);
-        };
-        Ok(Self { handle })
+    /// Reserves one event, its end: a voice says nothing when it starts.
+    pub(crate) fn play(
+        channel: &ControlEnd<Command, Event>,
+        audio: &Audio,
+    ) -> Result<Self, ControlError> {
+        let permit = channel.try_reserve()?;
+        let handle = permit.open(VoiceCommand::Add(Arc::clone(audio.shared())));
+        Ok(Self {
+            handle,
+            state: VoiceState::Playing,
+        })
     }
 
     /// Dropping the handle instead lets the voice play out.
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.handle.send(VoiceCommand::Remove)
+        self.handle
+            .send(VoiceCommand::Remove)
+            .map_err(ControlError::from)
     }
 
-    pub fn state(&self) -> VoiceState {
-        self.handle.inbox().state
-    }
-}
-
-/// Keeps only the state: nothing takes a voice's audio back, so its spec
-/// is dropped here, on the control side. The event that hands it back is
-/// the last.
-impl Inbox for VoiceEvent {
-    fn deliver(&mut self, event: Event) -> bool {
-        let Event::Voice(event) = event else {
-            unreachable!("an id belongs to one feature");
-        };
-        self.state = event.state;
-        event.spec.is_some()
+    pub fn state(&mut self) -> VoiceState {
+        while let Some(event) = self.handle.try_recv() {
+            let Event::Voice(end) = event else {
+                unreachable!("a handle hears only its own feature's events");
+            };
+            self.state = VoiceState::Ended(end);
+        }
+        self.state
     }
 }

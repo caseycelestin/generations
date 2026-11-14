@@ -231,10 +231,8 @@ or rejected instead. The history of how a shape was reached is in git.
   stalls a panel, the fix is a worker thread, not async methods.
 - **A `HandleId` comes from a counter in the rings,** an atomic outside
   their lock so a handle can mint one while it holds a permit: unique
-  within one engine, in order, never reused. It is minted and pushed
-  under one lock, so lower is older, which is how the voice pool picks
-  the one to cut. A refused `record` mints none, since its checks come
-  first. A process-wide `VoiceId` from an `id!` macro came before it.
+  within one engine, in order, never reused. A refused `record` mints
+  none, since its checks come first. A process-wide `VoiceId` from an `id!` macro came before it.
 - **`create` takes plain sizes and panics on a zero**, as `slice::chunks`
   does: a zero is a typo, not something to recover from. `NonZeroUsize`
   parameters made every caller wrap its constants.
@@ -265,7 +263,9 @@ or rejected instead. The history of how a shape was reached is in git.
   never resizes: a CPU budget the caller sizes for its hardware, with no
   hardware maximums in the crate, and not counted by `AudioMemory`. A play
   with every place taken cuts the oldest: a press must sound. The pool
-  picks which voice to cut; the renderer ends it and reports why.
+  picks which voice to cut; the renderer ends it and reports why. The
+  pool numbers voices as they are added and cuts the lowest: age is the
+  engine's to track, not read off the order of handle ids.
 - **Every voice ends one of three ways, and says which:** `Finished`
   (played to its last frame), `Stopped` (a stop arrived) or `Cut` (its
   place was taken). `Cut` is the sampler's umbrella: choke groups and
@@ -399,6 +399,29 @@ Built on `src/engine/`: voices, block mixing, the ring back (see the
 render side, above) and recording of the main out (see Recording).
 
 What is left:
+- **The bodies of `duplex` and `collector`**, stubbed with `todo!()`. Open:
+  - *Disconnection.* How either end learns the other is gone, whether
+    the errors gain a `Disconnected`, and so whether they are
+    `#[non_exhaustive]`.
+  - *Where a handle's budget is kept.* The real-time `send` refuses past
+    it, so that side must know each open handle's budget: carried in the
+    opening message, in a table sized by `events`.
+  - *When events leave the ring.* Room frees once an end is off it, so
+    `try_reserve` must drain before it counts; which other control-side
+    calls drain is open.
+  - *Where events wait.* Each handle's queue is either taken from a pool
+    sized at creation or allocated at `open`; only the first keeps
+    memory fixed at creation.
+  - *A dropped handle.* Its id stays registered until its end arrives,
+    and what arrives for it is dropped on the control side.
+  - *The control end's lock.* One lock over the command ring, the event
+    ring and the handle list, shared by every clone.
+  - *A refused `dispose` or `end` on the real-time side.* The engine
+    `debug_assert`s, and in release drops the value there; holding it
+    for the next period instead is open.
+  - *Dropping the `Collector` first.* What happens to values still given
+    up, and to the `Disposer`.
+  - *Zero capacities.* Panic, as `create` does, or not.
 - **Recording inputs** (see Recording, above).
 - **Inputs and monitoring** (see above), with the capture thread.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on

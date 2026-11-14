@@ -14,14 +14,7 @@ pub(crate) mod recording;
 pub(crate) mod voice;
 
 use recording::{RecordingCommand, RecordingEvent};
-use voice::{VoiceCommand, VoiceEvent};
-
-/// What a ring carries: whose it is, and the data for it.
-#[derive(Debug)]
-pub(crate) struct Message<T> {
-    pub(crate) id: HandleId,
-    pub(crate) data: T,
-}
+use voice::{VoiceCommand, VoiceEnd};
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -41,18 +34,17 @@ impl From<RecordingCommand> for Command {
     }
 }
 
-/// What happened in the renderer. A spec in it is handed back so its last
-/// reference is dropped on the control side: freeing has no time bound and
-/// must not happen on the audio thread.
+/// What happened in the renderer. A recording's last event carries its
+/// audio back, to be taken; what nobody takes back goes to the collector.
 #[derive(Debug)]
 pub(crate) enum Event {
-    Voice(VoiceEvent),
+    Voice(VoiceEnd),
     Recording(RecordingEvent),
 }
 
-impl From<VoiceEvent> for Event {
-    fn from(event: VoiceEvent) -> Self {
-        Self::Voice(event)
+impl From<VoiceEnd> for Event {
+    fn from(end: VoiceEnd) -> Self {
+        Self::Voice(end)
     }
 }
 
@@ -61,13 +53,6 @@ impl From<RecordingEvent> for Event {
         Self::Recording(event)
     }
 }
-
-/// Names one handle's thing (a voice, a take) on both sides: what the
-/// renderer sends back about it carries this id. Minted in order by the
-/// rings, so unique within one engine, and lower is older, which is how the
-/// renderer finds the voice to cut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct HandleId(pub(crate) u64);
 
 /// Names audio to the renderer without sending it, so nothing comes back
 /// to be freed. Sound only while the audio cannot be freed before the

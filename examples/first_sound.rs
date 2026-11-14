@@ -45,11 +45,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("saved as {id:?}");
 
     println!("pluck");
-    let first = control.play(&pluck)?;
+    let mut first = control.play(&pluck)?;
     sleep(Duration::from_millis(600));
     println!("first: {:?}", first.state());
     println!("pluck again, over the first one's tail");
-    let second = control.play(&pluck)?;
+    let mut second = control.play(&pluck)?;
     sleep(Duration::from_millis(1200));
     // Both have played to their last frame by now.
     println!("first: {:?}, second: {:?}", first.state(), second.state());

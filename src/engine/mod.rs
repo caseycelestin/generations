@@ -12,7 +12,7 @@ pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
 
-use rtrb::RingBuffer;
+use crate::duplex::{self, Capacity};
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
@@ -22,19 +22,29 @@ use rtrb::RingBuffer;
 pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     assert!(command_capacity > 0, "command_capacity must not be zero");
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    let (to_renderer, from_control) = RingBuffer::new(command_capacity);
-    let (to_control, from_renderer) = RingBuffer::new(return_capacity(command_capacity, voices));
+    let (control, realtime) = duplex::channel(Capacity {
+        commands: command_capacity,
+        events: event_capacity(command_capacity, voices),
+    });
+    let (collector, disposer) = crate::collector::new(collector_capacity(command_capacity, voices));
     (
-        Control::new(to_renderer, from_renderer),
-        Renderer::new(from_control, to_control, voices),
+        Control::new(control, collector),
+        Renderer::new(realtime, disposer, voices),
     )
 }
 
-/// Depth of the ring back, so the renderer never finds it full. Every send
-/// collects first, so between collects it holds at most every voice and
-/// the one recording the renderer holds, plus one return per queued command.
-fn return_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + 1 + command_capacity
+/// A voice reserves one event slot, its end, and holds it while it plays
+/// or waits in a queued command; a recording reserves two, its start and
+/// its end. Past this, an open is refused with `EventsFull`.
+fn event_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
+    voices.get() + 2 + command_capacity
+}
+
+/// Only voices give audio up. Every play collects first, so between
+/// collects the renderer gives up at most the voices it holds and those
+/// arriving in queued commands.
+fn collector_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
+    voices.get() + command_capacity
 }
 
 #[cfg(test)]
@@ -61,7 +71,7 @@ mod tests {
     fn a_played_voice_is_heard_then_ends_finished() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 2]);
-        let voice = control.play(&audio).unwrap();
+        let mut voice = control.play(&audio).unwrap();
         assert_eq!(voice.state(), VoiceState::Playing);
 
         let mut out = vec![0.0; 3 * 2];
@@ -75,7 +85,7 @@ mod tests {
     fn a_stopped_voice_ends_stopped() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 64]);
-        let voice = control.play(&audio).unwrap();
+        let mut voice = control.play(&audio).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
         voice.stop().unwrap();
@@ -89,9 +99,9 @@ mod tests {
         let (control, mut renderer) = create(4, 3);
         let stopped = audio(&[0.5; 64]);
         let other = audio(&[0.5; 64]);
-        let first = control.play(&stopped).unwrap();
-        let second = control.play(&stopped).unwrap();
-        let kept = control.play(&other).unwrap();
+        let mut first = control.play(&stopped).unwrap();
+        let mut second = control.play(&stopped).unwrap();
+        let mut kept = control.play(&other).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
         control.stop(&stopped).unwrap();
@@ -108,8 +118,8 @@ mod tests {
     fn stop_all_ends_every_voice_stopped() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 64]);
-        let first = control.play(&audio).unwrap();
-        let second = control.play(&audio).unwrap();
+        let mut first = control.play(&audio).unwrap();
+        let mut second = control.play(&audio).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
         control.stop_all().unwrap();
@@ -130,7 +140,7 @@ mod tests {
         assert_eq!(
             Arc::strong_count(audio.shared()),
             2,
-            "handed back, not yet freed"
+            "given up, not yet freed"
         );
 
         control.collect();
@@ -152,7 +162,7 @@ mod tests {
     #[test]
     fn a_recording_runs_until_stopped() {
         let (control, mut renderer) = create(4, 1);
-        let recording = control.record(room(64)).unwrap();
+        let mut recording = control.record(room(64)).unwrap();
         assert_eq!(recording.state(), RecordingState::Pending);
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(recording.state(), RecordingState::Recording);
@@ -203,7 +213,7 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
 
         drop(first);
-        let second = control.record(room(64)).unwrap();
+        let mut second = control.record(room(64)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
         assert_eq!(second.state(), RecordingState::Recording);

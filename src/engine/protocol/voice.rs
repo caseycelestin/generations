@@ -8,7 +8,7 @@ use super::BufferAddress;
 
 #[derive(Debug)]
 pub(crate) enum VoiceCommand {
-    Add(VoiceSpec),
+    Add(Arc<AudioBuffer>),
     /// Removes the sender's voice; from any other sender, does nothing.
     Remove,
     /// Every voice playing this audio.
@@ -16,29 +16,15 @@ pub(crate) enum VoiceCommand {
     RemoveAll,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct VoiceEvent {
-    pub(crate) state: VoiceState,
-    /// Back only when the renderer lets go: on `Ended`.
-    pub(crate) spec: Option<VoiceSpec>,
-}
-
-/// Fixed for the voice's life; the renderer keeps it whole beside its
-/// playing state, to hand back.
-#[derive(Debug)]
-pub(crate) struct VoiceSpec {
-    pub(crate) audio: Arc<AudioBuffer>,
-}
-
 /// What the audio thread last said about a voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceState {
     /// Not reported ended yet: playing, or about to.
-    #[default]
     Playing,
     Ended(VoiceEnd),
 }
 
+/// The one event a voice sends: it says nothing when it starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceEnd {
     /// It played to its last frame.

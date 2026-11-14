@@ -29,8 +29,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Clones are the same engine.
     let _ui = control.clone();
 
-    let played = control.play(&audio)?;
-    let stopped = control.play(&audio)?;
+    let mut played = control.play(&audio)?;
+    let mut stopped = control.play(&audio)?;
     stopped.stop()?;
 
     // Room for a second of the main out, paid for now.
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // The audio thread reports how a voice ended, once it has: here
     // Finished, then Stopped.
-    for voice in [&played, &stopped] {
+    for voice in [&mut played, &mut stopped] {
         match voice.state() {
             VoiceState::Playing => println!("still playing"),
             VoiceState::Ended(why) => println!("ended: {why:?}"),
