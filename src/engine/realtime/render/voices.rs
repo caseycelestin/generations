@@ -75,8 +75,13 @@ impl Voice {
 
 #[derive(Debug)]
 pub(crate) struct Voices {
-    /// `None` is free. Boxed so it cannot grow on the audio thread.
-    places: Box<[Option<Voice>]>,
+    /// `None` is free; a taken place holds its voice's number in the order
+    /// voices were added, lower being older. Boxed so it cannot grow on the
+    /// audio thread.
+    places: Box<[Option<(u64, Voice)>]>,
+    /// How many voices have been added, so the next one's number. A `u64`
+    /// cannot run out: a million a second lasts half a million years.
+    added: u64,
 }
 
 impl Voices {
@@ -84,15 +89,18 @@ impl Voices {
     pub(crate) fn new(count: NonZeroUsize) -> Self {
         Self {
             places: (0..count.get()).map(|_| None).collect(),
+            added: 0,
         }
     }
 
     /// Takes a free place, or the oldest voice's place, returning the
     /// voice replaced.
     pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
+        let numbered = (self.added, voice);
+        self.added += 1;
         match self.places.iter_mut().find(|place| place.is_none()) {
             Some(free) => {
-                *free = Some(voice);
+                *free = Some(numbered);
                 None
             }
             None => {
@@ -100,23 +108,25 @@ impl Voices {
                     .places
                     .iter_mut()
                     .flatten()
-                    .min_by_key(|voice| voice.id)
+                    .min_by_key(|(number, _)| *number)
                     .expect("every place is taken, and there is at least one");
-                Some(mem::replace(oldest, voice))
+                let (_, replaced) = mem::replace(oldest, numbered);
+                Some(replaced)
             }
         }
     }
 
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
-        self.places.iter_mut().flatten()
+        self.places.iter_mut().flatten().map(|(_, voice)| voice)
     }
 
     pub(crate) fn remove(&mut self, id: HandleId) -> Option<Voice> {
         let found = self
             .places
             .iter_mut()
-            .find(|place| matches!(place, Some(voice) if voice.id == id));
-        found.and_then(Option::take)
+            .find(|place| matches!(place, Some((_, voice)) if voice.id == id));
+        let (_, voice) = found?.take()?;
+        Some(voice)
     }
 
     /// Takes out every voice `test` picks, as `Vec::extract_if`: stopped
@@ -127,11 +137,15 @@ impl Voices {
     ) -> impl Iterator<Item = Voice> {
         self.places
             .iter_mut()
-            .filter_map(move |place| place.take_if(|voice| test(voice)))
+            .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
+            .map(|(_, voice)| voice)
     }
 
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = Voice> + '_ {
-        self.places.iter_mut().filter_map(Option::take)
+        self.places
+            .iter_mut()
+            .filter_map(Option::take)
+            .map(|(_, voice)| voice)
     }
 }
 
@@ -216,13 +230,13 @@ mod tests {
     }
 
     #[test]
-    fn add_when_full_replaces_the_oldest() {
+    fn add_when_full_replaces_the_first_added() {
         let mut voices = voices(2);
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
         voices.add(voice_from(HandleId(1), ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
         let newest = voice_from(HandleId(2), ChannelLayout::Mono, &[0.0]);
         let replaced = voices.add(newest);
-        assert_eq!(replaced.map(|voice| voice.id), Some(HandleId(0)));
+        assert_eq!(replaced.map(|voice| voice.id), Some(HandleId(1)));
         assert_eq!(voices.iter_mut().count(), 2);
     }
 

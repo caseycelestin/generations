@@ -263,10 +263,9 @@ or rejected instead. The history of how a shape was reached is in git.
   never resizes: a CPU budget the caller sizes for its hardware, with no
   hardware maximums in the crate, and not counted by `AudioMemory`. A play
   with every place taken cuts the oldest: a press must sound. The pool
-  picks which voice to cut; the renderer ends it and reports why. Age is
-  the engine's to track, not read off the order of handle ids: decided,
-  not built, the renderer numbers voices as they are added and cuts the
-  lowest. Today the pool still compares `HandleId`s.
+  picks which voice to cut; the renderer ends it and reports why. The
+  pool numbers voices as they are added and cuts the lowest: age is the
+  engine's to track, not read off the order of handle ids.
 - **Every voice ends one of three ways, and says which:** `Finished`
   (played to its last frame), `Stopped` (a stop arrived) or `Cut` (its
   place was taken). `Cut` is the sampler's umbrella: choke groups and

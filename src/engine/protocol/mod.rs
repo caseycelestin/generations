@@ -63,10 +63,8 @@ impl From<RecordingEvent> for Event {
 }
 
 /// Names one handle's thing (a voice, a take) on both sides: what the
-/// renderer sends back about it carries this id. Minted in order by the
-/// rings, so unique within one engine, and lower is older, which is how the
-/// renderer finds the voice to cut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// renderer sends back about it carries this id. Unique within one engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct HandleId(pub(crate) u64);
 
 /// Names audio to the renderer without sending it, so nothing comes back
