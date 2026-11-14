@@ -91,7 +91,7 @@ impl Recording {
 
     pub fn stop(&self) -> Result<(), ControlError> {
         self.handle
-            .send(RecordingCommand::Stop)
+            .try_send(RecordingCommand::Stop)
             .map_err(ControlError::from)
     }
 

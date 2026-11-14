@@ -31,7 +31,7 @@ impl Voice {
     /// Dropping the handle instead lets the voice play out.
     pub fn stop(&self) -> Result<(), ControlError> {
         self.handle
-            .send(VoiceCommand::Remove)
+            .try_send(VoiceCommand::Remove)
             .map_err(ControlError::from)
     }
 

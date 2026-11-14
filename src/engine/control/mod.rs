@@ -69,14 +69,14 @@ impl Control {
     pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
         let address = BufferAddress::of(audio.shared());
         self.channel
-            .send(VoiceCommand::RemoveAudio(address))
+            .try_send(VoiceCommand::RemoveAudio(address))
             .map_err(ControlError::from)
     }
 
     /// Stops every voice; a recording runs on.
     pub fn stop_all(&self) -> Result<(), ControlError> {
         self.channel
-            .send(VoiceCommand::RemoveAll)
+            .try_send(VoiceCommand::RemoveAll)
             .map_err(ControlError::from)
     }
 

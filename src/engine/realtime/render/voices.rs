@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
-use crate::collector::Disposer;
+use crate::collector::Sender;
 use crate::duplex::{Id, RealtimeEnd};
 use crate::engine::protocol::voice::VoiceEnd;
 use crate::engine::protocol::{BufferAddress, Command, Event};
@@ -67,10 +67,10 @@ impl Voice {
         self,
         why: VoiceEnd,
         channel: &mut RealtimeEnd<Command, Event>,
-        disposer: &mut Disposer<Arc<AudioBuffer>>,
+        collector: &mut Sender<Arc<AudioBuffer>>,
     ) {
-        let disposed = disposer.dispose(self.audio);
-        debug_assert!(disposed.is_ok(), "the collector is sized for every voice");
+        let sent = collector.try_send(self.audio);
+        debug_assert!(sent.is_ok(), "the collector is sized for every voice");
         let ended = channel.end(self.id, why);
         debug_assert!(ended.is_ok(), "a voice reserves its end");
     }
