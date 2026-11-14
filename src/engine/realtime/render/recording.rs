@@ -5,20 +5,21 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use super::Frame;
+use crate::duplex::{Id, Message};
+use crate::engine::protocol::Event;
 use crate::engine::protocol::recording::{
     RecordingEnd, RecordingEvent, RecordingSpec, RecordingState,
 };
-use crate::engine::protocol::{Event, HandleId, Message};
 
 #[derive(Debug)]
 pub(crate) struct Recording {
-    id: HandleId,
+    id: Id,
     spec: RecordingSpec,
 }
 
 impl Recording {
     pub(crate) fn start(
-        id: HandleId,
+        id: Id,
         spec: RecordingSpec,
         to_control: &mut Producer<Message<Event>>,
     ) -> Self {
@@ -43,7 +44,7 @@ impl Recording {
         }
     }
 
-    pub(crate) fn is(&self, id: HandleId) -> bool {
+    pub(crate) fn is(&self, id: Id) -> bool {
         self.id == id
     }
 
@@ -64,11 +65,7 @@ impl Recording {
         debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
     }
 
-    pub(crate) fn refuse(
-        id: HandleId,
-        spec: RecordingSpec,
-        to_control: &mut Producer<Message<Event>>,
-    ) {
+    pub(crate) fn refuse(id: Id, spec: RecordingSpec, to_control: &mut Producer<Message<Event>>) {
         let event = RecordingEvent {
             state: RecordingState::Refused,
             spec: Some(spec),

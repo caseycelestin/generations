@@ -6,7 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use super::ControlError;
 use super::rings::SharedRings;
-use crate::engine::protocol::{Command, Event, HandleId};
+use crate::duplex::Id;
+use crate::engine::protocol::{Command, Event};
 
 /// What a handle keeps of what the renderer says about it; each feature
 /// decides what to keep. `Send` because the rings that fill it cross threads.
@@ -18,7 +19,7 @@ pub(crate) trait Inbox: Send + Debug {
 #[derive(Debug)]
 pub(crate) struct Handle<E> {
     rings: SharedRings,
-    id: HandleId,
+    id: Id,
     /// Filled by `collect` with what the renderer said about this handle.
     inbox: Arc<Mutex<E>>,
 }

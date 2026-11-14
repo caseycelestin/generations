@@ -11,7 +11,8 @@ use rtrb::{Consumer, Producer};
 
 use super::ControlError;
 use super::handle::Inbox;
-use crate::engine::protocol::{Command, Event, HandleId, Message};
+use crate::duplex::{Id, Message};
+use crate::engine::protocol::{Command, Event};
 
 /// One per renderer, shared by its `Control` and every handle.
 #[derive(Debug, Clone)]
@@ -35,11 +36,7 @@ impl SharedRings {
         }))
     }
 
-    pub(crate) fn send(
-        &self,
-        id: HandleId,
-        command: impl Into<Command>,
-    ) -> Result<(), ControlError> {
+    pub(crate) fn send(&self, id: Id, command: impl Into<Command>) -> Result<(), ControlError> {
         self.reserve()?.send(id, command);
         Ok(())
     }
@@ -60,8 +57,8 @@ impl SharedRings {
     }
 
     /// Only uniqueness matters, so no ordering with other memory.
-    pub(crate) fn next_id(&self) -> HandleId {
-        HandleId(self.0.ids.fetch_add(1, Ordering::Relaxed))
+    pub(crate) fn next_id(&self) -> Id {
+        Id(self.0.ids.fetch_add(1, Ordering::Relaxed))
     }
 
     /// A panic while locked leaves the rings intact, so a poisoned lock
@@ -78,7 +75,7 @@ pub(crate) struct Permit<'a>(MutexGuard<'a, Rings>);
 impl Permit<'_> {
     /// Before the send, under the same lock, so no return for `id` can be
     /// collected before its place exists.
-    pub(crate) fn register(&mut self, id: HandleId, inbox: Arc<Mutex<dyn Inbox>>) {
+    pub(crate) fn register(&mut self, id: Id, inbox: Arc<Mutex<dyn Inbox>>) {
         let free = self.0.handles.iter_mut().find(|place| place.is_none());
         debug_assert!(free.is_some(), "sized for every id still owed a return");
         if let Some(place) = free {
@@ -86,7 +83,7 @@ impl Permit<'_> {
         }
     }
 
-    pub(crate) fn send(mut self, id: HandleId, command: impl Into<Command>) {
+    pub(crate) fn send(mut self, id: Id, command: impl Into<Command>) {
         let message = Message {
             id,
             data: command.into(),
@@ -107,7 +104,7 @@ struct Rings {
     handles: Box<[Record]>,
 }
 
-type Record = Option<(HandleId, Arc<Mutex<dyn Inbox>>)>;
+type Record = Option<(Id, Arc<Mutex<dyn Inbox>>)>;
 
 impl Rings {
     fn new(
@@ -133,7 +130,7 @@ impl Rings {
     /// Hands `event` to its id's inbox, and frees the record once the inbox
     /// expects nothing more. An event for an id nobody registered is
     /// dropped here.
-    fn deliver(&mut self, id: HandleId, event: Event) {
+    fn deliver(&mut self, id: Id, event: Event) {
         let record = self
             .handles
             .iter_mut()
@@ -176,9 +173,9 @@ mod tests {
         let (to_renderer, _from_control) = RingBuffer::new(1);
         let (_to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
-        assert!(rings.send(HandleId(0), command()).is_ok());
+        assert!(rings.send(Id(0), command()).is_ok());
         assert!(matches!(
-            rings.send(HandleId(0), command()),
+            rings.send(Id(0), command()),
             Err(ControlError::CommandsFull)
         ));
     }
@@ -193,7 +190,7 @@ mod tests {
             audio: Arc::clone(&audio),
         };
         let returned = Message {
-            id: HandleId(0),
+            id: Id(0),
             data: VoiceEvent {
                 state: VoiceState::Ended(VoiceEnd::Finished),
                 spec: Some(spec),
@@ -202,7 +199,7 @@ mod tests {
         };
         to_control.push(returned).unwrap();
 
-        rings.send(HandleId(0), command()).unwrap();
+        rings.send(Id(0), command()).unwrap();
 
         assert_eq!(Arc::strong_count(&audio), 1);
         assert_eq!(to_control.slots(), 1);

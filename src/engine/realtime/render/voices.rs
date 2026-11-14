@@ -7,20 +7,21 @@ use std::num::NonZeroUsize;
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
+use crate::duplex::{Id, Message};
 use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceSpec, VoiceState};
-use crate::engine::protocol::{BufferAddress, Event, HandleId, Message};
+use crate::engine::protocol::{BufferAddress, Event};
 use crate::layout::ChannelLayout;
 
 #[derive(Debug)]
 pub(crate) struct Voice {
-    id: HandleId,
+    id: Id,
     spec: VoiceSpec,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(id: HandleId, spec: VoiceSpec) -> Self {
+    pub(crate) fn new(id: Id, spec: VoiceSpec) -> Self {
         Self {
             id,
             spec,
@@ -120,7 +121,7 @@ impl Voices {
         self.places.iter_mut().flatten().map(|(_, voice)| voice)
     }
 
-    pub(crate) fn remove(&mut self, id: HandleId) -> Option<Voice> {
+    pub(crate) fn remove(&mut self, id: Id) -> Option<Voice> {
         let found = self
             .places
             .iter_mut()
@@ -157,11 +158,11 @@ mod tests {
     use crate::testing::buffer;
 
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
-        voice_from(HandleId(0), layout, samples)
+        voice_from(Id(0), layout, samples)
     }
 
     /// For tests that tell voices apart by their sender.
-    fn voice_from(id: HandleId, layout: ChannelLayout, samples: &[f32]) -> Voice {
+    fn voice_from(id: Id, layout: ChannelLayout, samples: &[f32]) -> Voice {
         let audio = Arc::new(buffer(layout, samples));
         Voice::new(id, VoiceSpec { audio })
     }
@@ -232,36 +233,36 @@ mod tests {
     #[test]
     fn add_when_full_replaces_the_first_added() {
         let mut voices = voices(2);
-        voices.add(voice_from(HandleId(1), ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
-        let newest = voice_from(HandleId(2), ChannelLayout::Mono, &[0.0]);
+        voices.add(voice_from(Id(1), ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
+        let newest = voice_from(Id(2), ChannelLayout::Mono, &[0.0]);
         let replaced = voices.add(newest);
-        assert_eq!(replaced.map(|voice| voice.id), Some(HandleId(1)));
+        assert_eq!(replaced.map(|voice| voice.id), Some(Id(1)));
         assert_eq!(voices.iter_mut().count(), 2);
     }
 
     #[test]
     fn remove_takes_the_voice_out_once() {
         let mut voices = voices(1);
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
-        assert!(voices.remove(HandleId(0)).is_some());
-        assert!(voices.remove(HandleId(0)).is_none());
+        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
+        assert!(voices.remove(Id(0)).is_some());
+        assert!(voices.remove(Id(0)).is_none());
     }
 
     #[test]
     fn extract_if_takes_only_the_voices_picked() {
         let mut voices = voices(2);
-        voices.add(voice_from(HandleId(0), ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(HandleId(1), ChannelLayout::Mono, &[0.0; 4]));
+        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(Id(1), ChannelLayout::Mono, &[0.0; 4]));
         let mut scratch = [[0.0; 2]; 2];
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let extracted: Vec<HandleId> = voices
+        let extracted: Vec<Id> = voices
             .extract_if(|voice| voice.finished())
             .map(|voice| voice.id)
             .collect();
-        assert_eq!(extracted, [HandleId(0)]);
+        assert_eq!(extracted, [Id(0)]);
         assert_eq!(voices.iter_mut().count(), 1);
     }
 

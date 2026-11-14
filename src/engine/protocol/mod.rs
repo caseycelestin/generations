@@ -16,13 +16,6 @@ pub(crate) mod voice;
 use recording::{RecordingCommand, RecordingEvent};
 use voice::{VoiceCommand, VoiceEvent};
 
-/// What a ring carries: whose it is, and the data for it.
-#[derive(Debug)]
-pub(crate) struct Message<T> {
-    pub(crate) id: HandleId,
-    pub(crate) data: T,
-}
-
 #[derive(Debug)]
 pub(crate) enum Command {
     Voice(VoiceCommand),
@@ -61,11 +54,6 @@ impl From<RecordingEvent> for Event {
         Self::Recording(event)
     }
 }
-
-/// Names one handle's thing (a voice, a take) on both sides: what the
-/// renderer sends back about it carries this id. Unique within one engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct HandleId(pub(crate) u64);
 
 /// Names audio to the renderer without sending it, so nothing comes back
 /// to be freed. Sound only while the audio cannot be freed before the

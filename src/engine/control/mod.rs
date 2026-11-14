@@ -12,8 +12,9 @@ use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
 use crate::audio::Audio;
+use crate::duplex::{Id, Message};
 use crate::engine::protocol::voice::VoiceCommand;
-use crate::engine::protocol::{BufferAddress, Command, Event, HandleId, Message};
+use crate::engine::protocol::{BufferAddress, Command, Event};
 use rings::SharedRings;
 
 #[derive(Debug, Error)]
@@ -28,7 +29,7 @@ pub enum ControlError {
 #[derive(Debug, Clone)]
 pub struct Control {
     rings: SharedRings,
-    id: HandleId,
+    id: Id,
 }
 
 impl Control {
