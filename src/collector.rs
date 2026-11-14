@@ -9,7 +9,8 @@
 
 use std::marker::PhantomData;
 
-pub fn new<T>() -> (Collector<T>, Disposer<T>) {
+/// `capacity` is in values: the most the real-time side can hold at once.
+pub fn new<T>(capacity: usize) -> (Collector<T>, Disposer<T>) {
     todo!()
 }
 

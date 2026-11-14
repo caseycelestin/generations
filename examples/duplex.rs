@@ -9,9 +9,12 @@
 use std::sync::Arc;
 
 use generations::collector::{self, Collector, Disposer};
-use generations::duplex::{self, ControlEnd, Full, Handle, Id, Message, RealtimeEnd};
+use generations::duplex::{self, Capacity, ControlEnd, Full, Handle, Id, Message, RealtimeEnd};
 
 type Wave = Arc<Vec<f32>>;
+
+const VOICES: usize = 4;
+const COMMANDS: usize = 16;
 
 #[derive(Debug)]
 enum Command {
@@ -36,6 +39,7 @@ impl Control {
     /// Collects first, as every send does, so the collector never fills.
     fn play(&mut self, hz: u32, wave: &Wave) -> Result<Voice, Full<()>> {
         self.collector.collect();
+        // A voice is sent one event, its end.
         let permit = self.channel.try_reserve()?;
         let wave = Arc::clone(wave);
         let handle = permit.open(Command::Start { hz, wave });
@@ -85,7 +89,7 @@ impl Voice {
 struct Renderer {
     channel: RealtimeEnd<Command, Event>,
     disposer: Disposer<Wave>,
-    voices: [Option<(Id, u32, Wave)>; 4],
+    voices: [Option<(Id, u32, Wave)>; VOICES],
 }
 
 impl Renderer {
@@ -127,13 +131,19 @@ impl Renderer {
 }
 
 fn main() {
-    let (channel, realtime) = duplex::new::<Command, Event>();
-    let (collector, disposer) = collector::new::<Wave>();
+    // One event slot per voice.
+    let (channel, realtime) = duplex::channel(Capacity {
+        commands: COMMANDS,
+        events: VOICES,
+    });
+    // Each wave travels with a handle, and every open collects first, so the
+    // renderer never gives up more than there are handles.
+    let (collector, disposer) = collector::new(VOICES);
     let mut control = Control { channel, collector };
     let mut renderer = Renderer {
         channel: realtime,
         disposer,
-        voices: [const { None }; 4],
+        voices: [const { None }; VOICES],
     };
 
     let wave: Wave = Arc::new(vec![0.0; 48_000]);

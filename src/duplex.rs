@@ -27,7 +27,16 @@ pub struct Message<T> {
 #[derive(Debug)]
 pub struct Full<T>(pub T);
 
-pub fn new<C, E>() -> (ControlEnd<C, E>, RealtimeEnd<C, E>) {
+#[derive(Debug, Clone, Copy)]
+pub struct Capacity {
+    /// How many commands can wait for the real-time side.
+    pub commands: usize,
+    /// Event slots, shared out by reservation; each open handle holds its
+    /// budget, so this also caps how many are open.
+    pub events: usize,
+}
+
+pub fn channel<C, E>(capacity: Capacity) -> (ControlEnd<C, E>, RealtimeEnd<C, E>) {
     todo!()
 }
 
@@ -35,7 +44,13 @@ pub fn new<C, E>() -> (ControlEnd<C, E>, RealtimeEnd<C, E>) {
 pub struct ControlEnd<C, E>(PhantomData<(C, E)>);
 
 impl<C, E> ControlEnd<C, E> {
+    /// For a handle that is sent one event, its end.
     pub fn try_reserve(&self) -> Result<Permit<'_, C, E>, Full<()>> {
+        todo!()
+    }
+
+    /// For a handle that is sent `events` in its life, its end included.
+    pub fn try_reserve_many(&self, events: usize) -> Result<Permit<'_, C, E>, Full<()>> {
         todo!()
     }
 
