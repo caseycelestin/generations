@@ -34,9 +34,8 @@ impl From<RecordingCommand> for Command {
     }
 }
 
-/// What happened in the renderer. A spec in it is handed back so its last
-/// reference is dropped on the control side: freeing has no time bound and
-/// must not happen on the audio thread.
+/// What happened in the renderer. A recording's last event carries its
+/// audio back, to be taken; what nobody takes back goes to the collector.
 #[derive(Debug)]
 pub(crate) enum Event {
     Voice(VoiceEvent),

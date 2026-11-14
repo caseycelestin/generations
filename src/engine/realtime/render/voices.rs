@@ -5,14 +5,12 @@ use std::mem;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use rtrb::Producer;
-
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
 use crate::collector::Disposer;
-use crate::duplex::{Id, Message};
+use crate::duplex::{Id, RealtimeEnd};
 use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceSpec, VoiceState};
-use crate::engine::protocol::{BufferAddress, Event};
+use crate::engine::protocol::{BufferAddress, Command, Event};
 use crate::layout::ChannelLayout;
 
 #[derive(Debug)]
@@ -68,19 +66,16 @@ impl Voice {
     pub(crate) fn end(
         self,
         why: VoiceEnd,
-        to_control: &mut Producer<Message<Event>>,
+        channel: &mut RealtimeEnd<Command, Event>,
         disposer: &mut Disposer<Arc<AudioBuffer>>,
     ) {
         let disposed = disposer.dispose(self.spec.audio);
         debug_assert!(disposed.is_ok(), "the collector is sized for every voice");
-        let pushed = to_control.push(Message {
-            id: self.id,
-            data: VoiceEvent {
-                state: VoiceState::Ended(why),
-            }
-            .into(),
-        });
-        debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
+        let event = VoiceEvent {
+            state: VoiceState::Ended(why),
+        };
+        let ended = channel.end(self.id, event);
+        debug_assert!(ended.is_ok(), "a voice reserves its end");
     }
 }
 

@@ -56,8 +56,16 @@ pub fn channel<C, E>(capacity: Capacity) -> (ControlEnd<C, E>, RealtimeEnd<C, E>
     todo!()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ControlEnd<C, E>(PhantomData<(C, E)>);
+
+/// Clones share one channel. Written out, as a derive would demand `C` and
+/// `E` be `Clone`.
+impl<C, E> Clone for ControlEnd<C, E> {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
 
 impl<C, E> ControlEnd<C, E> {
     /// For a handle that is sent one event, its end.

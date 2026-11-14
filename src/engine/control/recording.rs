@@ -5,14 +5,11 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::ControlError;
-use super::handle::{Handle, Inbox};
-use super::rings::SharedRings;
 use crate::audio::{Audio, AudioBuffer};
 use crate::collector::Collector;
-use crate::engine::protocol::Event;
-use crate::engine::protocol::recording::{
-    RecordingCommand, RecordingEvent, RecordingSpec, RecordingState,
-};
+use crate::duplex::{ControlEnd, Handle, ReserveError};
+use crate::engine::protocol::recording::{RecordingCommand, RecordingSpec, RecordingState};
+use crate::engine::protocol::{Command, Event};
 use crate::layout::ChannelLayout;
 
 /// A refused `record`, holding the audio it was given.
@@ -27,24 +24,41 @@ pub enum RecordError {
     /// The renderer has not caught up; nothing was sent.
     #[error("the command ring is full")]
     CommandsFull(Audio),
+    /// Voices and a recording not yet ended hold every event slot; nothing
+    /// was sent.
+    #[error("every event slot is held")]
+    EventsFull(Audio),
 }
 
 impl RecordError {
     pub fn into_audio(self) -> Audio {
         match self {
-            Self::NotStereo(audio) | Self::AudioInUse(audio) | Self::CommandsFull(audio) => audio,
+            Self::NotStereo(audio)
+            | Self::AudioInUse(audio)
+            | Self::CommandsFull(audio)
+            | Self::EventsFull(audio) => audio,
+        }
+    }
+
+    fn refused(error: ReserveError, audio: Audio) -> Self {
+        match error {
+            ReserveError::CommandsFull => Self::CommandsFull(audio),
+            ReserveError::EventsFull => Self::EventsFull(audio),
         }
     }
 }
 
 #[derive(Debug)]
 pub struct Recording {
-    handle: Handle<RecordingEvent>,
+    handle: Handle<Command, Event>,
+    state: RecordingState,
+    /// The audio once it comes back, until taken.
+    spec: Option<RecordingSpec>,
 }
 
 impl Recording {
     pub(crate) fn record(
-        rings: SharedRings,
+        channel: &ControlEnd<Command, Event>,
         collector: &Collector<Arc<AudioBuffer>>,
         audio: Audio,
     ) -> Result<Self, RecordError> {
@@ -62,40 +76,49 @@ impl Recording {
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
-        let spec = RecordingSpec { audio };
-        match Handle::open(&rings, spec, RecordingCommand::Start) {
-            Ok(handle) => Ok(Self { handle }),
-            Err(spec) => Err(RecordError::CommandsFull(Audio::from_shared(spec.audio))),
-        }
+        // Two events: its start, and its end.
+        let permit = match channel.try_reserve_many(2) {
+            Ok(permit) => permit,
+            Err(error) => return Err(RecordError::refused(error, Audio::from_shared(audio))),
+        };
+        let handle = permit.open(RecordingCommand::Start(RecordingSpec { audio }));
+        Ok(Self {
+            handle,
+            state: RecordingState::Pending,
+            spec: None,
+        })
     }
 
     pub fn stop(&self) -> Result<(), ControlError> {
-        self.handle.send(RecordingCommand::Stop)
+        self.handle
+            .send(RecordingCommand::Stop)
+            .map_err(ControlError::from)
     }
 
-    pub fn state(&self) -> RecordingState {
-        self.handle.inbox().state
+    pub fn state(&mut self) -> RecordingState {
+        self.receive();
+        self.state
     }
 
     /// The audio, once the renderer has let go of it: after the recording
     /// ends, or at once if it was refused. `None` until then, and after it
     /// has been taken.
     pub fn take(&mut self) -> Option<Audio> {
-        let spec = self.handle.inbox().spec.take();
-        spec.map(|spec| Audio::from_shared(spec.audio))
+        self.receive();
+        let spec = self.spec.take()?;
+        Some(Audio::from_shared(spec.audio))
     }
-}
 
-/// Keeps the last event whole, so its spec waits here for `take`. The event
-/// that hands the spec back is the last.
-impl Inbox for RecordingEvent {
-    fn deliver(&mut self, event: Event) -> bool {
-        let Event::Recording(event) = event else {
-            unreachable!("an id belongs to one feature");
-        };
-        let last = event.spec.is_some();
-        *self = event;
-        last
+    fn receive(&mut self) {
+        while let Some(event) = self.handle.try_recv() {
+            let Event::Recording(event) = event else {
+                unreachable!("a handle hears only its own feature's events");
+            };
+            self.state = event.state;
+            if let Some(spec) = event.spec {
+                self.spec = Some(spec);
+            }
+        }
     }
 }
 

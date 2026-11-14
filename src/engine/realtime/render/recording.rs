@@ -2,14 +2,12 @@
 
 use std::sync::Arc;
 
-use rtrb::Producer;
-
 use super::Frame;
-use crate::duplex::{Id, Message};
-use crate::engine::protocol::Event;
+use crate::duplex::{Id, RealtimeEnd};
 use crate::engine::protocol::recording::{
     RecordingEnd, RecordingEvent, RecordingSpec, RecordingState,
 };
+use crate::engine::protocol::{Command, Event};
 
 #[derive(Debug)]
 pub(crate) struct Recording {
@@ -21,17 +19,14 @@ impl Recording {
     pub(crate) fn start(
         id: Id,
         spec: RecordingSpec,
-        to_control: &mut Producer<Message<Event>>,
+        channel: &mut RealtimeEnd<Command, Event>,
     ) -> Self {
         let event = RecordingEvent {
             state: RecordingState::Recording,
             spec: None,
         };
-        let pushed = to_control.push(Message {
-            id,
-            data: event.into(),
-        });
-        debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
+        let sent = channel.send(id, event);
+        debug_assert!(sent.is_ok(), "a recording reserves its start");
         Self { id, spec }
     }
 
@@ -53,27 +48,21 @@ impl Recording {
     }
 
     /// The one way a recording leaves.
-    pub(crate) fn end(self, why: RecordingEnd, to_control: &mut Producer<Message<Event>>) {
+    pub(crate) fn end(self, why: RecordingEnd, channel: &mut RealtimeEnd<Command, Event>) {
         let event = RecordingEvent {
             state: RecordingState::Ended(why),
             spec: Some(self.spec),
         };
-        let pushed = to_control.push(Message {
-            id: self.id,
-            data: event.into(),
-        });
-        debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
+        let ended = channel.end(self.id, event);
+        debug_assert!(ended.is_ok(), "a recording reserves its end");
     }
 
-    pub(crate) fn refuse(id: Id, spec: RecordingSpec, to_control: &mut Producer<Message<Event>>) {
+    pub(crate) fn refuse(id: Id, spec: RecordingSpec, channel: &mut RealtimeEnd<Command, Event>) {
         let event = RecordingEvent {
             state: RecordingState::Refused,
             spec: Some(spec),
         };
-        let pushed = to_control.push(Message {
-            id,
-            data: event.into(),
-        });
-        debug_assert!(pushed.is_ok(), "the ring back is sized never to fill");
+        let ended = channel.end(id, event);
+        debug_assert!(ended.is_ok(), "a recording reserves its end");
     }
 }

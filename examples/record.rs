@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .take()
         .ok_or("an ended take hands its audio back")?;
     println!("playing back {} frames", recorded.frames());
-    let playback = control.play(&recorded)?;
+    let mut playback = control.play(&recorded)?;
     sleep(Duration::from_millis(2200));
     println!("playback: {:?}", playback.state());
 

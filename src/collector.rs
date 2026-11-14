@@ -22,10 +22,17 @@ pub fn new<T>(capacity: usize) -> (Collector<T>, Disposer<T>) {
     todo!()
 }
 
-/// The control side's end. Clones share one collector, so any control-side
-/// caller can collect.
-#[derive(Debug, Clone)]
+/// The control side's end.
+#[derive(Debug)]
 pub struct Collector<T>(PhantomData<T>);
+
+/// Clones share one collector, so any control-side caller can collect.
+/// Written out, as a derive would demand `T` be `Clone`.
+impl<T> Clone for Collector<T> {
+    fn clone(&self) -> Self {
+        todo!()
+    }
+}
 
 impl<T> Collector<T> {
     /// Drops everything given up so far.
