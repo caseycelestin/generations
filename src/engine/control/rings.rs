@@ -162,13 +162,13 @@ mod tests {
 
     use super::*;
     use crate::engine::protocol::voice::{
-        VoiceCommand, VoiceEnd, VoiceEvent, VoiceId, VoiceSpec, VoiceState,
+        VoiceCommand, VoiceEnd, VoiceEvent, VoiceSpec, VoiceState,
     };
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
     fn command() -> Command {
-        VoiceCommand::Remove(VoiceId::next()).into()
+        VoiceCommand::Remove.into()
     }
 
     #[test]
@@ -190,7 +190,6 @@ mod tests {
         let rings = SharedRings::new(to_renderer, from_renderer);
         let audio = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
         let spec = VoiceSpec {
-            id: VoiceId::next(),
             audio: Arc::clone(&audio),
         };
         let returned = Message {

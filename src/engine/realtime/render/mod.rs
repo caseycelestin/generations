@@ -81,7 +81,7 @@ impl Renderer {
                         replaced.end(VoiceEnd::Cut, &mut self.to_control);
                     }
                 }
-                Command::Voice(VoiceCommand::Remove(id)) => {
+                Command::Voice(VoiceCommand::Remove) => {
                     if let Some(stopped) = self.voices.remove(id) {
                         stopped.end(VoiceEnd::Stopped, &mut self.to_control);
                     }
@@ -131,7 +131,7 @@ mod tests {
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
     use crate::engine::protocol::recording::{RecordingEvent, RecordingSpec, RecordingState};
-    use crate::engine::protocol::voice::{VoiceId, VoiceSpec, VoiceState};
+    use crate::engine::protocol::voice::{VoiceSpec, VoiceState};
     use crate::engine::protocol::{BufferAddress, HandleId};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
@@ -153,11 +153,7 @@ mod tests {
 
     /// Sends an add from `sender` for a mono voice of `samples`, as
     /// `Control::play` does.
-    fn play(
-        to_renderer: &mut Producer<Message<Command>>,
-        sender: HandleId,
-        samples: &[Pcm],
-    ) -> VoiceId {
+    fn play(to_renderer: &mut Producer<Message<Command>>, sender: HandleId, samples: &[Pcm]) {
         let audio = Arc::new(buffer(ChannelLayout::Mono, samples));
         play_audio(to_renderer, sender, audio)
     }
@@ -168,16 +164,14 @@ mod tests {
         to_renderer: &mut Producer<Message<Command>>,
         sender: HandleId,
         audio: Arc<AudioBuffer>,
-    ) -> VoiceId {
-        let id = VoiceId::next();
-        let spec = VoiceSpec { id, audio };
+    ) {
+        let spec = VoiceSpec { audio };
         to_renderer
             .push(Message {
                 id: sender,
                 data: VoiceCommand::Add(spec).into(),
             })
             .unwrap();
-        id
     }
 
     /// Which voices ended, and how, in order. Each one's event must hand
@@ -283,13 +277,13 @@ mod tests {
     #[test]
     fn a_removed_voice_ends_stopped_and_falls_silent() {
         let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        let id = play(&mut to_renderer, HandleId(0), &[0.5; 64]);
+        play(&mut to_renderer, HandleId(0), &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
         to_renderer
             .push(Message {
                 id: HandleId(0),
-                data: VoiceCommand::Remove(id).into(),
+                data: VoiceCommand::Remove.into(),
             })
             .unwrap();
         renderer.render(&mut out);

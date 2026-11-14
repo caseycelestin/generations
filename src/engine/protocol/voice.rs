@@ -9,8 +9,8 @@ use super::BufferAddress;
 #[derive(Debug)]
 pub(crate) enum VoiceCommand {
     Add(VoiceSpec),
-    /// A stale id names nothing and does nothing.
-    Remove(VoiceId),
+    /// Removes the sender's voice; from any other sender, does nothing.
+    Remove,
     /// Every voice playing this audio.
     RemoveAudio(BufferAddress),
     RemoveAll,
@@ -27,13 +27,7 @@ pub(crate) struct VoiceEvent {
 /// playing state, to hand back.
 #[derive(Debug)]
 pub(crate) struct VoiceSpec {
-    pub(crate) id: VoiceId,
     pub(crate) audio: Arc<AudioBuffer>,
-}
-
-id! {
-    /// Lower is older, which is how the renderer finds the voice to cut.
-    VoiceId
 }
 
 /// What the audio thread last said about a voice.
