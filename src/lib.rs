@@ -32,7 +32,9 @@
 //! `docs/roadmap.md` for the plan and the decisions behind it.
 
 mod audio;
+pub mod collector;
 pub mod config;
+pub mod duplex;
 pub mod engine;
 mod layout;
 pub mod project;
