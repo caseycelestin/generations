@@ -6,21 +6,17 @@ use crate::audio::AudioBuffer;
 
 #[derive(Debug)]
 pub(crate) enum RecordingCommand {
-    Start(RecordingSpec),
+    Start(Arc<AudioBuffer>),
     /// Stops the sender's take; from any other sender, does nothing.
     Stop,
 }
 
+/// The audio comes back with the last event, and only then.
 #[derive(Debug)]
-pub(crate) struct RecordingEvent {
-    pub(crate) state: RecordingState,
-    /// Back only when the renderer lets go: on `Refused` and `Ended`.
-    pub(crate) spec: Option<RecordingSpec>,
-}
-
-#[derive(Debug)]
-pub(crate) struct RecordingSpec {
-    pub(crate) audio: Arc<AudioBuffer>,
+pub(crate) enum RecordingEvent {
+    Started,
+    Refused(Arc<AudioBuffer>),
+    Ended(RecordingEnd, Arc<AudioBuffer>),
 }
 
 /// What the audio thread last said about a recording.
