@@ -16,7 +16,9 @@ use std::marker::PhantomData;
 use thiserror::Error;
 
 /// Names a handle: commands carry their sender, events their recipient.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Unique within one channel and never reused; ids are names, not ages, so
+/// they do not order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Id(pub(crate) u64);
 
 #[derive(Debug)]

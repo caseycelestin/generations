@@ -231,10 +231,8 @@ or rejected instead. The history of how a shape was reached is in git.
   stalls a panel, the fix is a worker thread, not async methods.
 - **A `HandleId` comes from a counter in the rings,** an atomic outside
   their lock so a handle can mint one while it holds a permit: unique
-  within one engine, in order, never reused. It is minted and pushed
-  under one lock, so lower is older, which is how the voice pool picks
-  the one to cut. A refused `record` mints none, since its checks come
-  first. A process-wide `VoiceId` from an `id!` macro came before it.
+  within one engine, in order, never reused. A refused `record` mints
+  none, since its checks come first. A process-wide `VoiceId` from an `id!` macro came before it.
 - **`create` takes plain sizes and panics on a zero**, as `slice::chunks`
   does: a zero is a typo, not something to recover from. `NonZeroUsize`
   parameters made every caller wrap its constants.
@@ -265,7 +263,10 @@ or rejected instead. The history of how a shape was reached is in git.
   never resizes: a CPU budget the caller sizes for its hardware, with no
   hardware maximums in the crate, and not counted by `AudioMemory`. A play
   with every place taken cuts the oldest: a press must sound. The pool
-  picks which voice to cut; the renderer ends it and reports why.
+  picks which voice to cut; the renderer ends it and reports why. Age is
+  the engine's to track, not read off the order of handle ids: decided,
+  not built, the renderer numbers voices as they are added and cuts the
+  lowest. Today the pool still compares `HandleId`s.
 - **Every voice ends one of three ways, and says which:** `Finished`
   (played to its last frame), `Stopped` (a stop arrived) or `Cut` (its
   place was taken). `Cut` is the sampler's umbrella: choke groups and
