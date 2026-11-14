@@ -20,7 +20,7 @@ impl Recording {
         audio: Arc<AudioBuffer>,
         channel: &mut RealtimeEnd<Command, Event>,
     ) -> Self {
-        let sent = channel.send(id, RecordingEvent::Started);
+        let sent = channel.try_send(id, RecordingEvent::Started);
         debug_assert!(sent.is_ok(), "a recording reserves its start");
         Self { id, audio }
     }

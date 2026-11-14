@@ -11,8 +11,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
-use crate::collector::Collector;
-use crate::duplex::{ControlEnd, Full, ReserveError};
+use crate::collector;
+use crate::duplex::{self, Full, ReserveError};
 use crate::engine::protocol::voice::VoiceCommand;
 use crate::engine::protocol::{BufferAddress, Command, Event};
 
@@ -47,15 +47,15 @@ impl From<Full<Command>> for ControlError {
 /// handle, takes effect at the renderer's next period.
 #[derive(Debug, Clone)]
 pub struct Control {
-    channel: ControlEnd<Command, Event>,
+    channel: duplex::ControlEnd<Command, Event>,
     /// Collected before every play and record, which its size assumes.
-    collector: Collector<Arc<AudioBuffer>>,
+    collector: collector::ControlEnd<Arc<AudioBuffer>>,
 }
 
 impl Control {
     pub(crate) fn new(
-        channel: ControlEnd<Command, Event>,
-        collector: Collector<Arc<AudioBuffer>>,
+        channel: duplex::ControlEnd<Command, Event>,
+        collector: collector::ControlEnd<Arc<AudioBuffer>>,
     ) -> Self {
         Self { channel, collector }
     }
@@ -69,14 +69,14 @@ impl Control {
     pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
         let address = BufferAddress::of(audio.shared());
         self.channel
-            .send(VoiceCommand::RemoveAudio(address))
+            .try_send(VoiceCommand::RemoveAudio(address))
             .map_err(ControlError::from)
     }
 
     /// Stops every voice; a recording runs on.
     pub fn stop_all(&self) -> Result<(), ControlError> {
         self.channel
-            .send(VoiceCommand::RemoveAll)
+            .try_send(VoiceCommand::RemoveAll)
             .map_err(ControlError::from)
     }
 
