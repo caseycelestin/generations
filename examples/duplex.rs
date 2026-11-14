@@ -9,7 +9,9 @@
 use std::sync::Arc;
 
 use generations::collector::{self, Collector, Disposer};
-use generations::duplex::{self, Capacity, ControlEnd, Full, Handle, Id, Message, RealtimeEnd};
+use generations::duplex::{
+    self, Capacity, ControlEnd, Full, Handle, Id, Message, RealtimeEnd, ReserveError,
+};
 
 type Wave = Arc<Vec<f32>>;
 
@@ -37,7 +39,7 @@ struct Control {
 
 impl Control {
     /// Collects first, as every send does, so the collector never fills.
-    fn play(&mut self, hz: u32, wave: &Wave) -> Result<Voice, Full<()>> {
+    fn play(&self, hz: u32, wave: &Wave) -> Result<Voice, ReserveError> {
         self.collector.collect();
         // A voice is sent one event, its end.
         let permit = self.channel.try_reserve()?;
@@ -49,17 +51,17 @@ impl Control {
         })
     }
 
-    fn stop(&mut self, hz: u32) -> Result<(), Full<Command>> {
+    fn stop(&self, hz: u32) -> Result<(), Full<Command>> {
         self.collector.collect();
         self.channel.send(Command::StopPitch(hz))
     }
 
-    fn stop_all(&mut self) -> Result<(), Full<Command>> {
+    fn stop_all(&self) -> Result<(), Full<Command>> {
         self.collector.collect();
         self.channel.send(Command::StopAll)
     }
 
-    fn collect(&mut self) {
+    fn collect(&self) {
         self.collector.collect();
     }
 }
@@ -109,8 +111,10 @@ impl Renderer {
         match self.voices.iter_mut().find(|slot| slot.is_none()) {
             Some(slot) => *slot = Some((id, hz, wave)),
             None => {
-                self.disposer.dispose(wave);
-                self.channel.end(id, Event::Ended);
+                let disposed = self.disposer.dispose(wave);
+                debug_assert!(disposed.is_ok(), "sized for every voice");
+                let ended = self.channel.end(id, Event::Ended);
+                debug_assert!(ended.is_ok(), "a voice reserves its end");
             }
         }
     }
@@ -123,8 +127,10 @@ impl Renderer {
                 && test(*id, *hz)
                 && let Some((id, _, wave)) = slot.take()
             {
-                self.disposer.dispose(wave);
-                self.channel.end(id, Event::Ended);
+                let disposed = self.disposer.dispose(wave);
+                debug_assert!(disposed.is_ok(), "sized for every voice");
+                let ended = self.channel.end(id, Event::Ended);
+                debug_assert!(ended.is_ok(), "a voice reserves its end");
             }
         }
     }
@@ -139,7 +145,7 @@ fn main() {
     // Each wave travels with a handle, and every open collects first, so the
     // renderer never gives up more than there are handles.
     let (collector, disposer) = collector::new(VOICES);
-    let mut control = Control { channel, collector };
+    let control = Control { channel, collector };
     let mut renderer = Renderer {
         channel: realtime,
         disposer,

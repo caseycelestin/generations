@@ -9,18 +9,27 @@
 
 use std::marker::PhantomData;
 
+use thiserror::Error;
+
+/// A refused value, handed back: the ring was full, so it was sized too
+/// small or not collected in time.
+#[derive(Debug, Error)]
+#[error("the collector is full")]
+pub struct Full<T>(pub T);
+
 /// `capacity` is in values: the most the real-time side can hold at once.
 pub fn new<T>(capacity: usize) -> (Collector<T>, Disposer<T>) {
     todo!()
 }
 
-/// The control side's end.
-#[derive(Debug)]
+/// The control side's end. Clones share one collector, so any control-side
+/// caller can collect.
+#[derive(Debug, Clone)]
 pub struct Collector<T>(PhantomData<T>);
 
 impl<T> Collector<T> {
     /// Drops everything given up so far.
-    pub fn collect(&mut self) {
+    pub fn collect(&self) {
         todo!()
     }
 }
@@ -30,7 +39,7 @@ impl<T> Collector<T> {
 pub struct Disposer<T>(PhantomData<T>);
 
 impl<T> Disposer<T> {
-    pub fn dispose(&mut self, value: T) {
+    pub fn dispose(&mut self, value: T) -> Result<(), Full<T>> {
         todo!()
     }
 }

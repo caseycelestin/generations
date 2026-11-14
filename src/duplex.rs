@@ -13,6 +13,8 @@
 
 use std::marker::PhantomData;
 
+use thiserror::Error;
+
 /// Names a handle: commands carry their sender, events their recipient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Id(pub(crate) u64);
@@ -23,9 +25,21 @@ pub struct Message<T> {
     pub data: T,
 }
 
-/// A refused send, holding what was sent; `()` from a reservation.
-#[derive(Debug)]
+/// A refused send, holding what was sent.
+#[derive(Debug, Error)]
+#[error("no room for it on the ring")]
 pub struct Full<T>(pub T);
+
+/// Why a reservation was refused; nothing was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ReserveError {
+    /// The real-time side has not caught up with the commands already sent.
+    #[error("the command ring is full")]
+    CommandsFull,
+    /// Open handles hold every event slot.
+    #[error("open handles hold every event slot")]
+    EventsFull,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Capacity {
@@ -45,18 +59,18 @@ pub struct ControlEnd<C, E>(PhantomData<(C, E)>);
 
 impl<C, E> ControlEnd<C, E> {
     /// For a handle that is sent one event, its end.
-    pub fn try_reserve(&self) -> Result<Permit<'_, C, E>, Full<()>> {
+    pub fn try_reserve(&self) -> Result<Permit<'_, C, E>, ReserveError> {
         todo!()
     }
 
     /// For a handle that is sent `events` in its life, its end included.
-    pub fn try_reserve_many(&self, events: usize) -> Result<Permit<'_, C, E>, Full<()>> {
+    pub fn try_reserve_many(&self, events: usize) -> Result<Permit<'_, C, E>, ReserveError> {
         todo!()
     }
 
     /// Sent under the control end's own id, for commands about no single
     /// handle.
-    pub fn send(&self, command: C) -> Result<(), Full<C>> {
+    pub fn send(&self, command: impl Into<C>) -> Result<(), Full<C>> {
         todo!()
     }
 }
@@ -67,7 +81,7 @@ impl<C, E> ControlEnd<C, E> {
 pub struct Permit<'a, C, E>(PhantomData<&'a (C, E)>);
 
 impl<C, E> Permit<'_, C, E> {
-    pub fn open(self, command: C) -> Handle<C, E> {
+    pub fn open(self, command: impl Into<C>) -> Handle<C, E> {
         todo!()
     }
 }
@@ -76,7 +90,7 @@ impl<C, E> Permit<'_, C, E> {
 pub struct Handle<C, E>(PhantomData<(C, E)>);
 
 impl<C, E> Handle<C, E> {
-    pub fn send(&self, command: C) -> Result<(), Full<C>> {
+    pub fn send(&self, command: impl Into<C>) -> Result<(), Full<C>> {
         todo!()
     }
 
@@ -95,13 +109,15 @@ impl<C, E> RealtimeEnd<C, E> {
         todo!()
     }
 
-    pub fn send(&mut self, id: Id, event: E) {
+    /// Refused once the handle has been sent its reserved budget.
+    pub fn send(&mut self, id: Id, event: impl Into<E>) -> Result<(), Full<E>> {
         todo!()
     }
 
-    /// Sends the handle's last event; once it is read, the handle's room is
-    /// free again.
-    pub fn end(&mut self, id: Id, event: E) {
+    /// Sends the handle's last event. Its room is free again once the
+    /// control side has taken it off the ring, read or not, so a handle
+    /// kept unread does not hold room.
+    pub fn end(&mut self, id: Id, event: impl Into<E>) -> Result<(), Full<E>> {
         todo!()
     }
 }
