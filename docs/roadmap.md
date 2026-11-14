@@ -399,11 +399,11 @@ Built on `src/engine/`: voices, block mixing, the ring back (see the
 render side, above) and recording of the main out (see Recording).
 
 What is left:
-- **The bodies of `duplex` and `collector`**, stubbed with `todo!()`. Open:
+- **The body of `duplex`**, stubbed with `todo!()`. Open:
   - *Disconnection.* How either end learns the other is gone, whether
     the errors gain a `Disconnected`, and so whether they are
     `#[non_exhaustive]`.
-  - *Where a handle's budget is kept.* The real-time `send` refuses past
+  - *Where a handle's budget is kept.* The real-time `try_send` refuses past
     it, so that side must know each open handle's budget: carried in the
     opening message, in a table sized by `events`.
   - *When events leave the ring.* Room frees once an end is off it, so
@@ -416,12 +416,12 @@ What is left:
     and what arrives for it is dropped on the control side.
   - *The control end's lock.* One lock over the command ring, the event
     ring and the handle list, shared by every clone.
-  - *A refused `dispose` or `end` on the real-time side.* The engine
-    `debug_assert`s, and in release drops the value there; holding it
-    for the next period instead is open.
-  - *Dropping the `Collector` first.* What happens to values still given
-    up, and to the `Disposer`.
-  - *Zero capacities.* Panic, as `create` does, or not.
+  - *A refused `try_send` or `end` on the real-time side,* to the
+    channel or the collector. The engine `debug_assert`s, and in release
+    drops the value there; holding it for the next period instead is
+    open.
+  - *Zero capacities in `channel`.* Panic, as `create` and
+    `collector::new` do, or not.
 - **Recording inputs** (see Recording, above).
 - **Inputs and monitoring** (see above), with the capture thread.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on

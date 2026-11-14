@@ -9,7 +9,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::collector::Disposer;
+use crate::collector::Sender;
 use crate::config::Pcm;
 use crate::duplex::{Message, RealtimeEnd};
 use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
@@ -24,7 +24,7 @@ type Frame = [Pcm; Renderer::CHANNELS];
 #[derive(Debug)]
 pub struct Renderer {
     channel: RealtimeEnd<Command, Event>,
-    disposer: Disposer<Arc<AudioBuffer>>,
+    collector: Sender<Arc<AudioBuffer>>,
     voices: Voices,
     recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
@@ -43,12 +43,12 @@ impl Renderer {
     /// control side.
     pub(crate) fn new(
         channel: RealtimeEnd<Command, Event>,
-        disposer: Disposer<Arc<AudioBuffer>>,
+        collector: Sender<Arc<AudioBuffer>>,
         voices: NonZeroUsize,
     ) -> Self {
         Self {
             channel,
-            disposer,
+            collector,
             voices: Voices::new(voices),
             recording: None,
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
@@ -81,22 +81,22 @@ impl Renderer {
             match command {
                 Command::Voice(VoiceCommand::Add(audio)) => {
                     if let Some(replaced) = self.voices.add(Voice::new(id, audio)) {
-                        replaced.end(VoiceEnd::Cut, &mut self.channel, &mut self.disposer);
+                        replaced.end(VoiceEnd::Cut, &mut self.channel, &mut self.collector);
                     }
                 }
                 Command::Voice(VoiceCommand::Remove) => {
                     if let Some(stopped) = self.voices.remove(id) {
-                        stopped.end(VoiceEnd::Stopped, &mut self.channel, &mut self.disposer);
+                        stopped.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
                     }
                 }
                 Command::Voice(VoiceCommand::RemoveAudio(audio)) => {
                     for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
-                        voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.disposer);
+                        voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
                     }
                 }
                 Command::Voice(VoiceCommand::RemoveAll) => {
                     for voice in self.voices.drain() {
-                        voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.disposer);
+                        voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
                     }
                 }
                 Command::Recording(RecordingCommand::Start(audio)) => {
@@ -117,7 +117,7 @@ impl Renderer {
 
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
-            voice.end(VoiceEnd::Finished, &mut self.channel, &mut self.disposer);
+            voice.end(VoiceEnd::Finished, &mut self.channel, &mut self.collector);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.channel);
@@ -146,9 +146,9 @@ mod tests {
             commands: 16,
             events: 32,
         });
-        let (_collector, disposer) = crate::collector::new(voices + 16);
+        let (_collector, sender) = crate::collector::new(voices + 16);
         let voices = NonZeroUsize::new(voices).unwrap();
-        (control, Renderer::new(realtime, disposer, voices))
+        (control, Renderer::new(realtime, sender, voices))
     }
 
     /// Opens a mono voice of `samples`, as `Control::play` does.
@@ -257,7 +257,7 @@ mod tests {
         let mut voice = play(&control, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
-        voice.send(VoiceCommand::Remove).unwrap();
+        voice.try_send(VoiceCommand::Remove).unwrap();
         renderer.render(&mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert_eq!(voice_end(&mut voice), Some(VoiceEnd::Stopped));
@@ -270,7 +270,7 @@ mod tests {
         let mut second = play(&control, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
-        control.send(VoiceCommand::RemoveAll).unwrap();
+        control.try_send(VoiceCommand::RemoveAll).unwrap();
         renderer.render(&mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
         let stopped = Some(VoiceEnd::Stopped);
@@ -288,7 +288,9 @@ mod tests {
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
         let address = BufferAddress::of(&removed);
-        control.send(VoiceCommand::RemoveAudio(address)).unwrap();
+        control
+            .try_send(VoiceCommand::RemoveAudio(address))
+            .unwrap();
         renderer.render(&mut out);
         assert_eq!(out, vec![0.25; 4 * 2]);
         let stopped = Some(VoiceEnd::Stopped);
@@ -318,7 +320,7 @@ mod tests {
             [RecordingEvent::Started]
         ));
 
-        recording.send(RecordingCommand::Stop).unwrap();
+        recording.try_send(RecordingCommand::Stop).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
         let [RecordingEvent::Ended(RecordingEnd::Stopped, audio)] = &reported(&mut recording)[..]
@@ -363,7 +365,7 @@ mod tests {
     fn a_stop_from_another_sender_does_nothing() {
         let (control, mut renderer) = renderer(1);
         let mut recording = start(&control, 64);
-        control.send(RecordingCommand::Stop).unwrap();
+        control.try_send(RecordingCommand::Stop).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
         assert!(matches!(
             reported(&mut recording)[..],

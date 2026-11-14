@@ -80,7 +80,7 @@ impl<C, E> ControlEnd<C, E> {
 
     /// Sent under the control end's own id, for commands about no single
     /// handle.
-    pub fn send(&self, command: impl Into<C>) -> Result<(), Full<C>> {
+    pub fn try_send(&self, command: impl Into<C>) -> Result<(), Full<C>> {
         todo!()
     }
 }
@@ -100,7 +100,7 @@ impl<C, E> Permit<'_, C, E> {
 pub struct Handle<C, E>(PhantomData<(C, E)>);
 
 impl<C, E> Handle<C, E> {
-    pub fn send(&self, command: impl Into<C>) -> Result<(), Full<C>> {
+    pub fn try_send(&self, command: impl Into<C>) -> Result<(), Full<C>> {
         todo!()
     }
 
@@ -120,7 +120,7 @@ impl<C, E> RealtimeEnd<C, E> {
     }
 
     /// Refused once the handle has been sent its reserved budget.
-    pub fn send(&mut self, id: Id, event: impl Into<E>) -> Result<(), Full<E>> {
+    pub fn try_send(&mut self, id: Id, event: impl Into<E>) -> Result<(), Full<E>> {
         todo!()
     }
 
