@@ -81,15 +81,6 @@ impl Recording {
     }
 }
 
-impl Default for RecordingEvent {
-    fn default() -> Self {
-        Self {
-            state: RecordingState::Pending,
-            spec: None,
-        }
-    }
-}
-
 /// Keeps the last event whole, so its spec waits here for `take`. The event
 /// that hands the spec back is the last.
 impl Inbox for RecordingEvent {

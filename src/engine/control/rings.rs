@@ -198,7 +198,7 @@ mod tests {
             id: HandleId(0),
             data: VoiceEvent {
                 state: VoiceState::Ended(VoiceEnd::Finished),
-                spec,
+                spec: Some(spec),
             }
             .into(),
         };

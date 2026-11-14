@@ -66,7 +66,7 @@ impl Voice {
             id: self.id,
             data: VoiceEvent {
                 state: VoiceState::Ended(why),
-                spec: self.spec,
+                spec: Some(self.spec),
             }
             .into(),
         });
