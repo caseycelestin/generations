@@ -11,7 +11,7 @@ pub(crate) enum RecordingCommand {
     Stop,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct RecordingEvent {
     pub(crate) state: RecordingState,
     /// Back only when the renderer lets go: on `Refused` and `Ended`.
@@ -24,10 +24,9 @@ pub(crate) struct RecordingSpec {
 }
 
 /// What the audio thread last said about a recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingState {
     /// Sent; the renderer has not started it yet.
-    #[default]
     Pending,
     Recording,
     /// Never started: the recorder was busy.
