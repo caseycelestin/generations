@@ -6,8 +6,12 @@ mod voices;
 
 use std::num::NonZeroUsize;
 
+use std::sync::Arc;
+
 use rtrb::{Consumer, Producer};
 
+use crate::audio::AudioBuffer;
+use crate::collector::Disposer;
 use crate::config::Pcm;
 use crate::duplex::Message;
 use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
@@ -23,6 +27,7 @@ type Frame = [Pcm; Renderer::CHANNELS];
 pub struct Renderer {
     from_control: Consumer<Message<Command>>,
     to_control: Producer<Message<Event>>,
+    disposer: Disposer<Arc<AudioBuffer>>,
     voices: Voices,
     recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
@@ -42,11 +47,13 @@ impl Renderer {
     pub(crate) fn new(
         from_control: Consumer<Message<Command>>,
         to_control: Producer<Message<Event>>,
+        disposer: Disposer<Arc<AudioBuffer>>,
         voices: NonZeroUsize,
     ) -> Self {
         Self {
             from_control,
             to_control,
+            disposer,
             voices: Voices::new(voices),
             recording: None,
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
@@ -79,22 +86,22 @@ impl Renderer {
             match command {
                 Command::Voice(VoiceCommand::Add(spec)) => {
                     if let Some(replaced) = self.voices.add(Voice::new(id, spec)) {
-                        replaced.end(VoiceEnd::Cut, &mut self.to_control);
+                        replaced.end(VoiceEnd::Cut, &mut self.to_control, &mut self.disposer);
                     }
                 }
                 Command::Voice(VoiceCommand::Remove) => {
                     if let Some(stopped) = self.voices.remove(id) {
-                        stopped.end(VoiceEnd::Stopped, &mut self.to_control);
+                        stopped.end(VoiceEnd::Stopped, &mut self.to_control, &mut self.disposer);
                     }
                 }
                 Command::Voice(VoiceCommand::RemoveAudio(audio)) => {
                     for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
-                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                        voice.end(VoiceEnd::Stopped, &mut self.to_control, &mut self.disposer);
                     }
                 }
                 Command::Voice(VoiceCommand::RemoveAll) => {
                     for voice in self.voices.drain() {
-                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                        voice.end(VoiceEnd::Stopped, &mut self.to_control, &mut self.disposer);
                     }
                 }
                 Command::Recording(RecordingCommand::Start(spec)) => {
@@ -115,7 +122,7 @@ impl Renderer {
 
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
-            voice.end(VoiceEnd::Finished, &mut self.to_control);
+            voice.end(VoiceEnd::Finished, &mut self.to_control, &mut self.disposer);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.to_control);
@@ -148,8 +155,9 @@ mod tests {
     ) {
         let (to_renderer, from_control) = RingBuffer::new(16);
         let (to_control, from_renderer) = RingBuffer::new(32);
+        let (_collector, disposer) = crate::collector::new(voices + 16);
         let voices = NonZeroUsize::new(voices).unwrap();
-        let renderer = Renderer::new(from_control, to_control, voices);
+        let renderer = Renderer::new(from_control, to_control, disposer, voices);
         (to_renderer, from_renderer, renderer)
     }
 
@@ -176,13 +184,11 @@ mod tests {
             .unwrap();
     }
 
-    /// Which voices ended, and how, in order. Each one's event must hand
-    /// its spec back.
+    /// Which voices ended, and how, in order.
     fn ended(from_renderer: &mut Consumer<Message<Event>>) -> Vec<(Id, VoiceState)> {
         let mut ended = Vec::new();
         while let Ok(back) = from_renderer.pop() {
             if let Event::Voice(event) = back.data {
-                assert!(event.spec.is_some(), "the spec is handed back");
                 ended.push((back.id, event.state));
             }
         }

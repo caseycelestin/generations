@@ -3,10 +3,13 @@
 
 use std::mem;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use rtrb::Producer;
 
 use super::{Frame, Renderer};
+use crate::audio::AudioBuffer;
+use crate::collector::Disposer;
 use crate::duplex::{Id, Message};
 use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceSpec, VoiceState};
 use crate::engine::protocol::{BufferAddress, Event};
@@ -60,13 +63,20 @@ impl Voice {
         self.position == self.spec.audio.frames()
     }
 
-    /// The one way a voice leaves.
-    pub(crate) fn end(self, why: VoiceEnd, to_control: &mut Producer<Message<Event>>) {
+    /// The one way a voice leaves. Its audio goes to the collector before
+    /// its end goes out, so a voice reported ended has let go of it.
+    pub(crate) fn end(
+        self,
+        why: VoiceEnd,
+        to_control: &mut Producer<Message<Event>>,
+        disposer: &mut Disposer<Arc<AudioBuffer>>,
+    ) {
+        let disposed = disposer.dispose(self.spec.audio);
+        debug_assert!(disposed.is_ok(), "the collector is sized for every voice");
         let pushed = to_control.push(Message {
             id: self.id,
             data: VoiceEvent {
                 state: VoiceState::Ended(why),
-                spec: Some(self.spec),
             }
             .into(),
         });

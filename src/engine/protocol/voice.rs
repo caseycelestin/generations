@@ -19,12 +19,9 @@ pub(crate) enum VoiceCommand {
 #[derive(Debug, Default)]
 pub(crate) struct VoiceEvent {
     pub(crate) state: VoiceState,
-    /// Back only when the renderer lets go: on `Ended`.
-    pub(crate) spec: Option<VoiceSpec>,
 }
 
-/// Fixed for the voice's life; the renderer keeps it whole beside its
-/// playing state, to hand back.
+/// Fixed for the voice's life.
 #[derive(Debug)]
 pub(crate) struct VoiceSpec {
     pub(crate) audio: Arc<AudioBuffer>,

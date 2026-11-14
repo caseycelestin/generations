@@ -35,15 +35,13 @@ impl Voice {
     }
 }
 
-/// Keeps only the state: nothing takes a voice's audio back, so its spec
-/// is dropped here, on the control side. The event that hands it back is
-/// the last.
+/// Keeps only the state. Its end is the last event.
 impl Inbox for VoiceEvent {
     fn deliver(&mut self, event: Event) -> bool {
         let Event::Voice(event) = event else {
             unreachable!("an id belongs to one feature");
         };
         self.state = event.state;
-        event.spec.is_some()
+        matches!(event.state, VoiceState::Ended(_))
     }
 }

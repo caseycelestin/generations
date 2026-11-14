@@ -24,9 +24,10 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (to_renderer, from_control) = RingBuffer::new(command_capacity);
     let (to_control, from_renderer) = RingBuffer::new(return_capacity(command_capacity, voices));
+    let (collector, disposer) = crate::collector::new(collector_capacity(command_capacity, voices));
     (
-        Control::new(to_renderer, from_renderer),
-        Renderer::new(from_control, to_control, voices),
+        Control::new(to_renderer, from_renderer, collector),
+        Renderer::new(from_control, to_control, disposer, voices),
     )
 }
 
@@ -35,6 +36,13 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
 /// the one recording the renderer holds, plus one return per queued command.
 fn return_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
     voices.get() + 1 + command_capacity
+}
+
+/// Only voices give audio up. Every play collects first, so between
+/// collects the renderer gives up at most the voices it holds and those
+/// arriving in queued commands.
+fn collector_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
+    voices.get() + command_capacity
 }
 
 #[cfg(test)]

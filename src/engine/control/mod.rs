@@ -8,10 +8,13 @@ mod voice;
 pub use recording::{RecordError, Recording};
 pub use voice::Voice;
 
+use std::sync::Arc;
+
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
-use crate::audio::Audio;
+use crate::audio::{Audio, AudioBuffer};
+use crate::collector::Collector;
 use crate::duplex::{Id, Message};
 use crate::engine::protocol::voice::VoiceCommand;
 use crate::engine::protocol::{BufferAddress, Command, Event};
@@ -29,6 +32,8 @@ pub enum ControlError {
 #[derive(Debug, Clone)]
 pub struct Control {
     rings: SharedRings,
+    /// Collected before every play and record, which its size assumes.
+    collector: Collector<Arc<AudioBuffer>>,
     id: Id,
 }
 
@@ -36,13 +41,19 @@ impl Control {
     pub(crate) fn new(
         to_renderer: Producer<Message<Command>>,
         from_renderer: Consumer<Message<Event>>,
+        collector: Collector<Arc<AudioBuffer>>,
     ) -> Self {
         let rings = SharedRings::new(to_renderer, from_renderer);
         let id = rings.next_id();
-        Self { rings, id }
+        Self {
+            rings,
+            collector,
+            id,
+        }
     }
 
     pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
+        self.collector.collect();
         Voice::play(self.rings.clone(), audio)
     }
 
@@ -62,13 +73,14 @@ impl Control {
     /// recording runs, as its state shows, and at once while a voice holds
     /// `audio`.
     pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
-        Recording::record(self.rings.clone(), audio)
+        Recording::record(self.rings.clone(), &self.collector, audio)
     }
 
-    /// Frees what the renderer has handed back, returning it to
-    /// `AudioMemory`. Every send does this first; call it when the app goes
-    /// quiet, or before a load that needs the memory.
+    /// Frees what the renderer has let go of, returning it to
+    /// `AudioMemory`. Every play and record does this first; call it when
+    /// the app goes quiet, or before a load that needs the memory.
     pub fn collect(&self) {
         self.rings.collect();
+        self.collector.collect();
     }
 }

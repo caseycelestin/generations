@@ -7,7 +7,8 @@ use thiserror::Error;
 use super::ControlError;
 use super::handle::{Handle, Inbox};
 use super::rings::SharedRings;
-use crate::audio::Audio;
+use crate::audio::{Audio, AudioBuffer};
+use crate::collector::Collector;
 use crate::engine::protocol::Event;
 use crate::engine::protocol::recording::{
     RecordingCommand, RecordingEvent, RecordingSpec, RecordingState,
@@ -42,14 +43,18 @@ pub struct Recording {
 }
 
 impl Recording {
-    pub(crate) fn record(rings: SharedRings, audio: Audio) -> Result<Self, RecordError> {
+    pub(crate) fn record(
+        rings: SharedRings,
+        collector: &Collector<Arc<AudioBuffer>>,
+        audio: Audio,
+    ) -> Result<Self, RecordError> {
         if audio.layout() != ChannelLayout::Stereo {
             return Err(RecordError::NotStereo(audio));
         }
         // Collected first, so ended voices have let go. The caller gave up
         // theirs, so nothing can clone it: the count can only fall before
         // the send.
-        rings.collect();
+        collector.collect();
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }

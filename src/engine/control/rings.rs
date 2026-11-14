@@ -158,9 +158,10 @@ mod tests {
     use rtrb::RingBuffer;
 
     use super::*;
-    use crate::engine::protocol::voice::{
-        VoiceCommand, VoiceEnd, VoiceEvent, VoiceSpec, VoiceState,
+    use crate::engine::protocol::recording::{
+        RecordingEnd, RecordingEvent, RecordingSpec, RecordingState,
     };
+    use crate::engine::protocol::voice::VoiceCommand;
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -186,13 +187,13 @@ mod tests {
         let (mut to_control, from_renderer) = RingBuffer::new(1);
         let rings = SharedRings::new(to_renderer, from_renderer);
         let audio = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        let spec = VoiceSpec {
+        let spec = RecordingSpec {
             audio: Arc::clone(&audio),
         };
         let returned = Message {
             id: Id(0),
-            data: VoiceEvent {
-                state: VoiceState::Ended(VoiceEnd::Finished),
+            data: RecordingEvent {
+                state: RecordingState::Ended(RecordingEnd::Stopped),
                 spec: Some(spec),
             }
             .into(),
