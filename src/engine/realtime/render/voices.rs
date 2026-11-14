@@ -9,23 +9,23 @@ use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
 use crate::collector::Disposer;
 use crate::duplex::{Id, RealtimeEnd};
-use crate::engine::protocol::voice::{VoiceEnd, VoiceEvent, VoiceSpec, VoiceState};
+use crate::engine::protocol::voice::VoiceEnd;
 use crate::engine::protocol::{BufferAddress, Command, Event};
 use crate::layout::ChannelLayout;
 
 #[derive(Debug)]
 pub(crate) struct Voice {
     id: Id,
-    spec: VoiceSpec,
+    audio: Arc<AudioBuffer>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(id: Id, spec: VoiceSpec) -> Self {
+    pub(crate) fn new(id: Id, audio: Arc<AudioBuffer>) -> Self {
         Self {
             id,
-            spec,
+            audio,
             position: 0,
         }
     }
@@ -33,7 +33,7 @@ impl Voice {
     /// Silence once the audio runs out. Mono goes to both sides at full
     /// level.
     pub(crate) fn render(&mut self, scratch: &mut [Frame]) {
-        let audio = &self.spec.audio;
+        let audio = &self.audio;
         let end = (self.position + scratch.len()).min(audio.frames());
         let samples = audio.frames_in(self.position..end);
         let (sound, silence) = scratch.split_at_mut(end - self.position);
@@ -53,12 +53,12 @@ impl Voice {
     }
 
     pub(crate) fn plays(&self, audio: BufferAddress) -> bool {
-        BufferAddress::of(&self.spec.audio) == audio
+        BufferAddress::of(&self.audio) == audio
     }
 
     /// Its last frame has been rendered.
     pub(crate) fn finished(&self) -> bool {
-        self.position == self.spec.audio.frames()
+        self.position == self.audio.frames()
     }
 
     /// The one way a voice leaves. Its audio goes to the collector before
@@ -69,12 +69,9 @@ impl Voice {
         channel: &mut RealtimeEnd<Command, Event>,
         disposer: &mut Disposer<Arc<AudioBuffer>>,
     ) {
-        let disposed = disposer.dispose(self.spec.audio);
+        let disposed = disposer.dispose(self.audio);
         debug_assert!(disposed.is_ok(), "the collector is sized for every voice");
-        let event = VoiceEvent {
-            state: VoiceState::Ended(why),
-        };
-        let ended = channel.end(self.id, event);
+        let ended = channel.end(self.id, why);
         debug_assert!(ended.is_ok(), "a voice reserves its end");
     }
 }
@@ -169,7 +166,7 @@ mod tests {
     /// For tests that tell voices apart by their sender.
     fn voice_from(id: Id, layout: ChannelLayout, samples: &[f32]) -> Voice {
         let audio = Arc::new(buffer(layout, samples));
-        Voice::new(id, VoiceSpec { audio })
+        Voice::new(id, audio)
     }
 
     fn voices(count: usize) -> Voices {
@@ -213,7 +210,7 @@ mod tests {
     fn a_voice_plays_only_its_own_audio() {
         let voice = voice(ChannelLayout::Mono, &[0.0]);
         let other = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        assert!(voice.plays(BufferAddress::of(&voice.spec.audio)));
+        assert!(voice.plays(BufferAddress::of(&voice.audio)));
         assert!(!voice.plays(BufferAddress::of(&other)));
     }
 

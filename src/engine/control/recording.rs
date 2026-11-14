@@ -8,7 +8,7 @@ use super::ControlError;
 use crate::audio::{Audio, AudioBuffer};
 use crate::collector::Collector;
 use crate::duplex::{ControlEnd, Handle, ReserveError};
-use crate::engine::protocol::recording::{RecordingCommand, RecordingSpec, RecordingState};
+use crate::engine::protocol::recording::{RecordingCommand, RecordingEvent, RecordingState};
 use crate::engine::protocol::{Command, Event};
 use crate::layout::ChannelLayout;
 
@@ -53,7 +53,7 @@ pub struct Recording {
     handle: Handle<Command, Event>,
     state: RecordingState,
     /// The audio once it comes back, until taken.
-    spec: Option<RecordingSpec>,
+    audio: Option<Arc<AudioBuffer>>,
 }
 
 impl Recording {
@@ -81,11 +81,11 @@ impl Recording {
             Ok(permit) => permit,
             Err(error) => return Err(RecordError::refused(error, Audio::from_shared(audio))),
         };
-        let handle = permit.open(RecordingCommand::Start(RecordingSpec { audio }));
+        let handle = permit.open(RecordingCommand::Start(audio));
         Ok(Self {
             handle,
             state: RecordingState::Pending,
-            spec: None,
+            audio: None,
         })
     }
 
@@ -105,8 +105,7 @@ impl Recording {
     /// has been taken.
     pub fn take(&mut self) -> Option<Audio> {
         self.receive();
-        let spec = self.spec.take()?;
-        Some(Audio::from_shared(spec.audio))
+        self.audio.take().map(Audio::from_shared)
     }
 
     fn receive(&mut self) {
@@ -114,9 +113,16 @@ impl Recording {
             let Event::Recording(event) = event else {
                 unreachable!("a handle hears only its own feature's events");
             };
-            self.state = event.state;
-            if let Some(spec) = event.spec {
-                self.spec = Some(spec);
+            match event {
+                RecordingEvent::Started => self.state = RecordingState::Recording,
+                RecordingEvent::Refused(audio) => {
+                    self.state = RecordingState::Refused;
+                    self.audio = Some(audio);
+                }
+                RecordingEvent::Ended(why, audio) => {
+                    self.state = RecordingState::Ended(why);
+                    self.audio = Some(audio);
+                }
             }
         }
     }

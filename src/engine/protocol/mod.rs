@@ -14,7 +14,7 @@ pub(crate) mod recording;
 pub(crate) mod voice;
 
 use recording::{RecordingCommand, RecordingEvent};
-use voice::{VoiceCommand, VoiceEvent};
+use voice::{VoiceCommand, VoiceEnd};
 
 #[derive(Debug)]
 pub(crate) enum Command {
@@ -38,13 +38,13 @@ impl From<RecordingCommand> for Command {
 /// audio back, to be taken; what nobody takes back goes to the collector.
 #[derive(Debug)]
 pub(crate) enum Event {
-    Voice(VoiceEvent),
+    Voice(VoiceEnd),
     Recording(RecordingEvent),
 }
 
-impl From<VoiceEvent> for Event {
-    fn from(event: VoiceEvent) -> Self {
-        Self::Voice(event)
+impl From<VoiceEnd> for Event {
+    fn from(end: VoiceEnd) -> Self {
+        Self::Voice(end)
     }
 }
 
