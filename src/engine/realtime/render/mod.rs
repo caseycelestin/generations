@@ -9,9 +9,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::collector::Sender;
+use crate::collector;
 use crate::config::Pcm;
-use crate::duplex::{Message, RealtimeEnd};
+use crate::duplex::{self, Message};
 use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
 use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
 use crate::engine::protocol::{Command, Event};
@@ -23,8 +23,8 @@ type Frame = [Pcm; Renderer::CHANNELS];
 
 #[derive(Debug)]
 pub struct Renderer {
-    channel: RealtimeEnd<Command, Event>,
-    collector: Sender<Arc<AudioBuffer>>,
+    channel: duplex::RealtimeEnd<Command, Event>,
+    collector: collector::RealtimeEnd<Arc<AudioBuffer>>,
     voices: Voices,
     recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
@@ -42,8 +42,8 @@ impl Renderer {
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(
-        channel: RealtimeEnd<Command, Event>,
-        collector: Sender<Arc<AudioBuffer>>,
+        channel: duplex::RealtimeEnd<Command, Event>,
+        collector: collector::RealtimeEnd<Arc<AudioBuffer>>,
         voices: NonZeroUsize,
     ) -> Self {
         Self {
@@ -146,7 +146,7 @@ mod tests {
             commands: 16,
             events: 32,
         });
-        let (_collector, sender) = crate::collector::new(voices + 16);
+        let (_collector, sender) = crate::collector::channel(voices + 16);
         let voices = NonZeroUsize::new(voices).unwrap();
         (control, Renderer::new(realtime, sender, voices))
     }

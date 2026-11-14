@@ -23,28 +23,28 @@ pub struct Full<T>(pub T);
 ///
 /// # Panics
 /// If `capacity` is zero: a collector with no room refuses every value.
-pub fn new<T>(capacity: usize) -> (Collector<T>, Sender<T>) {
+pub fn channel<T>(capacity: usize) -> (ControlEnd<T>, RealtimeEnd<T>) {
     assert!(capacity > 0, "capacity must not be zero");
     let (producer, consumer) = RingBuffer::new(capacity);
-    let collector = Collector(Arc::new(Mutex::new(CollectorConsumer(consumer))));
-    (collector, Sender(producer))
+    let collector = ControlEnd(Arc::new(Mutex::new(ControlConsumer(consumer))));
+    (collector, RealtimeEnd(producer))
 }
 
-/// The control side's end. The lock is for its clones; the real-time side
-/// never takes it. The last clone collects as it drops; what is sent after
-/// that is freed when the [`Sender`] drops.
+/// The lock is for its clones; the real-time side never takes it. The last
+/// clone collects as it drops; what is sent after that is freed when the
+/// [`RealtimeEnd`] drops.
 #[derive(Debug)]
-pub struct Collector<T>(Arc<Mutex<CollectorConsumer<T>>>);
+pub struct ControlEnd<T>(Arc<Mutex<ControlConsumer<T>>>);
 
 /// Clones share one collector, so any control-side caller can collect.
 /// Written out, as a derive would demand `T` be `Clone`.
-impl<T> Clone for Collector<T> {
+impl<T> Clone for ControlEnd<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-impl<T> Collector<T> {
+impl<T> ControlEnd<T> {
     /// Drops everything given up so far.
     pub fn collect(&self) {
         // A panic while locked leaves the ring whole, so a poisoned lock is
@@ -54,27 +54,26 @@ impl<T> Collector<T> {
     }
 }
 
-/// What the collectors share, so dropping the last of them can collect.
+/// What the control ends share, so dropping the last of them can collect.
 #[derive(Debug)]
-struct CollectorConsumer<T>(Consumer<T>);
+struct ControlConsumer<T>(Consumer<T>);
 
-impl<T> CollectorConsumer<T> {
+impl<T> ControlConsumer<T> {
     fn drain(&mut self) {
         while self.0.pop().is_ok() {}
     }
 }
 
-impl<T> Drop for CollectorConsumer<T> {
+impl<T> Drop for ControlConsumer<T> {
     fn drop(&mut self) {
         self.drain();
     }
 }
 
-/// The real-time side's end.
 #[derive(Debug)]
-pub struct Sender<T>(Producer<T>);
+pub struct RealtimeEnd<T>(Producer<T>);
 
-impl<T> Sender<T> {
+impl<T> RealtimeEnd<T> {
     /// Queues `value` for the collector to drop.
     pub fn try_send(&mut self, value: T) -> Result<(), Full<T>> {
         self.0
@@ -91,7 +90,7 @@ mod tests {
 
     #[test]
     fn collect_drops_what_was_sent() {
-        let (collector, mut sender) = new(1);
+        let (collector, mut sender) = channel(1);
         let value = Arc::new(0);
         sender.try_send(Arc::clone(&value)).unwrap();
         assert_eq!(Arc::strong_count(&value), 2);
@@ -103,7 +102,7 @@ mod tests {
 
     #[test]
     fn a_clone_collects_the_same_ring() {
-        let (collector, mut sender) = new(1);
+        let (collector, mut sender) = channel(1);
         let value = Arc::new(0);
         sender.try_send(Arc::clone(&value)).unwrap();
 
@@ -114,14 +113,14 @@ mod tests {
 
     #[test]
     fn a_full_ring_hands_the_value_back() {
-        let (_collector, mut sender) = new(1);
+        let (_collector, mut sender) = channel(1);
         sender.try_send(1).unwrap();
         assert!(matches!(sender.try_send(2), Err(Full(2))));
     }
 
     #[test]
     fn dropping_the_last_collector_drops_what_waits() {
-        let (collector, mut sender) = new(1);
+        let (collector, mut sender) = channel(1);
         let clone = collector.clone();
         let value = Arc::new(0);
         sender.try_send(Arc::clone(&value)).unwrap();
@@ -134,8 +133,8 @@ mod tests {
     }
 
     #[test]
-    fn what_is_sent_after_the_collector_is_gone_drops_with_the_sender() {
-        let (collector, mut sender) = new(1);
+    fn what_is_sent_after_the_control_end_is_gone_drops_with_the_realtime_end() {
+        let (collector, mut sender) = channel(1);
         drop(collector);
         let value = Arc::new(0);
         sender.try_send(Arc::clone(&value)).unwrap();
@@ -149,6 +148,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "capacity must not be zero")]
     fn a_zero_capacity_panics() {
-        let _ = new::<()>(0);
+        let _ = channel::<()>(0);
     }
 }

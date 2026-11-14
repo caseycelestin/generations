@@ -8,10 +8,8 @@
 
 use std::sync::Arc;
 
-use generations::collector::{self, Collector, Sender};
-use generations::duplex::{
-    self, Capacity, ControlEnd, Full, Handle, Id, Message, RealtimeEnd, ReserveError,
-};
+use generations::collector;
+use generations::duplex::{self, Capacity, Full, Handle, Id, Message, ReserveError};
 
 type Wave = Arc<Vec<f32>>;
 
@@ -33,8 +31,8 @@ enum Event {
 
 /// What an engine's control type is: a wrapper around the control end.
 struct Control {
-    channel: ControlEnd<Command, Event>,
-    collector: Collector<Wave>,
+    channel: duplex::ControlEnd<Command, Event>,
+    collector: collector::ControlEnd<Wave>,
 }
 
 impl Control {
@@ -89,8 +87,8 @@ impl Voice {
 
 /// The real-time side: each period it acts on what is queued and reports.
 struct Renderer {
-    channel: RealtimeEnd<Command, Event>,
-    collector: Sender<Wave>,
+    channel: duplex::RealtimeEnd<Command, Event>,
+    collector: collector::RealtimeEnd<Wave>,
     voices: [Option<(Id, u32, Wave)>; VOICES],
 }
 
@@ -144,7 +142,7 @@ fn main() {
     });
     // Each wave travels with a handle, and every open collects first, so the
     // renderer never gives up more than there are handles.
-    let (collector, sender) = collector::new(VOICES);
+    let (collector, sender) = collector::channel(VOICES);
     let control = Control { channel, collector };
     let mut renderer = Renderer {
         channel: realtime,

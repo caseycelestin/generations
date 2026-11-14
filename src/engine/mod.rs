@@ -26,10 +26,11 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
         commands: command_capacity,
         events: event_capacity(command_capacity, voices),
     });
-    let (collector, sender) = crate::collector::new(collector_capacity(command_capacity, voices));
+    let (collector_control, collector_realtime) =
+        crate::collector::channel(collector_capacity(command_capacity, voices));
     (
-        Control::new(control, collector),
-        Renderer::new(realtime, sender, voices),
+        Control::new(control, collector_control),
+        Renderer::new(realtime, collector_realtime, voices),
     )
 }
 

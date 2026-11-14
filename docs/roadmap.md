@@ -421,7 +421,7 @@ What is left:
     drops the value there; holding it for the next period instead is
     open.
   - *Zero capacities in `channel`.* Panic, as `create` and
-    `collector::new` do, or not.
+    `collector::channel` do, or not.
 - **Recording inputs** (see Recording, above).
 - **Inputs and monitoring** (see above), with the capture thread.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on

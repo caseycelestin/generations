@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
-use crate::collector::Sender;
-use crate::duplex::{Id, RealtimeEnd};
+use crate::collector;
+use crate::duplex::{self, Id};
 use crate::engine::protocol::voice::VoiceEnd;
 use crate::engine::protocol::{BufferAddress, Command, Event};
 use crate::layout::ChannelLayout;
@@ -66,8 +66,8 @@ impl Voice {
     pub(crate) fn end(
         self,
         why: VoiceEnd,
-        channel: &mut RealtimeEnd<Command, Event>,
-        collector: &mut Sender<Arc<AudioBuffer>>,
+        channel: &mut duplex::RealtimeEnd<Command, Event>,
+        collector: &mut collector::RealtimeEnd<Arc<AudioBuffer>>,
     ) {
         let sent = collector.try_send(self.audio);
         debug_assert!(sent.is_ok(), "the collector is sized for every voice");

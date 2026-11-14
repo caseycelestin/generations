@@ -6,8 +6,8 @@ use thiserror::Error;
 
 use super::ControlError;
 use crate::audio::{Audio, AudioBuffer};
-use crate::collector::Collector;
-use crate::duplex::{ControlEnd, Handle, ReserveError};
+use crate::collector;
+use crate::duplex::{self, Handle, ReserveError};
 use crate::engine::protocol::recording::{RecordingCommand, RecordingEvent, RecordingState};
 use crate::engine::protocol::{Command, Event};
 use crate::layout::ChannelLayout;
@@ -58,8 +58,8 @@ pub struct Recording {
 
 impl Recording {
     pub(crate) fn record(
-        channel: &ControlEnd<Command, Event>,
-        collector: &Collector<Arc<AudioBuffer>>,
+        channel: &duplex::ControlEnd<Command, Event>,
+        collector: &collector::ControlEnd<Arc<AudioBuffer>>,
         audio: Audio,
     ) -> Result<Self, RecordError> {
         if audio.layout() != ChannelLayout::Stereo {
