@@ -2,29 +2,9 @@
 //!
 //! Commands are operations on what the renderer holds (add, remove), not
 //! user intents; handles translate one into the other. Only plain data
-//! crosses: audio, ids, values, and reports the renderer fills with one
-//! atomic store. Each feature has its own file and its own variant in
-//! [`Command`] and [`Event`], since each ring carries one type.
-
-/// An id type minted by `next()` from its own process-wide counter, like
-/// `ThreadId`: unique and ordered across every engine, never reused. A
-/// macro because a `static` in a generic function is shared by every type;
-/// defined above the feature modules so they can use it.
-macro_rules! id {
-    ($(#[$doc:meta])* $name:ident) => {
-        $(#[$doc])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub(crate) struct $name(u64);
-
-        impl $name {
-            pub(crate) fn next() -> Self {
-                static NEXT: ::std::sync::atomic::AtomicU64 =
-                    ::std::sync::atomic::AtomicU64::new(0);
-                Self(NEXT.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed))
-            }
-        }
-    };
-}
+//! crosses: audio, ids and values. Each feature has its own file and its
+//! own variant in [`Command`] and [`Event`], since each ring carries one
+//! type.
 
 use std::sync::Arc;
 
@@ -84,8 +64,9 @@ impl From<RecordingEvent> for Event {
 
 /// Names one handle's thing (a voice, a take) on both sides: what the
 /// renderer sends back about it carries this id. Minted in order by the
-/// rings, so unique within one engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// rings, so unique within one engine, and lower is older, which is how the
+/// renderer finds the voice to cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct HandleId(pub(crate) u64);
 
 /// Names audio to the renderer without sending it, so nothing comes back
@@ -98,17 +79,5 @@ pub(crate) struct BufferAddress(usize);
 impl BufferAddress {
     pub(crate) fn of(audio: &Arc<AudioBuffer>) -> Self {
         Self(Arc::as_ptr(audio) as usize)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::voice::VoiceId;
-
-    #[test]
-    fn ids_are_minted_in_order() {
-        let first = VoiceId::next();
-        let second = VoiceId::next();
-        assert!(first < second);
     }
 }

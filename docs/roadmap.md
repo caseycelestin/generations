@@ -51,8 +51,8 @@ or rejected instead. The history of how a shape was reached is in git.
   outlives the program, so callers refer to it by an id they can keep and
   store (a parent pointer, pads and patterns later), and
   `load(id, &memory)` turns that into `Audio` the way a path opens a file.
-  A voice lives only while it plays, so its handle keeps its `VoiceId`
-  private and carries the verbs instead.
+  A voice lives only while it plays, so its handle keeps its id private
+  and carries the verbs instead.
 - **Generation is a relationship, not a type.** Not built: a sample will
   be an id and an optional parent id, and lineage the tree of parent
   pointers. It was built once and removed while nothing made a child; it
@@ -180,25 +180,45 @@ or rejected instead. The history of how a shape was reached is in git.
   to the caller; `RendererHandle`, `Link` and `Remote` were rejected.
 - **Commands are optimistic; the audio thread is the authority on state.**
   A send succeeds or reports the ring full; what then happened comes back
-  as an event on the ring back. A recording's state and its audio arrive
-  in one event, so a handle never sees an end before the take it hands
-  back; an atomic report beside the ring was used before and could show
-  `Ended` before the take could be collected. Voices still report through
-  an atomic `VoiceReport`; moving them onto events is decided, not built.
+  as an event on the ring back. A state and what the renderer hands back
+  arrive in one event, so a handle never sees an end before the take it
+  hands back; atomic reports beside the ring were used before and could
+  show `Ended` before the take could be collected.
+- **A voice has no `Pending`.** It cannot be refused, so it is `Playing`
+  from `play` until it ends, and the renderer sends nothing when it adds
+  one. `Pending` with a `Playing` reply was tried and dropped: it always
+  resolved within a period, and the extra event per play would have grown
+  the ring back.
 - **Every message names its handle.** Both rings carry `Message<T>`, the
   handle's `HandleId` and the data: `Message<Command>` out,
   `Message<Event>` back. Commands carry no handle id: `Stop` stops the
-  sender's take. `Control` has an id of its own for what it sends.
-  Tickets minted per send were tried and dropped: they named messages,
-  not things, so a stop's own ticket and its take's state disagreed.
-- **`collect` delivers events by id.** `record` registers its id and a box
-  in a fixed list in the rings before it sends, under the same lock;
-  `collect` stores each event in the matching box and frees the record
-  once the event handing the spec back is in. The list takes the ring
-  back's size, so it never grows; the box is the handle's, allocated with
-  it. A growing map was rejected to keep the engine's memory fixed at
-  `create`, and a box carried in the spec, because the audio thread would
-  carry control-side state.
+  sender's take and `Remove` the sender's voice. `Control` has an id of
+  its own for what it sends. Tickets minted per send were tried and
+  dropped: they named messages, not things, so a stop's own ticket and
+  its take's state disagreed.
+- **Every handle wraps one `Handle`; the rings only route.** `Handle`
+  holds the rings, the id and an inbox, and does what every handle does:
+  `open` reserves, mints, registers the inbox and sends under one lock,
+  `send` sends under the handle's id, and `inbox` collects, then locks.
+  `collect` hands each event to its id's inbox through the `Inbox` trait
+  and frees the record once the inbox says it is done. What an inbox
+  keeps, when it is done, and its default start are the feature's,
+  written beside its handle; so are its checks and prep, which come
+  before `open`. Feature rules in the rings (an enum of boxes matched
+  against events in pairs) were built and moved out: the rings would
+  name every feature.
+- **The inboxes are a fixed list.** It takes the ring back's size, since
+  every id in it still has an event coming, so it never grows; an inbox
+  is the handle's, allocated with it. A growing map was rejected to keep
+  the engine's memory fixed at `create`, and a box carried in the spec,
+  because the audio thread would carry control-side state.
+- **`open` takes the spec and the command's constructor**
+  (`Handle::open(&rings, spec, RecordingCommand::Start)`) and builds the
+  command only once the send cannot fail, so a full ring hands the
+  caller its own spec back. Returning the built `Command` made `record`
+  unpack it behind an `unreachable!`. Holding the permit from before the
+  caller's prep was weighed and left out for simplicity: a `record`
+  refused for a full ring has already prefaulted.
 - **Loaded audio is plain data.** Hold `Audio` and it is in RAM; drop it
   and its voices play out, its memory repaid once the last one's return
   is collected. `control.stop(&audio)` cuts them first. Each load is its
@@ -211,9 +231,10 @@ or rejected instead. The history of how a shape was reached is in git.
   stalls a panel, the fix is a worker thread, not async methods.
 - **A `HandleId` comes from a counter in the rings,** an atomic outside
   their lock so a handle can mint one while it holds a permit: unique
-  within one engine, in order, never reused. A refused `record` mints
-  none, since its checks come first. `VoiceId` is still process-wide,
-  from the `id!` macro, until voices move over.
+  within one engine, in order, never reused. It is minted and pushed
+  under one lock, so lower is older, which is how the voice pool picks
+  the one to cut. A refused `record` mints none, since its checks come
+  first. A process-wide `VoiceId` from an `id!` macro came before it.
 - **`create` takes plain sizes and panics on a zero**, as `slice::chunks`
   does: a zero is a typo, not something to recover from. `NonZeroUsize`
   parameters made every caller wrap its constants.
@@ -250,18 +271,20 @@ or rejected instead. The history of how a shape was reached is in git.
   place was taken). `Cut` is the sampler's umbrella: choke groups and
   retrigger will end voices the same way.
 - **Only plain things cross, both ways.** A play or a record carries a
-  spec: the audio's `Arc<AudioBuffer>`, and for a voice its report and
-  `VoiceId`. The renderer keeps the sender's id beside what it holds.
-  Whatever ends or is refused goes back whole in an `Event`, so the last
-  reference is dropped on the control side.
+  spec, the audio's `Arc<AudioBuffer>`; the renderer keeps the sender's
+  id beside what it holds. Each feature's event is its state, plus its
+  spec when the renderer lets go (`VoiceEvent`, `RecordingEvent`), so the
+  last reference is dropped on the control side. A generic event type
+  was tried and dropped: it saved one function, and the rings still
+  needed one variant per feature.
 - **The ring back never fills.** Every send drains it first, so between
   drains it holds at most every voice and the recording the renderer
-  holds, plus one event per queued command (a take's start, or its
-  refusal); `create` sizes it at that. Freeing a large buffer
-  is a trip into the allocator and the kernel with no bound on its time,
-  so it never happens on the audio thread.
+  holds, plus one event per queued command (the end of a voice it adds,
+  or a take's start or refusal); `create` sizes it at that. Freeing a
+  large buffer is a trip into the allocator and the kernel with no bound
+  on its time, so it never happens on the audio thread.
 - **Commands are low level.** Operations on what the renderer holds,
-  never intents: `VoiceCommand` is `Add(VoiceSpec) | Remove(VoiceId) |
+  never intents: `VoiceCommand` is `Add(VoiceSpec) | Remove |
   RemoveAudio(BufferAddress) | RemoveAll`. Meaning lives on the
   control-side handles. One command type per feature, wrapped in
   `Command`. High-level commands (`Monitor`, `Play`) came first.
@@ -314,7 +337,7 @@ Built for the main out; recording inputs are not built yet.
 - **A recording is a handle, as a voice is, and one handle is one take.**
   `control.record(audio)` returns a `Recording` with `stop`, `state` and
   `take`. Its state is `Pending`, `Recording`, then `Ended(Full)` or
-  `Ended(Stopped)`, or `Refused`; the box behind it holds the last
+  `Ended(Stopped)`, or `Refused`; its inbox holds the last
   `RecordingEvent`. Recording again is a new `record`, so a late stop or
   event can never reach a newer take.
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
@@ -341,9 +364,10 @@ Built for the main out; recording inputs are not built yet.
   `Ended(why, spec)`) enforced the pairing in its types but duplicated the
   states.
 - **`take` polls.** `take(&mut self) -> Option<Audio>` collects, then
-  takes the spec out of the box: the audio once the take ends, at once if
-  it was refused, `None` before and after. `take(self) -> Result<Audio,
-  Self>` was replaced: polling it moved the handle out and back each time.
+  takes the spec out of its inbox: the audio once the take ends, at once
+  if it was refused, `None` before and after. `take(self) ->
+  Result<Audio, Self>` was replaced: polling it moved the handle out and
+  back each time.
   A mailbox or write-once `Slot` in the spec, `oneshot` (its sender frees
   on the audio thread) and `OnceLock` (it only lends) were ruled out.
 - **Dropping a recording stops it**, unlike a voice, which plays out: no
@@ -375,9 +399,6 @@ Built on `src/engine/`: voices, block mixing, the ring back (see the
 render side, above) and recording of the main out (see Recording).
 
 What is left:
-- **Voices onto events** (see the two sides, above): the end reason on
-  the ring, `VoiceReport` and `VoiceId` gone, the pool ordered by
-  `HandleId`.
 - **Recording inputs** (see Recording, above).
 - **Inputs and monitoring** (see above), with the capture thread.
 - **Sample-accurate commands** arrive with sequencing as a frame offset on

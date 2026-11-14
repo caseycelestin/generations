@@ -1,11 +1,12 @@
 //! The control side: runs on UI or event threads. May lock and allocate.
 
+mod handle;
 mod recording;
 mod rings;
 mod voice;
 
 pub use recording::{RecordError, Recording};
-pub use voice::{Voice, VoiceState};
+pub use voice::Voice;
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;

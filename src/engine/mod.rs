@@ -5,9 +5,9 @@ mod control;
 mod protocol;
 mod realtime;
 
-pub use control::{Control, ControlError, RecordError, Recording, Voice, VoiceState};
+pub use control::{Control, ControlError, RecordError, Recording, Voice};
 pub use protocol::recording::{RecordingEnd, RecordingState};
-pub use protocol::voice::VoiceEnd;
+pub use protocol::voice::{VoiceEnd, VoiceState};
 pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
