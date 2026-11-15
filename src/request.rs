@@ -1,5 +1,12 @@
 //! Requests from control-side callers to a real-time side, each answered by
 //! exactly one reply. Knows nothing of audio.
+//!
+//! - On the real-time side every operation is wait-free and bounded: it
+//!   never allocates, frees, locks or blocks. The control side may.
+//! - Memory is fixed at creation.
+//! - A reservation holds room for a request and its reply, so it is the only
+//!   step that can be refused; nothing the real-time side sends is lost.
+//! - Each direction is in order.
 
 use std::marker::PhantomData;
 
