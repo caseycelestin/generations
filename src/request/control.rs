@@ -74,13 +74,14 @@ impl<Q: Request> ControlEnd<Q> {
     /// Takes in the replies that have arrived, dropping those whose handle
     /// is gone, so what they hold is freed here. Reserving does this first.
     pub fn take_in(&self) {
-        todo!()
+        lock(&self.shared).take_in();
     }
 
     /// `Full` once `limit` slots are held, by requests in flight and by
     /// permits not yet opened.
     fn reserve(&self, limit: usize) -> Result<RequestPermit<'_, Q>, ReserveError> {
         let mut shared = lock(&self.shared);
+        shared.take_in();
         if shared.to_realtime.is_abandoned() {
             return Err(ReserveError::Disconnected);
         }
@@ -203,14 +204,52 @@ struct Shared<Q: Request> {
     from_realtime: Consumer<FromRealtime<Q>>,
     /// One per request in flight, until its reply is taken. Reserving stops
     /// at `capacity`, so allocated to that here it never grows.
-    requests: Vec<InFlight>,
+    requests: Vec<InFlight<Q>>,
     /// Permits neither opened nor dropped; each holds a slot as a request in
     /// flight does.
     reserved: usize,
 }
 
-struct InFlight {
+impl<Q: Request> Shared<Q> {
+    /// Moves what has arrived into its request's record. For a request whose
+    /// handle is gone it is dropped here instead, the reply with its record.
+    fn take_in(&mut self) {
+        while let Ok(message) = self.from_realtime.pop() {
+            match message {
+                FromRealtime::Reply(id, reply) => {
+                    let index = self.index_of(id);
+                    if self.requests[index].abandoned {
+                        self.requests.swap_remove(index);
+                    } else {
+                        self.requests[index].reply = Some(reply);
+                    }
+                }
+                FromRealtime::Status(id, status) => {
+                    let index = self.index_of(id);
+                    if !self.requests[index].abandoned {
+                        self.requests[index].status = Some(status);
+                    }
+                }
+            }
+        }
+    }
+
+    fn index_of(&self, id: RequestId) -> usize {
+        self.requests
+            .iter()
+            .position(|request| request.id == id)
+            .expect("only a request in flight is answered")
+    }
+}
+
+struct InFlight<Q: Request> {
     id: RequestId,
+    /// Until taken.
+    reply: Option<Q::Reply>,
+    /// The answer to its status question, until taken.
+    status: Option<Q::Status>,
+    /// Its handle is gone, so what arrives for it is dropped.
+    abandoned: bool,
 }
 
 /// A panic while locked leaves the rings whole, so a poisoned lock is taken
