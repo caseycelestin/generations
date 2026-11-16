@@ -1,7 +1,7 @@
 //! The real-time side's end. Everything here is wait-free and bounded: it
 //! never allocates, frees, locks or blocks.
 
-use std::marker::PhantomData;
+use std::fmt;
 
 use rtrb::{Consumer, Producer};
 
@@ -55,15 +55,27 @@ pub enum Received<Q> {
     Status(StatusPermit),
 }
 
-#[derive(Debug)]
-pub struct RealtimeEnd<Q>(PhantomData<Q>);
+pub struct RealtimeEnd<Q: Request> {
+    from_control: Consumer<ToRealtime<Q>>,
+    to_control: Producer<FromRealtime<Q>>,
+}
+
+/// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
+impl<Q: Request> fmt::Debug for RealtimeEnd<Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RealtimeEnd").finish_non_exhaustive()
+    }
+}
 
 impl<Q: Request> RealtimeEnd<Q> {
     pub(super) fn new(
         from_control: Consumer<ToRealtime<Q>>,
         to_control: Producer<FromRealtime<Q>>,
     ) -> Self {
-        todo!()
+        Self {
+            from_control,
+            to_control,
+        }
     }
 
     pub fn try_recv(&mut self) -> Option<Received<Q>> {
