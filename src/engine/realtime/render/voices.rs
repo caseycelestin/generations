@@ -157,13 +157,13 @@ mod tests {
     use crate::testing::buffer;
 
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
-        voice_from(Id(0), layout, samples)
+        voice_from(0, layout, samples)
     }
 
-    /// For tests that tell voices apart by their sender.
-    fn voice_from(id: Id, layout: ChannelLayout, samples: &[f32]) -> Voice {
+    /// For tests that tell voices apart by their request.
+    fn voice_from(id: u64, layout: ChannelLayout, samples: &[f32]) -> Voice {
         let audio = Arc::new(buffer(layout, samples));
-        Voice::new(id, audio)
+        Voice::new(ReplyPermit::for_test(id), audio)
     }
 
     fn voices(count: usize) -> Voices {
@@ -207,8 +207,8 @@ mod tests {
     fn a_voice_plays_only_its_own_audio() {
         let voice = voice(ChannelLayout::Mono, &[0.0]);
         let other = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        assert!(voice.plays(BufferAddress::of(&voice.audio)));
-        assert!(!voice.plays(BufferAddress::of(&other)));
+        assert!(voice.plays(&voice.audio));
+        assert!(!voice.plays(&other));
     }
 
     #[test]
@@ -232,36 +232,44 @@ mod tests {
     #[test]
     fn add_when_full_replaces_the_first_added() {
         let mut voices = voices(2);
-        voices.add(voice_from(Id(1), ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
-        let newest = voice_from(Id(2), ChannelLayout::Mono, &[0.0]);
+        voices.add(voice_from(1, ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
+        let newest = voice_from(2, ChannelLayout::Mono, &[0.0]);
         let replaced = voices.add(newest);
-        assert_eq!(replaced.map(|voice| voice.id), Some(Id(1)));
+        assert!(replaced.is_some_and(|voice| voice.is(RequestId(1))));
         assert_eq!(voices.iter_mut().count(), 2);
+    }
+
+    #[test]
+    fn holds_finds_only_the_voices_held() {
+        let mut voices = voices(1);
+        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
+        assert!(voices.holds(RequestId(0)));
+        assert!(!voices.holds(RequestId(1)));
     }
 
     #[test]
     fn remove_takes_the_voice_out_once() {
         let mut voices = voices(1);
-        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
-        assert!(voices.remove(Id(0)).is_some());
-        assert!(voices.remove(Id(0)).is_none());
+        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
+        assert!(voices.remove(RequestId(0)).is_some());
+        assert!(voices.remove(RequestId(0)).is_none());
     }
 
     #[test]
     fn extract_if_takes_only_the_voices_picked() {
         let mut voices = voices(2);
-        voices.add(voice_from(Id(0), ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(Id(1), ChannelLayout::Mono, &[0.0; 4]));
+        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
+        voices.add(voice_from(1, ChannelLayout::Mono, &[0.0; 4]));
         let mut scratch = [[0.0; 2]; 2];
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let extracted: Vec<Id> = voices
+        let extracted: Vec<RequestId> = voices
             .extract_if(|voice| voice.finished())
-            .map(|voice| voice.id)
+            .map(|voice| voice.permit.id())
             .collect();
-        assert_eq!(extracted, [Id(0)]);
+        assert_eq!(extracted, [RequestId(0)]);
         assert_eq!(voices.iter_mut().count(), 1);
     }
 

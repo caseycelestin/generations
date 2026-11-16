@@ -83,22 +83,29 @@ mod tests {
             .unwrap()
     }
 
+    /// Asks, then renders a frame for the renderer to answer in.
+    fn status(recording: &mut Recording, renderer: &mut Renderer) -> RecordingStatus {
+        let mut pending = recording.request_status().unwrap();
+        renderer.render(&mut [0.0; 2]);
+        pending.try_recv().unwrap()
+    }
+
     #[test]
-    fn a_played_voice_is_heard_then_ends_finished() {
+    fn a_played_voice_is_heard_then_ends() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 2]);
         let mut voice = control.play(&audio).unwrap();
-        assert_eq!(voice.state(), VoiceStatus::Playing);
+        assert_eq!(voice.try_wait(), Err(TryWaitError::NotEnded));
 
         let mut out = vec![0.0; 3 * 2];
         renderer.render(&mut out);
 
         assert_eq!(out, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
-        assert_eq!(voice.state(), VoiceStatus::Ended);
+        assert_eq!(voice.try_wait(), Ok(()));
     }
 
     #[test]
-    fn a_stopped_voice_ends_stopped() {
+    fn a_stopped_voice_ends() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 64]);
         let mut voice = control.play(&audio).unwrap();
@@ -107,7 +114,7 @@ mod tests {
         voice.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(voice.state(), VoiceStatus::Ended);
+        assert_eq!(voice.try_wait(), Ok(()));
     }
 
     #[test]
@@ -124,14 +131,14 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         control.collect();
 
-        assert_eq!(first.state(), VoiceStatus::Ended);
-        assert_eq!(second.state(), VoiceStatus::Ended);
-        assert_eq!(kept.state(), VoiceStatus::Playing);
+        assert_eq!(first.try_wait(), Ok(()));
+        assert_eq!(second.try_wait(), Ok(()));
+        assert_eq!(kept.try_wait(), Err(TryWaitError::NotEnded));
         assert_eq!(Arc::strong_count(stopped.shared()), 1);
     }
 
     #[test]
-    fn stop_all_ends_every_voice_stopped() {
+    fn stop_all_ends_every_voice() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 64]);
         let mut first = control.play(&audio).unwrap();
@@ -140,23 +147,23 @@ mod tests {
 
         control.stop_all().unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
-        control.collect();
 
-        assert_eq!(first.state(), VoiceStatus::Ended);
-        assert_eq!(second.state(), VoiceStatus::Ended);
+        assert_eq!(first.try_wait(), Ok(()));
+        assert_eq!(second.try_wait(), Ok(()));
         assert_eq!(Arc::strong_count(audio.shared()), 1);
     }
 
     #[test]
-    fn collect_frees_the_audio_of_an_ended_voice() {
+    fn collect_frees_the_audio_of_a_dropped_voice() {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 2]);
-        let _voice = control.play(&audio).unwrap();
+        let voice = control.play(&audio).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
+        drop(voice);
         assert_eq!(
             Arc::strong_count(audio.shared()),
             2,
-            "given up, not yet freed"
+            "given back, not yet freed"
         );
 
         control.collect();
@@ -165,11 +172,20 @@ mod tests {
     }
 
     #[test]
-    fn play_reports_a_full_command_ring() {
-        let (control, _renderer) = create(1, 1);
+    fn with_no_queue_a_play_is_refused_while_every_voice_is_held() {
+        let (control, _renderer) = create(0, 1);
         let audio = audio(&[0.5; 2]);
-        assert!(control.play(&audio).is_ok());
+        let _voice = control.play(&audio).unwrap();
         assert!(matches!(control.play(&audio), Err(PlayError::Full)));
+    }
+
+    #[test]
+    fn stops_get_through_when_plays_fill_the_queue() {
+        let (control, _renderer) = create(0, 1);
+        let audio = audio(&[0.5; 2]);
+        let _voice = control.play(&audio).unwrap();
+        assert!(control.stop(&audio).is_ok());
+        assert!(control.stop_all().is_ok());
     }
 
     #[test]
@@ -177,15 +193,16 @@ mod tests {
         let (control, mut renderer) = create(4, 1);
         let mut recording = control.record(room(64)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
-        assert_eq!(recording.state(), RecordingStatus::Recording);
+        assert_eq!(
+            status(&mut recording, &mut renderer),
+            RecordingStatus::Recording
+        );
 
         recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(
-            recording.state(),
-            RecordingStatus::Ended(RecordingEnd::Stopped)
-        );
+        let (why, _) = recording.try_wait().unwrap();
+        assert_eq!(why, RecordingEnd::Stopped);
     }
 
     #[test]
@@ -209,12 +226,12 @@ mod tests {
     }
 
     #[test]
-    fn record_hands_the_audio_back_when_requests_are_full() {
-        let (control, _renderer) = create(1, 1);
-        let audio = audio(&[0.5; 4]);
-        // One voice, the recording and one more: three requests in flight.
-        let _voices: Vec<_> = (0..3).map(|_| control.play(&audio).unwrap()).collect();
-        assert!(matches!(control.record(room(4)), Err(RecordError::Full(_))));
+    fn record_refuses_while_another_recording_holds_the_recorder() {
+        let (control, _renderer) = create(4, 1);
+        let _first = control.record(room(64)).unwrap();
+        let error = control.record(room(8)).unwrap_err();
+        assert!(matches!(error, RecordError::Full(_)));
+        assert_eq!(error.into_audio().frames(), 0);
     }
 
     #[test]
@@ -224,14 +241,18 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
 
         drop(first);
+        renderer.render(&mut [0.0; 4 * 2]);
         let mut second = control.record(room(64)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(second.state(), RecordingStatus::Recording);
+        assert_eq!(
+            status(&mut second, &mut renderer),
+            RecordingStatus::Recording
+        );
     }
 
     #[test]
-    fn take_hands_back_what_was_heard() {
+    fn try_wait_hands_back_what_was_heard() {
         let (control, mut renderer) = create(4, 1);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
@@ -241,23 +262,23 @@ mod tests {
         recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        let taken = recording.take().unwrap();
+        let (_, taken) = recording.try_wait().unwrap();
         assert_eq!(taken.samples(), [0.25; 4 * 2]);
     }
 
     #[test]
-    fn take_is_none_until_the_recording_ends_and_once_taken() {
+    fn try_wait_is_not_ended_until_the_recording_ends_and_taken_once() {
         let (control, mut renderer) = create(4, 1);
         let mut recording = control.record(room(64)).unwrap();
-        assert!(recording.take().is_none());
+        assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
         renderer.render(&mut [0.0; 4 * 2]);
-        assert!(recording.take().is_none());
+        assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
 
         recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert!(recording.take().is_some());
-        assert!(recording.take().is_none());
+        assert!(recording.try_wait().is_ok());
+        assert!(matches!(recording.try_wait(), Err(TryWaitError::Taken)));
     }
 
     #[test]
@@ -271,20 +292,7 @@ mod tests {
         recording.stop();
         renderer.render(&mut [0.0; 2 * 2]);
 
-        assert_eq!(recording.take().unwrap().samples(), [0.0; 2 * 2]);
-    }
-
-    #[test]
-    fn a_refused_recording_hands_its_audio_back() {
-        let (control, mut renderer) = create(4, 1);
-        let _first = control.record(room(64)).unwrap();
-        let mut second = control.record(room(8)).unwrap();
-        renderer.render(&mut [0.0; 4 * 2]);
-
-        assert_eq!(
-            second.state(),
-            RecordingStatus::Ended(RecordingEnd::Refused)
-        );
-        assert_eq!(second.take().unwrap().frames(), 0);
+        let (_, taken) = recording.try_wait().unwrap();
+        assert_eq!(taken.samples(), [0.0; 2 * 2]);
     }
 }

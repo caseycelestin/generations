@@ -20,6 +20,14 @@ impl ReplyPermit {
     }
 }
 
+#[cfg(test)]
+impl ReplyPermit {
+    /// For tests of what holds a permit, without a channel to receive one.
+    pub(crate) fn for_test(id: u64) -> Self {
+        Self { id: RequestId(id) }
+    }
+}
+
 /// For one status question. Dropped unanswered, it holds its slot for good,
 /// unless its request is answered by now: the control side then has its
 /// reply.

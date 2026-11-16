@@ -12,7 +12,7 @@ use std::error::Error;
 use std::path::Path;
 use std::thread;
 
-use generations::engine::{self, RecordingStatus, VoiceStatus};
+use generations::engine;
 use generations::{AudioMemory, ChannelLayout, Project, SampleId};
 
 /// A generous guess for a desktop.
@@ -37,6 +37,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let take = memory.alloc(ChannelLayout::Stereo, 48_000)?;
     let mut recording = control.record(take)?;
 
+    // Asked now, answered at the renderer's next period.
+    let mut status = played.request_status()?;
+
     // A device callback would own the renderer.
     let audio_thread = thread::spawn(move || {
         let mut renderer = renderer;
@@ -49,24 +52,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     audio_thread.join().expect("audio thread");
 
+    match status.try_recv() {
+        Ok(status) => println!("the renderer said: {status:?}"),
+        Err(error) => println!("no answer: {error}"),
+    }
+
     recording.stop();
 
-    // The audio thread reports once it has ended.
-    match recording.state() {
-        RecordingStatus::Recording => println!("still recording"),
-        RecordingStatus::Ended(why) => println!("recording ended: {why:?}"),
+    // How it ended, with the audio holding what was recorded, here to be
+    // kept; once.
+    match recording.try_wait() {
+        Ok((why, recorded)) => {
+            println!("recording ended: {why:?}");
+            project.add_sample(&recorded)?;
+        }
+        Err(error) => println!("no result: {error}"),
     }
 
-    // Once it has ended, the audio comes back, here to be kept.
-    if let Some(recorded) = recording.take() {
-        project.add_sample(&recorded)?;
-    }
-
-    // The audio thread reports when a voice has ended.
+    // Whether each voice has ended; taking that also frees its slot.
     for voice in [&mut played, &mut stopped] {
-        match voice.state() {
-            VoiceStatus::Playing => println!("still playing"),
-            VoiceStatus::Ended => println!("ended"),
+        match voice.try_wait() {
+            Ok(()) => println!("ended"),
+            Err(error) => println!("not ended: {error}"),
         }
     }
 

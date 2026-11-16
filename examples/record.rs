@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::engine::{self, RecordingStatus};
+use generations::engine::{self, TryWaitError};
 use generations::{AudioMemory, ChannelLayout};
 
 mod device;
@@ -48,18 +48,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         control.play(pluck)?;
         sleep(Duration::from_millis(400));
     }
-    while !matches!(recording.state(), RecordingStatus::Ended(_)) {
-        sleep(Duration::from_millis(50));
-    }
-    println!("recording: {:?}", recording.state());
+    let (why, recorded) = loop {
+        match recording.try_wait() {
+            Ok(result) => break result,
+            Err(TryWaitError::NotEnded) => sleep(Duration::from_millis(50)),
+            Err(error) => return Err(error.into()),
+        }
+    };
+    println!("recording ended: {why:?}");
 
-    let recorded = recording
-        .take()
-        .ok_or("an ended take hands its audio back")?;
     println!("playing back {} frames", recorded.frames());
     let mut playback = control.play(&recorded)?;
     sleep(Duration::from_millis(2200));
-    println!("playback: {:?}", playback.state());
+    println!("playback ended: {}", playback.try_wait().is_ok());
 
     // The audio thread queues its complaints; this is where they are read.
     while let Some(e) = stream.error() {
