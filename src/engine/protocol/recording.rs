@@ -20,7 +20,6 @@ impl Request for RecordingRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingStatus {
     Recording,
-    Ended(RecordingEnd),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

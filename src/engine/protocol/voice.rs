@@ -25,5 +25,4 @@ impl Request for VoiceRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceStatus {
     Playing,
-    Ended,
 }
