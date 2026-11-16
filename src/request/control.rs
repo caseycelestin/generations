@@ -51,6 +51,7 @@ impl<Q: Request> ControlEnd<Q> {
             from_realtime,
             requests: Vec::with_capacity(capacity),
             reserved: 0,
+            next_id: 0,
         };
         Self {
             shared: Arc::new(Mutex::new(shared)),
@@ -108,7 +109,13 @@ impl<Q: Request> fmt::Debug for RequestPermit<'_, Q> {
 
 impl<Q: Request> RequestPermit<'_, Q> {
     pub fn open(self, request: Q) -> RequestHandle<Q> {
-        todo!()
+        // Let go before this permit's drop takes the lock to give its
+        // reservation back.
+        let id = lock(&self.end.shared).open(request);
+        RequestHandle {
+            shared: Arc::clone(&self.end.shared),
+            id,
+        }
     }
 }
 
@@ -121,8 +128,19 @@ impl<Q: Request> Drop for RequestPermit<'_, Q> {
 /// Holds its request's slot until the reply is taken or the handle is
 /// dropped; an arrived reply still holds it. Dropped, the request runs on
 /// and its reply is dropped when it arrives.
-#[derive(Debug)]
-pub struct RequestHandle<Q>(PhantomData<Q>);
+pub struct RequestHandle<Q: Request> {
+    shared: Arc<Mutex<Shared<Q>>>,
+    id: RequestId,
+}
+
+/// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
+impl<Q: Request> fmt::Debug for RequestHandle<Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequestHandle")
+            .field("id", &self.id)
+            .finish()
+    }
+}
 
 impl<Q: Request> RequestHandle<Q> {
     pub fn try_wait(&mut self) -> Result<Q::Reply, TryWaitError> {
@@ -208,9 +226,28 @@ struct Shared<Q: Request> {
     /// Permits neither opened nor dropped; each holds a slot as a request in
     /// flight does.
     reserved: usize,
+    next_id: u64,
 }
 
 impl<Q: Request> Shared<Q> {
+    fn open(&mut self, request: Q) -> RequestId {
+        assert!(
+            self.requests.len() < self.requests.capacity(),
+            "reserving keeps the table within what it was given"
+        );
+        let id = RequestId(self.next_id);
+        self.next_id += 1;
+        self.requests.push(InFlight {
+            id,
+            reply: None,
+            status: None,
+            abandoned: false,
+        });
+        let pushed = self.to_realtime.push(ToRealtime::Request(id, request));
+        assert!(pushed.is_ok(), "the ring holds three messages per request");
+        id
+    }
+
     /// Moves what has arrived into its request's record. For a request whose
     /// handle is gone it is dropped here instead, the reply with its record.
     fn take_in(&mut self) {
