@@ -13,6 +13,11 @@ use super::{FromRealtime, Request, RequestId, ToRealtime};
 /// it.
 pub struct ControlEnd<Q: Request> {
     shared: Arc<Mutex<Shared<Q>>>,
+    /// In requests; the rings are sized from it.
+    capacity: usize,
+    /// The last slots of `capacity`, kept for
+    /// `try_reserve_including_headroom`.
+    headroom: usize,
 }
 
 /// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
@@ -40,13 +45,13 @@ impl<Q: Request> ControlEnd<Q> {
         let shared = Shared {
             to_realtime,
             from_realtime,
-            capacity,
-            headroom,
             requests: Vec::with_capacity(capacity),
             reserved: 0,
         };
         Self {
             shared: Arc::new(Mutex::new(shared)),
+            capacity,
+            headroom,
         }
     }
 
@@ -54,27 +59,32 @@ impl<Q: Request> ControlEnd<Q> {
     /// answers to both, so neither `open` nor `cancel` can fail. `Full` once
     /// only the headroom is free.
     pub fn try_reserve(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
-        let mut shared = lock(&self.shared);
-        if shared.to_realtime.is_abandoned() {
-            return Err(ReserveError::Disconnected);
-        }
-        let limit = shared.capacity.saturating_sub(shared.headroom);
-        if shared.requests.len() + shared.reserved >= limit {
-            return Err(ReserveError::Full);
-        }
-        shared.reserved += 1;
-        Ok(RequestPermit { end: self })
+        self.reserve(self.capacity.saturating_sub(self.headroom))
     }
 
     /// As `try_reserve`, but may use the headroom too.
     pub fn try_reserve_including_headroom(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
-        todo!()
+        self.reserve(self.capacity)
     }
 
     /// Takes in the replies that have arrived, dropping those whose handle
     /// is gone, so what they hold is freed here. Reserving does this first.
     pub fn take_in(&self) {
         todo!()
+    }
+
+    /// `Full` once `limit` slots are held, by requests in flight and by
+    /// permits not yet opened.
+    fn reserve(&self, limit: usize) -> Result<RequestPermit<'_, Q>, ReserveError> {
+        let mut shared = lock(&self.shared);
+        if shared.to_realtime.is_abandoned() {
+            return Err(ReserveError::Disconnected);
+        }
+        if shared.requests.len() + shared.reserved >= limit {
+            return Err(ReserveError::Full);
+        }
+        shared.reserved += 1;
+        Ok(RequestPermit { end: self })
     }
 }
 
@@ -187,11 +197,6 @@ pub enum TryRecvStatusError {
 struct Shared<Q: Request> {
     to_realtime: Producer<ToRealtime<Q>>,
     from_realtime: Consumer<FromRealtime<Q>>,
-    /// In requests; the rings are sized from it.
-    capacity: usize,
-    /// The last slots of `capacity`, kept for
-    /// `try_reserve_including_headroom`.
-    headroom: usize,
     /// One per request in flight, until its reply is taken. Reserving stops
     /// at `capacity`, so allocated to that here it never grows.
     requests: Vec<InFlight>,
