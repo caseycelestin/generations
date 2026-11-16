@@ -13,11 +13,12 @@ pub(crate) enum RecordingRequest {
 /// Its audio comes back with why it ended, which says what the audio holds.
 impl Request for RecordingRequest {
     type Reply = (RecordingEnd, Arc<AudioBuffer>);
+    type Status = RecordingStatus;
 }
 
 /// What the audio thread last said about a recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordingState {
+pub enum RecordingStatus {
     /// Not reported ended yet: recording, or about to.
     Recording,
     Ended(RecordingEnd),

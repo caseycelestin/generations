@@ -3,8 +3,7 @@
 //! Each request is a task the renderer carries out, answered once it is
 //! done; handles stand for them on the control side. Only plain data
 //! crosses: audio, ids and values. Each feature has its own file and its
-//! own variant in [`Command`] and [`Event`], since each ring carries one
-//! type.
+//! own request channel.
 
 use std::sync::Arc;
 
@@ -13,13 +12,11 @@ use crate::audio::AudioBuffer;
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use recording::{RecordingEnd, RecordingRequest};
 use voice::VoiceRequest;
 
 #[derive(Debug)]
 pub(crate) enum Command {
     Voice(VoiceRequest),
-    Recording(RecordingRequest),
 }
 
 impl From<VoiceRequest> for Command {
@@ -28,18 +25,9 @@ impl From<VoiceRequest> for Command {
     }
 }
 
-impl From<RecordingRequest> for Command {
-    fn from(request: RecordingRequest) -> Self {
-        Self::Recording(request)
-    }
-}
-
-/// What happened in the renderer. A recording's last event carries its
-/// audio back, to be taken; what nobody takes back goes to the collector.
 #[derive(Debug)]
 pub(crate) enum Event {
     Voice,
-    Recording(RecordingEnd, Arc<AudioBuffer>),
 }
 
 /// A voice command's reply carries nothing.
@@ -49,17 +37,6 @@ impl TryFrom<Event> for () {
     fn try_from(event: Event) -> Result<Self, Event> {
         match event {
             Event::Voice => Ok(()),
-            other => Err(other),
-        }
-    }
-}
-
-impl TryFrom<Event> for (RecordingEnd, Arc<AudioBuffer>) {
-    type Error = Event;
-
-    fn try_from(event: Event) -> Result<Self, Event> {
-        match event {
-            Event::Recording(why, audio) => Ok((why, audio)),
             other => Err(other),
         }
     }

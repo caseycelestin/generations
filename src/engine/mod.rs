@@ -6,7 +6,7 @@ mod protocol;
 mod realtime;
 
 pub use control::{Control, ControlError, RecordError, Recording, Voice};
-pub use protocol::recording::{RecordingEnd, RecordingState};
+pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceState;
 pub use realtime::render::Renderer;
 
@@ -174,14 +174,14 @@ mod tests {
         let (control, mut renderer) = create(4, 1);
         let mut recording = control.record(room(64)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
-        assert_eq!(recording.state(), RecordingState::Recording);
+        assert_eq!(recording.state(), RecordingStatus::Recording);
 
         recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
         assert_eq!(
             recording.state(),
-            RecordingState::Ended(RecordingEnd::Stopped)
+            RecordingStatus::Ended(RecordingEnd::Stopped)
         );
     }
 
@@ -224,7 +224,7 @@ mod tests {
         let mut second = control.record(room(64)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(second.state(), RecordingState::Recording);
+        assert_eq!(second.state(), RecordingStatus::Recording);
     }
 
     #[test]
@@ -278,7 +278,10 @@ mod tests {
         let mut second = control.record(room(8)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(second.state(), RecordingState::Ended(RecordingEnd::Refused));
+        assert_eq!(
+            second.state(),
+            RecordingStatus::Ended(RecordingEnd::Refused)
+        );
         assert_eq!(second.take().unwrap().frames(), 0);
     }
 }

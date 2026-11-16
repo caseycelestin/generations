@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
 use crate::collector;
-use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingState};
+use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::{Command, Event};
 use crate::layout::ChannelLayout;
 use crate::request::{ControlEnd, RequestHandle, ReserveError};
@@ -50,7 +50,7 @@ impl RecordError {
 #[derive(Debug)]
 pub struct Recording {
     handle: RequestHandle<(RecordingEnd, Arc<AudioBuffer>), Command, Event>,
-    state: RecordingState,
+    state: RecordingStatus,
     /// The audio once it comes back, until taken.
     audio: Option<Arc<AudioBuffer>>,
 }
@@ -70,7 +70,7 @@ impl Recording {
         let handle = permit.open(RecordingRequest::Start(audio));
         Ok(Self {
             handle,
-            state: RecordingState::Recording,
+            state: RecordingStatus::Recording,
             audio: None,
         })
     }
@@ -79,7 +79,7 @@ impl Recording {
         self.handle.cancel();
     }
 
-    pub fn state(&mut self) -> RecordingState {
+    pub fn state(&mut self) -> RecordingStatus {
         self.receive();
         self.state
     }
@@ -120,7 +120,7 @@ impl Recording {
 
     fn receive(&mut self) {
         if let Ok((why, audio)) = self.handle.try_wait() {
-            self.state = RecordingState::Ended(why);
+            self.state = RecordingStatus::Ended(why);
             self.audio = Some(audio);
         }
     }

@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::engine::{self, RecordingState};
+use generations::engine::{self, RecordingStatus};
 use generations::{AudioMemory, ChannelLayout};
 
 mod device;
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         control.play(pluck)?;
         sleep(Duration::from_millis(400));
     }
-    while !matches!(recording.state(), RecordingState::Ended(_)) {
+    while !matches!(recording.state(), RecordingStatus::Ended(_)) {
         sleep(Duration::from_millis(50));
     }
     println!("recording: {:?}", recording.state());
