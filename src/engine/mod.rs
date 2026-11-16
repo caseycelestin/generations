@@ -54,7 +54,15 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
             voices: voices_control,
             recording: recording_control,
         }),
-        Renderer::new(realtime, collector_realtime, recording_realtime, voices),
+        Renderer::new(
+            realtime,
+            collector_realtime,
+            realtime::render::Requests {
+                voices: voices_realtime,
+                recording: recording_realtime,
+            },
+            voices,
+        ),
     )
 }
 

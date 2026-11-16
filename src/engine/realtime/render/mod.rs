@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::audio::AudioBuffer;
 use crate::config::Pcm;
 use crate::duplex::{self, Message};
-use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
+use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd, RecordingRequest};
 use crate::engine::protocol::voice::{VoiceEnd, VoiceRequest};
 use crate::engine::protocol::{Command, Event};
 use crate::{collector, request};
@@ -21,11 +21,18 @@ use voices::{Voice, Voices};
 
 type Frame = [Pcm; Renderer::CHANNELS];
 
+/// One request channel per actor, at its real-time end.
+#[derive(Debug)]
+pub(crate) struct Requests {
+    pub(crate) voices: request::RealtimeEnd<VoiceRequest>,
+    pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
+}
+
 #[derive(Debug)]
 pub struct Renderer {
     channel: duplex::RealtimeEnd<Command, Event>,
     collector: collector::RealtimeEnd<Arc<AudioBuffer>>,
-    requests: request::RealtimeEnd<Command, Event>,
+    requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
@@ -45,7 +52,7 @@ impl Renderer {
     pub(crate) fn new(
         channel: duplex::RealtimeEnd<Command, Event>,
         collector: collector::RealtimeEnd<Arc<AudioBuffer>>,
-        requests: request::RealtimeEnd<Command, Event>,
+        requests: Requests,
         voices: NonZeroUsize,
     ) -> Self {
         Self {
