@@ -17,6 +17,7 @@ pub(crate) enum VoiceRequest {
 
 impl Request for VoiceRequest {
     type Reply = ();
+    type Status = VoiceState;
 }
 
 /// What the audio thread last said about a voice.

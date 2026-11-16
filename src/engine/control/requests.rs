@@ -4,6 +4,7 @@
 use thiserror::Error;
 
 use crate::engine::protocol::recording::RecordingRequest;
+use crate::engine::protocol::voice::VoiceRequest;
 use crate::request;
 
 /// No reply yet, already taken, or never coming.
@@ -79,5 +80,6 @@ impl From<request::TryRecvStatusError> for TryRecvStatusError {
 /// One request channel per actor in the renderer.
 #[derive(Debug, Clone)]
 pub(crate) struct Requests {
+    pub(crate) voices: request::ControlEnd<VoiceRequest>,
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
 }

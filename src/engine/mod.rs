@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 
 use crate::duplex::{self, Capacity};
 use protocol::recording::RecordingRequest;
+use protocol::voice::VoiceRequest;
 
 /// Recordings the renderer holds at once, so the requests its recording
 /// channel needs: each holds one until its reply is taken.
@@ -36,6 +37,8 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     });
     let (collector_control, collector_realtime) =
         crate::collector::channel(collector_capacity(command_capacity, voices));
+    let (voices_control, voices_realtime) =
+        crate::request::channel::<VoiceRequest>(voice_capacity(command_capacity, voices));
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
     (
@@ -43,11 +46,18 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
             control,
             collector_control,
             control::Requests {
+                voices: voices_control,
                 recording: recording_control,
             },
         ),
         Renderer::new(realtime, collector_realtime, recording_realtime, voices),
     )
+}
+
+/// Every voice playing, plus `command_capacity` plays and stops on their
+/// way; each holds one until its reply is taken.
+fn voice_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
+    voices.get() + command_capacity
 }
 
 /// A voice reserves one event slot, its end, and holds it while it plays
