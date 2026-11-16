@@ -1,18 +1,30 @@
 //! The control side's end, and the requests sent from it.
 
+use std::fmt;
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
 use super::{FromRealtime, Request, ToRealtime};
 
-#[derive(Debug)]
-pub struct ControlEnd<Q>(PhantomData<Q>);
+/// The lock is for its clones and handles; the real-time side never takes
+/// it.
+pub struct ControlEnd<Q: Request> {
+    shared: Arc<Mutex<Shared<Q>>>,
+}
+
+/// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
+impl<Q: Request> fmt::Debug for ControlEnd<Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ControlEnd").finish_non_exhaustive()
+    }
+}
 
 /// Clones share one channel. Written out, as a derive would demand `Q` be
 /// `Clone`.
-impl<Q> Clone for ControlEnd<Q> {
+impl<Q: Request> Clone for ControlEnd<Q> {
     fn clone(&self) -> Self {
         todo!()
     }
@@ -25,7 +37,15 @@ impl<Q: Request> ControlEnd<Q> {
         capacity: usize,
         headroom: usize,
     ) -> Self {
-        todo!()
+        let shared = Shared {
+            to_realtime,
+            from_realtime,
+            capacity,
+            headroom,
+        };
+        Self {
+            shared: Arc::new(Mutex::new(shared)),
+        }
     }
 
     /// Reserves slots for a request, its cancel, one status question and the
@@ -137,4 +157,14 @@ pub enum TryRecvStatusError {
     Closed,
     #[error("the real-time end is gone; no answer will come")]
     Disconnected,
+}
+
+struct Shared<Q: Request> {
+    to_realtime: Producer<ToRealtime<Q>>,
+    from_realtime: Consumer<FromRealtime<Q>>,
+    /// In requests; the rings are sized from it.
+    capacity: usize,
+    /// The last slots of `capacity`, kept for
+    /// `try_reserve_including_headroom`.
+    headroom: usize,
 }
