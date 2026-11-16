@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
-use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::voice::VoiceRequest;
 use crate::layout::ChannelLayout;
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
@@ -55,8 +54,8 @@ impl Voice {
         self.permit.id() == id
     }
 
-    pub(crate) fn plays(&self, audio: BufferAddress) -> bool {
-        BufferAddress::of(&self.audio) == audio
+    pub(crate) fn plays(&self, audio: &Arc<AudioBuffer>) -> bool {
+        Arc::ptr_eq(&self.audio, audio)
     }
 
     /// Its last frame has been rendered.

@@ -82,11 +82,11 @@ impl Renderer {
                     }
                 }
                 Received::Request(permit, VoiceRequest::StopAudio(audio)) => {
-                    for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
+                    for voice in self.voices.extract_if(|voice| voice.plays(&audio)) {
                         voice.end(&mut self.requests.voices);
                     }
-                    // Its reply says only that it was applied.
-                    self.requests.voices.close(permit, None);
+                    // The audio goes back with the reply, never freed here.
+                    self.requests.voices.close(permit, Some(audio));
                 }
                 Received::Request(permit, VoiceRequest::StopAll) => {
                     for voice in self.voices.drain() {

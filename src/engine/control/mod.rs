@@ -9,10 +9,11 @@ pub(crate) use requests::Requests;
 pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
 pub use voice::{PendingVoiceStatus, PlayError, Voice};
 
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use crate::audio::Audio;
-use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::voice::VoiceRequest;
 use crate::request;
 
@@ -53,10 +54,10 @@ impl Control {
 
     /// Stops every voice playing `audio`.
     pub fn stop(&self, audio: &Audio) -> Result<(), StopError> {
-        let address = BufferAddress::of(audio.shared());
         let permit = self.requests.voices.try_reserve_including_headroom()?;
-        // Its handle is dropped: the reply says only that it was applied.
-        permit.open(VoiceRequest::StopAudio(address));
+        let audio_clone = Arc::clone(audio.shared());
+        // Its handle is dropped: the reply only brings the clone back.
+        permit.open(VoiceRequest::StopAudio(audio_clone));
         Ok(())
     }
 

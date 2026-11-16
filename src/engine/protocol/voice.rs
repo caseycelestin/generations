@@ -5,17 +5,17 @@ use std::sync::Arc;
 use crate::audio::AudioBuffer;
 use crate::request::Request;
 
-use super::BufferAddress;
-
 #[derive(Debug)]
 pub(crate) enum VoiceRequest {
     Play(Arc<AudioBuffer>),
     /// Every voice playing this audio.
-    StopAudio(BufferAddress),
+    StopAudio(Arc<AudioBuffer>),
     StopAll,
 }
 
-/// A play's audio comes back with its reply; a stop's carries nothing.
+/// What a request carried comes back with its reply, to be freed on the
+/// control side: a play's audio, or the audio a stop named. A stop-all
+/// carries nothing.
 impl Request for VoiceRequest {
     type Reply = Option<Arc<AudioBuffer>>;
     type Status = VoiceStatus;
