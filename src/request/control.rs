@@ -178,6 +178,7 @@ impl<Q: Request> RequestHandle<Q> {
         Ok(PendingStatus {
             shared: Arc::clone(&self.shared),
             id: self.id,
+            taken: false,
         })
     }
 }
@@ -196,6 +197,7 @@ pub struct PendingStatus<Q: Request> {
     shared: Arc<Mutex<Shared<Q>>>,
     /// The request asked about.
     id: RequestId,
+    taken: bool,
 }
 
 /// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
@@ -209,7 +211,12 @@ impl<Q: Request> fmt::Debug for PendingStatus<Q> {
 
 impl<Q: Request> PendingStatus<Q> {
     pub fn try_recv(&mut self) -> Result<Q::Status, TryRecvStatusError> {
-        todo!()
+        if self.taken {
+            return Err(TryRecvStatusError::Taken);
+        }
+        let status = lock(&self.shared).take_answer(self.id)?;
+        self.taken = true;
+        Ok(status)
     }
 }
 
@@ -350,6 +357,28 @@ impl<Q: Request> Shared<Q> {
         let pushed = self.to_realtime.push(ToRealtime::Status(id));
         assert!(pushed.is_ok(), "the ring holds three messages per request");
         Ok(())
+    }
+
+    /// `Closed` once the request has ended without answering: its reply came
+    /// first, or its record has gone with the reply.
+    fn take_answer(&mut self, id: RequestId) -> Result<Q::Status, TryRecvStatusError> {
+        self.take_in();
+        let found = self.requests.iter().position(|request| request.id == id);
+        let Some(index) = found else {
+            return Err(TryRecvStatusError::Closed);
+        };
+        let request = &mut self.requests[index];
+        match request.question.take() {
+            Some(Question::Answered(status)) => return Ok(status),
+            unanswered => request.question = unanswered,
+        }
+        if request.reply.is_some() {
+            return Err(TryRecvStatusError::Closed);
+        }
+        if self.from_realtime.is_abandoned() {
+            return Err(TryRecvStatusError::Disconnected);
+        }
+        Err(TryRecvStatusError::Empty)
     }
 
     /// Frees the record now if its reply has come, or else when it does.
