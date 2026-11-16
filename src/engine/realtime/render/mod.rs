@@ -7,6 +7,7 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
+use crate::engine::protocol::inputs::InputRequest;
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
 use crate::request::{self, Received};
@@ -21,6 +22,7 @@ type Frame = [Pcm; Renderer::CHANNELS];
 pub(crate) struct Requests {
     pub(crate) voices: request::RealtimeEnd<VoiceRequest>,
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
+    pub(crate) inputs: request::RealtimeEnd<InputRequest>,
 }
 
 #[derive(Debug)]
@@ -164,6 +166,7 @@ mod tests {
     fn renderer(voices: usize) -> (Ends, Renderer) {
         let (voices_control, voices_realtime) = request::channel_with_headroom(voices + 16, 2);
         let (recording_control, recording_realtime) = request::channel(1);
+        let (_, inputs_realtime) = request::channel(0);
         let ends = Ends {
             voices: voices_control,
             recording: recording_control,
@@ -171,6 +174,7 @@ mod tests {
         let requests = Requests {
             voices: voices_realtime,
             recording: recording_realtime,
+            inputs: inputs_realtime,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
         (ends, Renderer::new(requests, voices))

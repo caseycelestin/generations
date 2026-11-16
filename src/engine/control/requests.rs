@@ -3,6 +3,7 @@
 
 use thiserror::Error;
 
+use crate::engine::protocol::inputs::InputRequest;
 use crate::engine::protocol::recording::RecordingRequest;
 use crate::engine::protocol::voice::VoiceRequest;
 use crate::request;
@@ -81,4 +82,5 @@ impl From<request::TryRecvStatusError> for TryRecvStatusError {
 pub(crate) struct Requests {
     pub(crate) voices: request::ControlEnd<VoiceRequest>,
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
+    pub(crate) inputs: request::ControlEnd<InputRequest>,
 }

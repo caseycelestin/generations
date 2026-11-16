@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
     let mut project = Project::open(&dir)?;
     // 16 voices at once, and room for 64 plays and stops on their way.
-    let (control, mut renderer) = engine::create(64, 16);
+    let (control, mut renderer) = engine::create(64, 16, 0);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
     // One second of A440, decaying from half scale to near silence.

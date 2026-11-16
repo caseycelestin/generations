@@ -76,6 +76,10 @@ impl Control {
         Recording::record(&self.requests.recording, audio)
     }
 
+    pub fn input(&self) {
+        todo!()
+    }
+
     /// Frees the audio of voices and recordings whose handles are gone,
     /// returning it to `AudioMemory`. `record` does this first; call it when
     /// the app goes quiet, or before a load that needs the memory.

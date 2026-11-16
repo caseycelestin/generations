@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let audio = project.load(SampleId(0), &memory)?;
 
     // 16 voices at once, and room for 64 plays and stops on their way.
-    let (control, renderer) = engine::create(64, 16);
+    let (control, renderer) = engine::create(64, 16, 0);
 
     // Clones are the same engine.
     let _ui = control.clone();
