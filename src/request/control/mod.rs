@@ -74,8 +74,7 @@ impl<Q: Request> ControlEnd<Q> {
         lock(&self.shared).take_in();
     }
 
-    /// `Full` once `limit` slots are held, by requests in flight and by
-    /// permits not yet opened.
+    /// `Full` once `limit` slots are held.
     fn reserve(&self, limit: usize) -> Result<RequestPermit<'_, Q>, ReserveError> {
         let mut shared = lock(&self.shared);
         shared.take_in();
@@ -125,7 +124,7 @@ impl<Q: Request> Drop for RequestPermit<'_, Q> {
 
 /// Holds its request's slot until the reply is taken or the handle is
 /// dropped; an arrived reply still holds it. Dropped, the request runs on
-/// and its reply is dropped when it arrives.
+/// and its reply is dropped here, at once if it has come.
 pub struct RequestHandle<Q: Request> {
     shared: Arc<Mutex<Shared<Q>>>,
     id: RequestId,

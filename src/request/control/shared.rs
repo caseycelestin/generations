@@ -12,7 +12,7 @@ pub(super) struct Shared<Q: Request> {
     pub(super) to_realtime: Producer<ToRealtime<Q>>,
     from_realtime: Consumer<FromRealtime<Q>>,
     /// One per request in flight, until its reply is taken. Reserving stops
-    /// at `capacity`, so allocated to that here it never grows.
+    /// at the end's capacity, so allocated to that in `new` it never grows.
     requests: Vec<InFlight<Q>>,
     /// Permits neither opened nor dropped; each holds a slot as a request in
     /// flight does.

@@ -16,7 +16,8 @@ pub enum RecordError {
     /// The main out is stereo, so mono audio cannot hold it.
     #[error("recording needs stereo audio")]
     NotStereo(Audio),
-    /// Stop its voices and try again.
+    /// Stop its voices, then wait on or drop their handles, which hold it
+    /// until then.
     #[error("a voice still holds the audio")]
     AudioInUse(Audio),
     /// Another recording holds the recorder until its reply is taken;

@@ -16,10 +16,9 @@ impl Request for RecordingRequest {
     type Status = RecordingStatus;
 }
 
-/// What the audio thread last said about a recording.
+/// The renderer's answer, while it holds the recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingStatus {
-    /// Not reported ended yet: recording, or about to.
     Recording,
     Ended(RecordingEnd),
 }

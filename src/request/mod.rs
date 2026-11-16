@@ -12,7 +12,7 @@
 //!   is lost.
 //! - Each direction is in order.
 //!
-//! Each side's end is in its own file, so `realtime.rs` can be held to the
+//! Each side's end is its own module, so `realtime.rs` can be held to the
 //! real-time rules alone.
 
 mod control;

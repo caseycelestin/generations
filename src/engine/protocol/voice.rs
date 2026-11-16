@@ -21,10 +21,9 @@ impl Request for VoiceRequest {
     type Status = VoiceStatus;
 }
 
-/// What the audio thread last said about a voice.
+/// The renderer's answer, while it holds the voice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceStatus {
-    /// Not reported ended yet: playing, or about to.
     Playing,
     Ended,
 }

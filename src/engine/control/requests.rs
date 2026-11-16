@@ -7,7 +7,6 @@ use crate::engine::protocol::recording::RecordingRequest;
 use crate::engine::protocol::voice::VoiceRequest;
 use crate::request;
 
-/// No reply yet, already taken, or never coming.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum TryWaitError {
     /// It may still be running, or its end is on the way.

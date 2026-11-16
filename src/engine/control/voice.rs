@@ -57,7 +57,7 @@ impl Voice {
         Ok(PendingVoiceStatus(pending))
     }
 
-    /// `Ok` once it has ended; taking that also frees its slot.
+    /// `Ok` once it has ended.
     pub fn try_wait(&mut self) -> Result<(), TryWaitError> {
         self.handle.try_wait()?;
         Ok(())

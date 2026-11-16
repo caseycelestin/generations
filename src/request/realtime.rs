@@ -30,9 +30,9 @@ impl ReplyPermit {
     }
 }
 
-/// For one status question. Dropped unanswered, it holds its slot for good,
-/// unless its request is answered by now: the control side then has its
-/// reply.
+/// For one status question. Drop it unanswered only once its request is
+/// closed: before then the question stays out, and the request cannot be
+/// asked again.
 #[derive(Debug)]
 pub struct StatusPermit {
     id: RequestId,
@@ -87,8 +87,8 @@ impl<Q: Request> RealtimeEnd<Q> {
         Some(received)
     }
 
-    /// Sends the request's reply and ends it; its questions still out are
-    /// closed. Cannot fail: the slot was reserved with the request.
+    /// Sends the request's reply and ends it; a question still out is closed.
+    /// Cannot fail: the slot was reserved with the request.
     pub fn close(&mut self, permit: ReplyPermit, reply: Q::Reply) {
         let pushed = self.to_control.push(FromRealtime::Reply(permit.id, reply));
         debug_assert!(pushed.is_ok(), "the ring holds two messages per request");
