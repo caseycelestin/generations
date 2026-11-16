@@ -1,7 +1,7 @@
 //! The engine as a user sees it: load a sample from a project,
 //! make an engine, keep the control, play its audio as voices, and give the
 //! renderer to the audio thread to render periods. One voice plays out, one
-//! is stopped, and each reports how it ended. The main out is recorded
+//! is stopped, and each reports once it has ended. The main out is recorded
 //! while they play. Nothing is heard: the periods go to a buffer, not a
 //! device.
 //!
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut played = control.play(&audio)?;
     let mut stopped = control.play(&audio)?;
-    stopped.stop()?;
+    stopped.stop();
 
     // Room for a second of the main out, paid for now.
     let take = memory.alloc(ChannelLayout::Stereo, 48_000)?;
@@ -49,13 +49,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     audio_thread.join().expect("audio thread");
 
-    recording.stop()?;
+    recording.stop();
 
-    // The audio thread reports each change: started, refused, ended.
+    // The audio thread reports once it has ended.
     match recording.state() {
-        RecordingState::Pending => println!("not started yet"),
         RecordingState::Recording => println!("still recording"),
-        RecordingState::Refused => println!("refused: the recorder was busy"),
         RecordingState::Ended(why) => println!("recording ended: {why:?}"),
     }
 
@@ -64,12 +62,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         project.add_sample(&recorded)?;
     }
 
-    // The audio thread reports how a voice ended, once it has: here
-    // Finished, then Stopped.
+    // The audio thread reports when a voice has ended.
     for voice in [&mut played, &mut stopped] {
         match voice.state() {
             VoiceState::Playing => println!("still playing"),
-            VoiceState::Ended(why) => println!("ended: {why:?}"),
+            VoiceState::Ended => println!("ended"),
         }
     }
 

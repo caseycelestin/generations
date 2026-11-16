@@ -11,10 +11,10 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
-use crate::collector;
 use crate::duplex::{self, Full, ReserveError};
-use crate::engine::protocol::voice::VoiceCommand;
+use crate::engine::protocol::voice::VoiceRequest;
 use crate::engine::protocol::{BufferAddress, Command, Event};
+use crate::{collector, request};
 
 #[derive(Debug, Error)]
 pub enum ControlError {
@@ -25,6 +25,22 @@ pub enum ControlError {
     /// was sent.
     #[error("every event slot is held")]
     EventsFull,
+    /// As many requests as the renderer has room for await their reply;
+    /// nothing was sent.
+    #[error("too many requests await their reply")]
+    Full,
+    /// The renderer is gone; nothing was sent.
+    #[error("the renderer is gone")]
+    Disconnected,
+}
+
+impl From<request::ReserveError> for ControlError {
+    fn from(error: request::ReserveError) -> Self {
+        match error {
+            request::ReserveError::Full => Self::Full,
+            request::ReserveError::Disconnected => Self::Disconnected,
+        }
+    }
 }
 
 impl From<ReserveError> for ControlError {
@@ -50,42 +66,48 @@ pub struct Control {
     channel: duplex::ControlEnd<Command, Event>,
     /// Collected before every play and record, which its size assumes.
     collector: collector::ControlEnd<Arc<AudioBuffer>>,
+    requests: request::ControlEnd<Command, Event>,
 }
 
 impl Control {
     pub(crate) fn new(
         channel: duplex::ControlEnd<Command, Event>,
         collector: collector::ControlEnd<Arc<AudioBuffer>>,
+        requests: request::ControlEnd<Command, Event>,
     ) -> Self {
-        Self { channel, collector }
+        Self {
+            channel,
+            collector,
+            requests,
+        }
     }
 
     pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
         self.collector.collect();
-        Voice::play(&self.channel, audio)
+        Voice::play(&self.requests, audio)
     }
 
     /// Stops every voice playing `audio`.
     pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
         let address = BufferAddress::of(audio.shared());
         self.channel
-            .try_send(VoiceCommand::RemoveAudio(address))
+            .try_send(VoiceRequest::StopAudio(address))
             .map_err(ControlError::from)
     }
 
     /// Stops every voice; a recording runs on.
     pub fn stop_all(&self) -> Result<(), ControlError> {
         self.channel
-            .try_send(VoiceCommand::RemoveAll)
+            .try_send(VoiceRequest::StopAll)
             .map_err(ControlError::from)
     }
 
     /// Records the main out into `audio`, from empty. By value: the
-    /// renderer writes it until it comes back. Refused while another
-    /// recording runs, as its state shows, and at once while a voice holds
-    /// `audio`.
+    /// renderer writes it until it comes back. While another recording
+    /// runs it ends at once as `Refused`; while a voice holds `audio`,
+    /// `record` itself fails.
     pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
-        Recording::record(&self.channel, &self.collector, audio)
+        Recording::record(&self.requests, &self.collector, audio)
     }
 
     /// Frees what the renderer has let go of, returning it to

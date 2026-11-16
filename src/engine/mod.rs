@@ -7,7 +7,7 @@ mod realtime;
 
 pub use control::{Control, ControlError, RecordError, Recording, Voice};
 pub use protocol::recording::{RecordingEnd, RecordingState};
-pub use protocol::voice::{VoiceEnd, VoiceState};
+pub use protocol::voice::VoiceState;
 pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
@@ -28,10 +28,19 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     });
     let (collector_control, collector_realtime) =
         crate::collector::channel(collector_capacity(command_capacity, voices));
+    let (requests_control, requests_realtime) =
+        crate::request::channel(request_capacity(command_capacity, voices));
     (
-        Control::new(control, collector_control),
-        Renderer::new(realtime, collector_realtime, voices),
+        Control::new(control, collector_control, requests_control),
+        Renderer::new(realtime, collector_realtime, requests_realtime, voices),
     )
+}
+
+/// Every voice and the recording, playing or queued, plus `command_capacity`
+/// more waiting, such as new plays and stops; past this, a request is
+/// refused.
+fn request_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
+    voices.get() + 1 + command_capacity
 }
 
 /// A voice reserves one event slot, its end, and holds it while it plays
@@ -79,7 +88,7 @@ mod tests {
         renderer.render(&mut out);
 
         assert_eq!(out, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
-        assert_eq!(voice.state(), VoiceState::Ended(VoiceEnd::Finished));
+        assert_eq!(voice.state(), VoiceState::Ended);
     }
 
     #[test]
@@ -89,10 +98,10 @@ mod tests {
         let mut voice = control.play(&audio).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        voice.stop().unwrap();
+        voice.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(voice.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(voice.state(), VoiceState::Ended);
     }
 
     #[test]
@@ -109,8 +118,8 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         control.collect();
 
-        assert_eq!(first.state(), VoiceState::Ended(VoiceEnd::Stopped));
-        assert_eq!(second.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(first.state(), VoiceState::Ended);
+        assert_eq!(second.state(), VoiceState::Ended);
         assert_eq!(kept.state(), VoiceState::Playing);
         assert_eq!(Arc::strong_count(stopped.shared()), 1);
     }
@@ -127,8 +136,8 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         control.collect();
 
-        assert_eq!(first.state(), VoiceState::Ended(VoiceEnd::Stopped));
-        assert_eq!(second.state(), VoiceState::Ended(VoiceEnd::Stopped));
+        assert_eq!(first.state(), VoiceState::Ended);
+        assert_eq!(second.state(), VoiceState::Ended);
         assert_eq!(Arc::strong_count(audio.shared()), 1);
     }
 
@@ -164,11 +173,10 @@ mod tests {
     fn a_recording_runs_until_stopped() {
         let (control, mut renderer) = create(4, 1);
         let mut recording = control.record(room(64)).unwrap();
-        assert_eq!(recording.state(), RecordingState::Pending);
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(recording.state(), RecordingState::Recording);
 
-        recording.stop().unwrap();
+        recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
         assert_eq!(
@@ -198,13 +206,12 @@ mod tests {
     }
 
     #[test]
-    fn record_hands_the_audio_back_when_the_ring_is_full() {
+    fn record_hands_the_audio_back_when_requests_are_full() {
         let (control, _renderer) = create(1, 1);
-        control.stop_all().unwrap();
-        assert!(matches!(
-            control.record(room(4)),
-            Err(RecordError::CommandsFull(_))
-        ));
+        let audio = audio(&[0.5; 4]);
+        // One voice, the recording and one more: three requests in flight.
+        let _voices: Vec<_> = (0..3).map(|_| control.play(&audio).unwrap()).collect();
+        assert!(matches!(control.record(room(4)), Err(RecordError::Full(_))));
     }
 
     #[test]
@@ -228,7 +235,7 @@ mod tests {
         let mut recording = control.record(room(64)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        recording.stop().unwrap();
+        recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
         let taken = recording.take().unwrap();
@@ -243,7 +250,7 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         assert!(recording.take().is_none());
 
-        recording.stop().unwrap();
+        recording.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
         assert!(recording.take().is_some());
@@ -258,7 +265,7 @@ mod tests {
         let mut recording = control.record(used).unwrap();
         renderer.render(&mut [0.0; 2 * 2]);
 
-        recording.stop().unwrap();
+        recording.stop();
         renderer.render(&mut [0.0; 2 * 2]);
 
         assert_eq!(recording.take().unwrap().samples(), [0.0; 2 * 2]);
@@ -271,7 +278,7 @@ mod tests {
         let mut second = control.record(room(8)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(second.state(), RecordingState::Refused);
+        assert_eq!(second.state(), RecordingState::Ended(RecordingEnd::Refused));
         assert_eq!(second.take().unwrap().frames(), 0);
     }
 }

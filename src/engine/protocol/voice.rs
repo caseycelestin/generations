@@ -3,17 +3,20 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
+use crate::request::Request;
 
 use super::BufferAddress;
 
 #[derive(Debug)]
-pub(crate) enum VoiceCommand {
-    Add(Arc<AudioBuffer>),
-    /// Removes the sender's voice; from any other sender, does nothing.
-    Remove,
+pub(crate) enum VoiceRequest {
+    Play(Arc<AudioBuffer>),
     /// Every voice playing this audio.
-    RemoveAudio(BufferAddress),
-    RemoveAll,
+    StopAudio(BufferAddress),
+    StopAll,
+}
+
+impl Request for VoiceRequest {
+    type Reply = ();
 }
 
 /// What the audio thread last said about a voice.
@@ -21,16 +24,5 @@ pub(crate) enum VoiceCommand {
 pub enum VoiceState {
     /// Not reported ended yet: playing, or about to.
     Playing,
-    Ended(VoiceEnd),
-}
-
-/// The one event a voice sends: it says nothing when it starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceEnd {
-    /// It played to its last frame.
-    Finished,
-    /// Its `stop` arrived.
-    Stopped,
-    /// It was the oldest when a new voice needed its place.
-    Cut,
+    Ended,
 }

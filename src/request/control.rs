@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use super::{RequestId, ReserveError, TryRecvError};
+use super::{Request, ReserveError, TryRecvError};
 
 #[derive(Debug)]
 pub struct ControlEnd<C, R>(PhantomData<(C, R)>);
@@ -16,8 +16,8 @@ impl<C, R> Clone for ControlEnd<C, R> {
 }
 
 impl<C, R> ControlEnd<C, R> {
-    /// Reserves a command slot for a request and a slot for its one reply,
-    /// so the permit's `send` cannot fail.
+    /// Reserves slots for a request, its cancel and its one reply, so
+    /// neither `send` nor `cancel` can fail.
     pub fn try_reserve(&self) -> Result<RequestPermit<'_, C, R>, ReserveError> {
         todo!()
     }
@@ -27,7 +27,11 @@ impl<C, R> ControlEnd<C, R> {
 pub struct RequestPermit<'a, C, R>(PhantomData<&'a (C, R)>);
 
 impl<C, R> RequestPermit<'_, C, R> {
-    pub fn send(self, request: impl Into<C>) -> RequestHandle<C, R> {
+    pub fn send<Q>(self, request: Q) -> RequestHandle<Q::Reply, C, R>
+    where
+        Q: Request + Into<C>,
+        Q::Reply: TryFrom<R>,
+    {
         todo!()
     }
 }
@@ -35,16 +39,20 @@ impl<C, R> RequestPermit<'_, C, R> {
 /// Dropping it lets the request run on; its reply is dropped when it
 /// arrives.
 #[derive(Debug)]
-pub struct RequestHandle<C, R>(PhantomData<(C, R)>);
+pub struct RequestHandle<T, C, R>(PhantomData<(T, C, R)>);
 
-impl<C, R> RequestHandle<C, R> {
-    /// For a later request to name this one, which may be answered by the
-    /// time that arrives.
-    pub fn id(&self) -> RequestId {
+impl<T, C, R> RequestHandle<T, C, R> {
+    /// # Panics
+    /// If the reply is not a `T`: the real-time side broke its contract.
+    pub fn try_recv(&mut self) -> Result<T, TryRecvError>
+    where
+        T: TryFrom<R>,
+    {
         todo!()
     }
 
-    pub fn try_recv(&mut self) -> Result<R, TryRecvError> {
+    /// The request still replies once. Only the first call sends.
+    pub fn cancel(&mut self) {
         todo!()
     }
 }

@@ -1,7 +1,7 @@
 //! What crosses between the two sides, owned by neither.
 //!
-//! Commands are operations on what the renderer holds (add, remove), not
-//! user intents; handles translate one into the other. Only plain data
+//! Each request is a task the renderer carries out, answered once it is
+//! done; handles stand for them on the control side. Only plain data
 //! crosses: audio, ids and values. Each feature has its own file and its
 //! own variant in [`Command`] and [`Event`], since each ring carries one
 //! type.
@@ -13,24 +13,24 @@ use crate::audio::AudioBuffer;
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use recording::{RecordingCommand, RecordingEvent};
-use voice::{VoiceCommand, VoiceEnd};
+use recording::{RecordingEnd, RecordingRequest};
+use voice::VoiceRequest;
 
 #[derive(Debug)]
 pub(crate) enum Command {
-    Voice(VoiceCommand),
-    Recording(RecordingCommand),
+    Voice(VoiceRequest),
+    Recording(RecordingRequest),
 }
 
-impl From<VoiceCommand> for Command {
-    fn from(command: VoiceCommand) -> Self {
-        Self::Voice(command)
+impl From<VoiceRequest> for Command {
+    fn from(request: VoiceRequest) -> Self {
+        Self::Voice(request)
     }
 }
 
-impl From<RecordingCommand> for Command {
-    fn from(command: RecordingCommand) -> Self {
-        Self::Recording(command)
+impl From<RecordingRequest> for Command {
+    fn from(request: RecordingRequest) -> Self {
+        Self::Recording(request)
     }
 }
 
@@ -38,19 +38,30 @@ impl From<RecordingCommand> for Command {
 /// audio back, to be taken; what nobody takes back goes to the collector.
 #[derive(Debug)]
 pub(crate) enum Event {
-    Voice(VoiceEnd),
-    Recording(RecordingEvent),
+    Voice,
+    Recording(RecordingEnd, Arc<AudioBuffer>),
 }
 
-impl From<VoiceEnd> for Event {
-    fn from(end: VoiceEnd) -> Self {
-        Self::Voice(end)
+/// A voice command's reply carries nothing.
+impl TryFrom<Event> for () {
+    type Error = Event;
+
+    fn try_from(event: Event) -> Result<Self, Event> {
+        match event {
+            Event::Voice => Ok(()),
+            other => Err(other),
+        }
     }
 }
 
-impl From<RecordingEvent> for Event {
-    fn from(event: RecordingEvent) -> Self {
-        Self::Recording(event)
+impl TryFrom<Event> for (RecordingEnd, Arc<AudioBuffer>) {
+    type Error = Event;
+
+    fn try_from(event: Event) -> Result<Self, Event> {
+        match event {
+            Event::Recording(why, audio) => Ok((why, audio)),
+            other => Err(other),
+        }
     }
 }
 

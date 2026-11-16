@@ -4,8 +4,9 @@
 //! - On the real-time side every operation is wait-free and bounded: it
 //!   never allocates, frees, locks or blocks. The control side may.
 //! - Memory is fixed at creation.
-//! - A reservation holds room for a request and its reply, so it is the only
-//!   step that can be refused; nothing the real-time side sends is lost.
+//! - A reservation holds room for a request, its cancel and its reply, so it
+//!   is the only step that can be refused; nothing the real-time side sends
+//!   is lost.
 //! - Each direction is in order.
 //!
 //! Each side's end is in its own file, so `realtime.rs` can be held to the
@@ -15,9 +16,15 @@ mod control;
 mod realtime;
 
 pub use control::{ControlEnd, RequestHandle, RequestPermit};
-pub use realtime::{RealtimeEnd, ReplyPermit};
+pub use realtime::{RealtimeEnd, Received, ReplyPermit};
 
 use thiserror::Error;
+
+/// Pairs a request type with its reply, so `send` knows what its handle
+/// returns.
+pub trait Request {
+    type Reply;
+}
 
 /// Unique within a channel and never reused; names, not ages, so they do
 /// not order.
@@ -44,7 +51,8 @@ pub enum TryRecvError {
 }
 
 /// `capacity` is in requests: the most that can await their reply at once.
-/// Both rings hold that many, so neither ever fills.
+/// The ring out holds twice that, for each one's cancel, so neither ring
+/// ever fills.
 ///
 /// # Panics
 /// If `capacity` is zero: a channel with no room refuses every request.
