@@ -19,8 +19,11 @@ impl Request for InputRequest {
     type Status = InputStatus;
 }
 
+/// The renderer's answer, while it holds the input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InputStatus {}
+pub enum InputStatus {
+    Open,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputEnd {

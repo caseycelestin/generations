@@ -377,6 +377,6 @@ mod tests {
         let (mut input, _feeder) = control.open_input(ChannelLayout::Mono, 8).unwrap();
         let mut pending = input.request_status().unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
-        assert_eq!(pending.try_recv(), Ok(InputStatus {}));
+        assert_eq!(pending.try_recv(), Ok(InputStatus::Open));
     }
 }

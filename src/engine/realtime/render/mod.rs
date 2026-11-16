@@ -167,7 +167,7 @@ impl Renderer {
                 }
                 Received::Status(permit) => {
                     if self.inputs.iter().any(|input| input.is(permit.id())) {
-                        self.requests.inputs.answer(permit, InputStatus {});
+                        self.requests.inputs.answer(permit, InputStatus::Open);
                     }
                     // Otherwise it is closed, and its reply has the last word.
                 }
