@@ -7,24 +7,23 @@ use std::sync::Arc;
 
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
-use crate::collector;
-use crate::duplex::{self, Id};
-use crate::engine::protocol::voice::VoiceEnd;
-use crate::engine::protocol::{BufferAddress, Command, Event};
+use crate::engine::protocol::BufferAddress;
+use crate::engine::protocol::voice::VoiceRequest;
 use crate::layout::ChannelLayout;
+use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 
 #[derive(Debug)]
 pub(crate) struct Voice {
-    id: Id,
+    permit: ReplyPermit,
     audio: Arc<AudioBuffer>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(id: Id, audio: Arc<AudioBuffer>) -> Self {
+    pub(crate) fn new(permit: ReplyPermit, audio: Arc<AudioBuffer>) -> Self {
         Self {
-            id,
+            permit,
             audio,
             position: 0,
         }
@@ -52,6 +51,10 @@ impl Voice {
         self.position = end;
     }
 
+    pub(crate) fn is(&self, id: RequestId) -> bool {
+        self.permit.id() == id
+    }
+
     pub(crate) fn plays(&self, audio: BufferAddress) -> bool {
         BufferAddress::of(&self.audio) == audio
     }
@@ -61,18 +64,9 @@ impl Voice {
         self.position == self.audio.frames()
     }
 
-    /// The one way a voice leaves. Its audio goes to the collector before
-    /// its end goes out, so a voice reported ended has let go of it.
-    pub(crate) fn end(
-        self,
-        why: VoiceEnd,
-        channel: &mut duplex::RealtimeEnd<Command, Event>,
-        collector: &mut collector::RealtimeEnd<Arc<AudioBuffer>>,
-    ) {
-        let sent = collector.try_send(self.audio);
-        debug_assert!(sent.is_ok(), "the collector is sized for every voice");
-        let ended = channel.end(self.id, why);
-        debug_assert!(ended.is_ok(), "a voice reserves its end");
+    /// The one way a voice leaves: its audio goes back in the reply.
+    pub(crate) fn end(self, requests: &mut RealtimeEnd<VoiceRequest>) {
+        requests.close(self.permit, Some(self.audio));
     }
 }
 
@@ -123,11 +117,15 @@ impl Voices {
         self.places.iter_mut().flatten().map(|(_, voice)| voice)
     }
 
-    pub(crate) fn remove(&mut self, id: Id) -> Option<Voice> {
+    pub(crate) fn holds(&self, id: RequestId) -> bool {
+        self.places.iter().flatten().any(|(_, voice)| voice.is(id))
+    }
+
+    pub(crate) fn remove(&mut self, id: RequestId) -> Option<Voice> {
         let found = self
             .places
             .iter_mut()
-            .find(|place| matches!(place, Some((_, voice)) if voice.id == id));
+            .find(|place| matches!(place, Some((_, voice)) if voice.is(id)));
         let (_, voice) = found?.take()?;
         Some(voice)
     }

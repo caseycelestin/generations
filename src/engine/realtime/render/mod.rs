@@ -13,7 +13,7 @@ use crate::collector;
 use crate::config::Pcm;
 use crate::duplex::{self, Message};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
-use crate::engine::protocol::voice::{VoiceEnd, VoiceRequest};
+use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
 use crate::engine::protocol::{Command, Event};
 use crate::request::{self, Received};
 use math::{add, hard_clip};
@@ -70,7 +70,7 @@ impl Renderer {
     /// playing voice, summed and clipped.
     pub fn render(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
-        self.apply_commands();
+        self.apply_voice_requests();
         self.apply_recording_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
         for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
@@ -88,28 +88,37 @@ impl Renderer {
         self.clean_up();
     }
 
-    fn apply_commands(&mut self) {
-        while let Some(Message { id, data: command }) = self.channel.try_recv() {
-            match command {
-                Command::Voice(VoiceRequest::Play(audio)) => {
-                    if let Some(replaced) = self.voices.add(Voice::new(id, audio)) {
-                        replaced.end(VoiceEnd::Cut, &mut self.channel, &mut self.collector);
+    fn apply_voice_requests(&mut self) {
+        while let Some(received) = self.requests.voices.try_recv() {
+            match received {
+                Received::Request(permit, VoiceRequest::Play(audio)) => {
+                    if let Some(cut) = self.voices.add(Voice::new(permit, audio)) {
+                        cut.end(&mut self.requests.voices);
                     }
                 }
-                Command::Voice(VoiceRequest::Remove) => {
-                    if let Some(stopped) = self.voices.remove(id) {
-                        stopped.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
-                    }
-                }
-                Command::Voice(VoiceRequest::StopAudio(audio)) => {
+                Received::Request(permit, VoiceRequest::StopAudio(audio)) => {
                     for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
-                        voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
+                        voice.end(&mut self.requests.voices);
+                    }
+                    // Its reply says only that it was applied.
+                    self.requests.voices.close(permit, None);
+                }
+                Received::Request(permit, VoiceRequest::StopAll) => {
+                    for voice in self.voices.drain() {
+                        voice.end(&mut self.requests.voices);
+                    }
+                    self.requests.voices.close(permit, None);
+                }
+                Received::Cancel(id) => {
+                    if let Some(stopped) = self.voices.remove(id) {
+                        stopped.end(&mut self.requests.voices);
                     }
                 }
-                Command::Voice(VoiceRequest::StopAll) => {
-                    for voice in self.voices.drain() {
-                        voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
+                Received::Status(permit) => {
+                    if self.voices.holds(permit.id()) {
+                        self.requests.voices.answer(permit, VoiceStatus::Playing);
                     }
+                    // Otherwise it is closed, and its reply has the last word.
                 }
             }
         }
@@ -142,7 +151,7 @@ impl Renderer {
 
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
-            voice.end(VoiceEnd::Finished, &mut self.channel, &mut self.collector);
+            voice.end(&mut self.requests.voices);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
