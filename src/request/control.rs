@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
-use super::{FromRealtime, Request, ToRealtime};
+use super::{FromRealtime, Request, RequestId, ToRealtime};
 
 /// The lock is for its clones and handles; the real-time side never takes
 /// it.
@@ -42,6 +42,7 @@ impl<Q: Request> ControlEnd<Q> {
             from_realtime,
             capacity,
             headroom,
+            requests: Vec::with_capacity(capacity),
         };
         Self {
             shared: Arc::new(Mutex::new(shared)),
@@ -167,4 +168,11 @@ struct Shared<Q: Request> {
     /// The last slots of `capacity`, kept for
     /// `try_reserve_including_headroom`.
     headroom: usize,
+    /// One per request in flight, until its reply is taken. Reserving stops
+    /// at `capacity`, so allocated to that here it never grows.
+    requests: Vec<InFlight>,
+}
+
+struct InFlight {
+    id: RequestId,
 }
