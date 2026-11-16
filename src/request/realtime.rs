@@ -97,6 +97,9 @@ impl<Q: Request> RealtimeEnd<Q> {
     /// Leaves the request open. Cannot fail: the slot was reserved with the
     /// request.
     pub fn answer(&mut self, permit: StatusPermit, status: Q::Status) {
-        todo!()
+        let pushed = self
+            .to_control
+            .push(FromRealtime::Status(permit.id, status));
+        debug_assert!(pushed.is_ok(), "the ring holds two messages per request");
     }
 }
