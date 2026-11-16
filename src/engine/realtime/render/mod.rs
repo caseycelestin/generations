@@ -7,6 +7,8 @@ mod voices;
 
 use std::num::NonZeroUsize;
 
+use rtrb::Consumer;
+
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
@@ -34,6 +36,9 @@ pub struct Renderer {
     recording: Option<Recording>,
     /// Never past its capacity, so adding one never allocates.
     inputs: Vec<Input>,
+    /// The capture device's whole frames; every input reads its channels
+    /// from them.
+    capture: Option<Consumer<Pcm>>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -48,12 +53,18 @@ impl Renderer {
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
-    pub(crate) fn new(requests: Requests, voices: NonZeroUsize, inputs: usize) -> Self {
+    pub(crate) fn new(
+        requests: Requests,
+        voices: NonZeroUsize,
+        inputs: usize,
+        capture: Option<Consumer<Pcm>>,
+    ) -> Self {
         Self {
             requests,
             voices: Voices::new(voices),
             recording: None,
             inputs: Vec::with_capacity(inputs),
+            capture,
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -219,7 +230,7 @@ mod tests {
             inputs: inputs_realtime,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, voices, 0))
+        (ends, Renderer::new(requests, voices, 0, None))
     }
 
     /// Opens a mono voice of `samples`, as `Control::play` does.

@@ -88,10 +88,11 @@ impl Control {
     /// use std::thread;
     ///
     /// use generations::ChannelLayout;
-    /// use generations::engine;
+    /// use generations::engine::{self, Capture};
     ///
     /// // 16 voices, room for 64 plays and stops, and one input.
-    /// let (control, mut renderer) = engine::create(64, 16, 1);
+    /// let capture = Capture { channels: 1, backlog: 2048, inputs: 1 };
+    /// let (control, mut renderer, _capture) = engine::create_with_capture(64, 16, capture);
     /// let (mut input, mut feeder) = control.open_input(ChannelLayout::Mono, 2048)?;
     ///
     /// // A capture callback would own the feeder.
@@ -120,7 +121,7 @@ impl Control {
     ) -> Result<(Input, Feeder), ControlError> {
         assert!(backlog > 0, "backlog must not be zero");
         let permit = self.requests.inputs.try_reserve()?;
-        let (feeder, reader) = Feeder::new(layout, backlog);
+        let (feeder, reader) = Feeder::new(layout.count(), backlog);
         Ok((Input::open(permit, reader, layout), feeder))
     }
 
