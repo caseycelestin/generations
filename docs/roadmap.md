@@ -341,10 +341,13 @@ input's ring must be freed on the control side like any other return.
   be freed on the control side.
 - **The examples are `first_sound`, `record` and `engine`**, plain
   demonstration code: no hardening or shared abstractions there.
-  `first_sound` and `record` run on a device; `engine` shows every engine
-  feature and compiles, and each new
-  feature is added to it in the same step. When the device exists, they
-  move into a binary crate.
+  `first_sound` and `record` run on a device; `engine` shows the voice and
+  recording features and compiles. When the device exists, they move into
+  a binary crate.
+- **A new feature is shown in a doc example on its API**, `no_run`, as
+  inputs are on `open_input`: `cargo test` compiles it as surely as an
+  example, and `cargo doc` shows it beside what it uses. Not yet aligned:
+  `engine`'s features move to doc examples in their own PR.
 
 ### Recording
 

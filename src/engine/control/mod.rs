@@ -83,6 +83,33 @@ impl Control {
     /// `backlog` is how many frames can wait for the renderer's next period
     /// before any are dropped: at least the longest output period, with
     /// room to spare when the capture period is longer.
+    ///
+    /// ```no_run
+    /// use std::thread;
+    ///
+    /// use generations::ChannelLayout;
+    /// use generations::engine;
+    ///
+    /// // 16 voices, room for 64 plays and stops, and one input.
+    /// let (control, mut renderer) = engine::create(64, 16, 1);
+    /// let (mut input, mut feeder) = control.open_input(ChannelLayout::Mono, 2048)?;
+    ///
+    /// // A capture callback would own the feeder.
+    /// let capture = thread::spawn(move || {
+    ///     let period = [0.0; 512];
+    ///     let written = feeder.feed(&period);
+    ///     println!("{written} frames in");
+    /// });
+    /// capture.join().expect("capture thread");
+    ///
+    /// // An output callback would own the renderer.
+    /// renderer.render(&mut [0.0; 512 * 2]);
+    ///
+    /// input.stop();
+    /// renderer.render(&mut [0.0; 512 * 2]);
+    /// println!("ended: {:?}", input.try_wait()?);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn open_input(
         &self,
         layout: ChannelLayout,
