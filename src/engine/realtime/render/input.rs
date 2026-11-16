@@ -69,3 +69,55 @@ impl Input {
         requests.close(self.permit, (why, self.reader));
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rtrb::{Producer, RingBuffer};
+
+    use super::*;
+
+    /// An input on a ring of `capacity` samples, and the ring's writing end.
+    fn input(layout: ChannelLayout, capacity: usize) -> (Producer<Pcm>, Input) {
+        let (feeder, reader) = RingBuffer::new(capacity);
+        (
+            feeder,
+            Input::open(ReplyPermit::for_test(0), reader, layout),
+        )
+    }
+
+    fn push(feeder: &mut Producer<Pcm>, samples: &[Pcm]) {
+        let chunk = feeder.write_chunk_uninit(samples.len()).unwrap();
+        chunk.fill_from_iter(samples.iter().copied());
+    }
+
+    #[test]
+    fn mono_is_read_to_both_sides_with_silence_after() {
+        let (mut feeder, mut input) = input(ChannelLayout::Mono, 8);
+        push(&mut feeder, &[0.1, 0.2]);
+        let mut into = [[0.9; 2]; 3];
+        input.read(&mut into);
+        assert_eq!(into, [[0.1, 0.1], [0.2, 0.2], [0.0, 0.0]]);
+    }
+
+    #[test]
+    fn read_takes_no_more_than_fits() {
+        let (mut feeder, mut input) = input(ChannelLayout::Mono, 8);
+        push(&mut feeder, &[0.1, 0.2, 0.3]);
+        let mut into = [[0.0; 2]; 2];
+        input.read(&mut into);
+        input.read(&mut into);
+        assert_eq!(into, [[0.3, 0.3], [0.0, 0.0]]);
+    }
+
+    #[test]
+    fn stereo_is_read_in_whole_frames_across_the_ring_wrap() {
+        let (mut feeder, mut input) = input(ChannelLayout::Stereo, 6);
+        let mut into = [[0.0; 2]; 2];
+        push(&mut feeder, &[0.1, 0.2, 0.3, 0.4]);
+        input.read(&mut into);
+        // Lands on the ring's last frame and its first.
+        push(&mut feeder, &[0.5, 0.6, 0.7, 0.8]);
+        input.read(&mut into);
+        assert_eq!(into, [[0.5, 0.6], [0.7, 0.8]]);
+    }
+}

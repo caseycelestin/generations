@@ -35,3 +35,18 @@ impl Feeder {
         fits / width
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_that_do_not_fit_are_dropped_whole() {
+        let (mut feeder, mut reader) = Feeder::new(ChannelLayout::Stereo, 2);
+        assert_eq!(feeder.feed(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), 2);
+        assert_eq!(feeder.feed(&[0.7, 0.8]), 0);
+        let chunk = reader.read_chunk(4).unwrap();
+        let (first, second) = chunk.as_slices();
+        assert_eq!([first, second].concat(), [0.1, 0.2, 0.3, 0.4]);
+    }
+}
