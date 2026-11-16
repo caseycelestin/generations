@@ -1,7 +1,6 @@
 //! The control side's end, and the requests sent from it.
 
 use std::fmt;
-use std::marker::PhantomData;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rtrb::{Consumer, Producer};
@@ -172,7 +171,14 @@ impl<Q: Request> RequestHandle<Q> {
 
     /// Answered from the real-time side's next look at the request.
     pub fn request_status(&mut self) -> Result<PendingStatus<Q>, StatusError> {
-        todo!()
+        if self.taken {
+            return Err(StatusError::Closed);
+        }
+        lock(&self.shared).ask(self.id)?;
+        Ok(PendingStatus {
+            shared: Arc::clone(&self.shared),
+            id: self.id,
+        })
     }
 }
 
@@ -186,8 +192,20 @@ impl<Q: Request> Drop for RequestHandle<Q> {
 
 /// One status answer. Dropped early, its question still holds its slot
 /// until the answer arrives.
-#[derive(Debug)]
-pub struct PendingStatus<Q>(PhantomData<Q>);
+pub struct PendingStatus<Q: Request> {
+    shared: Arc<Mutex<Shared<Q>>>,
+    /// The request asked about.
+    id: RequestId,
+}
+
+/// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
+impl<Q: Request> fmt::Debug for PendingStatus<Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingStatus")
+            .field("id", &self.id)
+            .finish()
+    }
+}
 
 impl<Q: Request> PendingStatus<Q> {
     pub fn try_recv(&mut self) -> Result<Q::Status, TryRecvStatusError> {
@@ -264,7 +282,7 @@ impl<Q: Request> Shared<Q> {
         self.requests.push(InFlight {
             id,
             reply: None,
-            status: None,
+            question: None,
             abandoned: false,
         });
         let pushed = self.to_realtime.push(ToRealtime::Request(id, request));
@@ -287,9 +305,13 @@ impl<Q: Request> Shared<Q> {
                 }
                 FromRealtime::Status(id, status) => {
                     let index = self.index_of(id);
-                    if !self.requests[index].abandoned {
-                        self.requests[index].status = Some(status);
-                    }
+                    let question = &mut self.requests[index].question;
+                    *question = match question.take() {
+                        Some(Question::Asked) => Some(Question::Answered(status)),
+                        // Its pending answer is gone, so the slot frees here.
+                        Some(Question::Abandoned) => None,
+                        _ => panic!("only an asked question is answered"),
+                    };
                 }
             }
         }
@@ -308,6 +330,26 @@ impl<Q: Request> Shared<Q> {
         };
         self.requests.swap_remove(index);
         Ok(reply)
+    }
+
+    /// `Closed` once the reply has come, so no answer would follow it.
+    fn ask(&mut self, id: RequestId) -> Result<(), StatusError> {
+        self.take_in();
+        let index = self.index_of(id);
+        let request = &mut self.requests[index];
+        if request.reply.is_some() {
+            return Err(StatusError::Closed);
+        }
+        if request.question.is_some() {
+            return Err(StatusError::Busy);
+        }
+        if self.to_realtime.is_abandoned() {
+            return Err(StatusError::Disconnected);
+        }
+        request.question = Some(Question::Asked);
+        let pushed = self.to_realtime.push(ToRealtime::Status(id));
+        assert!(pushed.is_ok(), "the ring holds three messages per request");
+        Ok(())
     }
 
     /// Frees the record now if its reply has come, or else when it does.
@@ -333,10 +375,19 @@ struct InFlight<Q: Request> {
     id: RequestId,
     /// Until taken.
     reply: Option<Q::Reply>,
-    /// The answer to its status question, until taken.
-    status: Option<Q::Status>,
+    /// The one status question out, from asking until its answer is taken
+    /// or, once its pending answer is gone, arrives.
+    question: Option<Question<Q::Status>>,
     /// Its handle is gone, so what arrives for it is dropped.
     abandoned: bool,
+}
+
+enum Question<S> {
+    Asked,
+    /// Until its pending answer takes it.
+    Answered(S),
+    /// Its pending answer is gone; the answer is dropped on arrival.
+    Abandoned,
 }
 
 /// A panic while locked leaves the rings whole, so a poisoned lock is taken
