@@ -4,12 +4,11 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::audio::{Audio, AudioBuffer};
-use crate::collector;
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
-use crate::engine::protocol::{Command, Event};
 use crate::layout::ChannelLayout;
-use crate::request::{ControlEnd, RequestHandle, ReserveError};
+use crate::request::{self, ControlEnd, RequestHandle, ReserveError};
 
 /// A refused `record`, holding the audio it was given.
 #[derive(Debug, Error)]
@@ -20,9 +19,9 @@ pub enum RecordError {
     /// Stop its voices and try again.
     #[error("a voice still holds the audio")]
     AudioInUse(Audio),
-    /// As many requests as the renderer has room for await their reply;
+    /// Another recording holds the recorder until its reply is taken;
     /// nothing was sent.
-    #[error("too many requests await their reply")]
+    #[error("another recording holds the recorder")]
     Full(Audio),
     /// The renderer is gone; nothing was sent.
     #[error("the renderer is gone")]
@@ -49,60 +48,48 @@ impl RecordError {
 
 #[derive(Debug)]
 pub struct Recording {
-    handle: RequestHandle<(RecordingEnd, Arc<AudioBuffer>), Command, Event>,
-    state: RecordingStatus,
-    /// The audio once it comes back, until taken.
-    audio: Option<Arc<AudioBuffer>>,
+    handle: RequestHandle<RecordingRequest>,
 }
 
 impl Recording {
     pub(crate) fn record(
-        requests: &ControlEnd<Command, Event>,
-        collector: &collector::ControlEnd<Arc<AudioBuffer>>,
+        requests: &ControlEnd<RecordingRequest>,
         audio: Audio,
     ) -> Result<Self, RecordError> {
-        let audio = Self::validate(collector, audio)?;
+        let audio = Self::validate(audio)?;
         let audio = Self::prepare(audio);
         let permit = match requests.try_reserve() {
             Ok(permit) => permit,
             Err(error) => return Err(RecordError::refused(error, Audio::from_shared(audio))),
         };
         let handle = permit.open(RecordingRequest::Start(audio));
-        Ok(Self {
-            handle,
-            state: RecordingStatus::Recording,
-            audio: None,
-        })
+        Ok(Self { handle })
     }
 
     pub fn stop(&mut self) {
         self.handle.cancel();
     }
 
-    pub fn state(&mut self) -> RecordingStatus {
-        self.receive();
-        self.state
+    /// Asks the renderer, which answers at its next period.
+    pub fn request_status(&mut self) -> Result<PendingRecordingStatus, StatusError> {
+        let pending = self.handle.request_status()?;
+        Ok(PendingRecordingStatus(pending))
     }
 
-    /// The audio, once the renderer has let go of it: after the recording
-    /// ends, or at once if it was refused. `None` until then, and after it
-    /// has been taken.
-    pub fn take(&mut self) -> Option<Audio> {
-        self.receive();
-        self.audio.take().map(Audio::from_shared)
+    /// How it ended, with the audio holding what was recorded; once.
+    pub fn try_wait(&mut self) -> Result<(RecordingEnd, Audio), TryWaitError> {
+        let (why, audio) = self.handle.try_wait()?;
+        Ok((why, Audio::from_shared(audio)))
     }
 
-    fn validate(
-        collector: &collector::ControlEnd<Arc<AudioBuffer>>,
-        audio: Audio,
-    ) -> Result<Audio, RecordError> {
+    /// Ended voices must have been collected first, or they still count as
+    /// holding `audio`.
+    fn validate(audio: Audio) -> Result<Audio, RecordError> {
         if audio.layout() != ChannelLayout::Stereo {
             return Err(RecordError::NotStereo(audio));
         }
-        // Collected first, so ended voices have let go. The caller gave up
-        // theirs, so nothing can clone it: the count can only fall before
-        // the send.
-        collector.collect();
+        // The caller gave up theirs, so nothing can clone it: the count can
+        // only fall before the send.
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
@@ -117,13 +104,6 @@ impl Recording {
         buffer.prefault();
         audio
     }
-
-    fn receive(&mut self) {
-        if let Ok((why, audio)) = self.handle.try_wait() {
-            self.state = RecordingStatus::Ended(why);
-            self.audio = Some(audio);
-        }
-    }
 }
 
 /// Stops a recording still running, since nothing could take its audio
@@ -131,5 +111,16 @@ impl Recording {
 impl Drop for Recording {
     fn drop(&mut self) {
         self.handle.cancel();
+    }
+}
+
+/// The renderer's answer to one status question about a recording.
+#[derive(Debug)]
+pub struct PendingRecordingStatus(request::PendingStatus<RecordingRequest>);
+
+impl PendingRecordingStatus {
+    pub fn try_recv(&mut self) -> Result<RecordingStatus, TryRecvStatusError> {
+        let status = self.0.try_recv()?;
+        Ok(status)
     }
 }

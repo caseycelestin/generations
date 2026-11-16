@@ -1,9 +1,12 @@
 //! The control side: runs on UI or event threads. May lock and allocate.
 
 mod recording;
+mod requests;
 mod voice;
 
-pub use recording::{RecordError, Recording};
+pub use recording::{PendingRecordingStatus, RecordError, Recording};
+pub(crate) use requests::Requests;
+pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
 pub use voice::Voice;
 
 use std::sync::Arc;
@@ -66,14 +69,14 @@ pub struct Control {
     channel: duplex::ControlEnd<Command, Event>,
     /// Collected before every play and record, which its size assumes.
     collector: collector::ControlEnd<Arc<AudioBuffer>>,
-    requests: request::ControlEnd<Command, Event>,
+    requests: Requests,
 }
 
 impl Control {
     pub(crate) fn new(
         channel: duplex::ControlEnd<Command, Event>,
         collector: collector::ControlEnd<Arc<AudioBuffer>>,
-        requests: request::ControlEnd<Command, Event>,
+        requests: Requests,
     ) -> Self {
         Self {
             channel,
@@ -103,11 +106,11 @@ impl Control {
     }
 
     /// Records the main out into `audio`, from empty. By value: the
-    /// renderer writes it until it comes back. While another recording
-    /// runs it ends at once as `Refused`; while a voice holds `audio`,
-    /// `record` itself fails.
+    /// renderer writes it until it comes back. Refused while another
+    /// recording runs, or while a voice holds `audio`.
     pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
-        Recording::record(&self.requests, &self.collector, audio)
+        self.collector.collect();
+        Recording::record(&self.requests.recording, audio)
     }
 
     /// Frees what the renderer has let go of, returning it to

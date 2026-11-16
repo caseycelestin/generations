@@ -5,7 +5,10 @@ mod control;
 mod protocol;
 mod realtime;
 
-pub use control::{Control, ControlError, RecordError, Recording, Voice};
+pub use control::{
+    Control, ControlError, PendingRecordingStatus, RecordError, Recording, StatusError,
+    TryRecvStatusError, TryWaitError, Voice,
+};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceState;
 pub use realtime::render::Renderer;
@@ -13,6 +16,11 @@ pub use realtime::render::Renderer;
 use std::num::NonZeroUsize;
 
 use crate::duplex::{self, Capacity};
+use protocol::recording::RecordingRequest;
+
+/// Recordings the renderer holds at once, so the requests its recording
+/// channel needs: each holds one until its reply is taken.
+const RECORDERS: usize = 1;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
@@ -28,19 +36,18 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     });
     let (collector_control, collector_realtime) =
         crate::collector::channel(collector_capacity(command_capacity, voices));
-    let (requests_control, requests_realtime) =
-        crate::request::channel(request_capacity(command_capacity, voices));
+    let (recording_control, recording_realtime) =
+        crate::request::channel::<RecordingRequest>(RECORDERS);
     (
-        Control::new(control, collector_control, requests_control),
-        Renderer::new(realtime, collector_realtime, requests_realtime, voices),
+        Control::new(
+            control,
+            collector_control,
+            control::Requests {
+                recording: recording_control,
+            },
+        ),
+        Renderer::new(realtime, collector_realtime, recording_realtime, voices),
     )
-}
-
-/// Every voice and the recording, playing or queued, plus `command_capacity`
-/// more waiting, such as new plays and stops; past this, a request is
-/// refused.
-fn request_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + 1 + command_capacity
 }
 
 /// A voice reserves one event slot, its end, and holds it while it plays

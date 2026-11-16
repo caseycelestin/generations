@@ -26,8 +26,6 @@ pub enum RecordingStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingEnd {
-    /// Never started: the recorder was busy, so its audio is empty.
-    Refused,
     /// Its audio has no room left.
     Full,
     /// Its `stop` arrived.

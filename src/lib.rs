@@ -38,7 +38,7 @@ pub mod duplex;
 pub mod engine;
 mod layout;
 pub mod project;
-mod request;
+pub mod request;
 #[cfg(test)]
 mod testing;
 
