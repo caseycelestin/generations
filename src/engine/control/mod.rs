@@ -14,9 +14,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
-use crate::duplex;
+use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::voice::VoiceRequest;
-use crate::engine::protocol::{BufferAddress, Command, Event};
 use crate::{collector, request};
 
 /// Nothing was sent.
@@ -38,11 +37,10 @@ impl From<request::ReserveError> for StopError {
     }
 }
 
-/// Clones act on the same renderer. Every command, from here or from a
+/// Clones act on the same renderer. Every request, from here or from a
 /// handle, takes effect at the renderer's next period.
 #[derive(Debug, Clone)]
 pub struct Control {
-    channel: duplex::ControlEnd<Command, Event>,
     /// Collected before every play and record, which its size assumes.
     collector: collector::ControlEnd<Arc<AudioBuffer>>,
     requests: Requests,
@@ -50,12 +48,10 @@ pub struct Control {
 
 impl Control {
     pub(crate) fn new(
-        channel: duplex::ControlEnd<Command, Event>,
         collector: collector::ControlEnd<Arc<AudioBuffer>>,
         requests: Requests,
     ) -> Self {
         Self {
-            channel,
             collector,
             requests,
         }

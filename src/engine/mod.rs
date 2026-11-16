@@ -35,7 +35,8 @@ const VOICE_STOP_HEADROOM: usize = 2;
 pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     assert!(command_capacity > 0, "command_capacity must not be zero");
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    let (control, realtime) = duplex::channel(Capacity {
+    // Only the renderer still reads duplex, until it is ported.
+    let (_, realtime) = duplex::channel(Capacity {
         commands: command_capacity,
         events: event_capacity(command_capacity, voices),
     });
@@ -49,7 +50,6 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
         crate::request::channel::<RecordingRequest>(RECORDERS);
     (
         Control::new(
-            control,
             collector_control,
             control::Requests {
                 voices: voices_control,
