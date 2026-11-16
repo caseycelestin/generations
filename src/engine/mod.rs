@@ -61,6 +61,7 @@ pub fn create(voice_queue: usize, voices: usize, inputs: usize) -> (Control, Ren
                 inputs: inputs_realtime,
             },
             voices,
+            inputs,
         ),
     )
 }

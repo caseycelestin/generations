@@ -1,5 +1,6 @@
 //! The audio thread: turns requests and audio into periods of output.
 
+mod input;
 mod math;
 mod recording;
 mod voices;
@@ -11,6 +12,7 @@ use crate::engine::protocol::inputs::InputRequest;
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
 use crate::request::{self, Received};
+use input::Input;
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
@@ -30,6 +32,8 @@ pub struct Renderer {
     requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
+    /// Never past its capacity, so adding one never allocates.
+    inputs: Vec<Input>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -44,11 +48,12 @@ impl Renderer {
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
-    pub(crate) fn new(requests: Requests, voices: NonZeroUsize) -> Self {
+    pub(crate) fn new(requests: Requests, voices: NonZeroUsize, inputs: usize) -> Self {
         Self {
             requests,
             voices: Voices::new(voices),
             recording: None,
+            inputs: Vec::with_capacity(inputs),
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -192,7 +197,7 @@ mod tests {
             inputs: inputs_realtime,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, voices))
+        (ends, Renderer::new(requests, voices, 0))
     }
 
     /// Opens a mono voice of `samples`, as `Control::play` does.
