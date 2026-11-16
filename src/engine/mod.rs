@@ -40,7 +40,8 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
         commands: command_capacity,
         events: event_capacity(command_capacity, voices),
     });
-    let (collector_control, collector_realtime) =
+    // Only the renderer still sends to the collector, until it is ported.
+    let (_, collector_realtime) =
         crate::collector::channel(collector_capacity(command_capacity, voices));
     let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
         voice_capacity(command_capacity, voices),
@@ -49,13 +50,10 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
     (
-        Control::new(
-            collector_control,
-            control::Requests {
-                voices: voices_control,
-                recording: recording_control,
-            },
-        ),
+        Control::new(control::Requests {
+            voices: voices_control,
+            recording: recording_control,
+        }),
         Renderer::new(realtime, collector_realtime, recording_realtime, voices),
     )
 }

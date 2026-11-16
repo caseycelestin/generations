@@ -9,14 +9,12 @@ pub(crate) use requests::Requests;
 pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
 pub use voice::{PendingVoiceStatus, PlayError, Voice};
 
-use std::sync::Arc;
-
 use thiserror::Error;
 
-use crate::audio::{Audio, AudioBuffer};
+use crate::audio::Audio;
 use crate::engine::protocol::BufferAddress;
 use crate::engine::protocol::voice::VoiceRequest;
-use crate::{collector, request};
+use crate::request;
 
 /// Nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -41,24 +39,15 @@ impl From<request::ReserveError> for StopError {
 /// handle, takes effect at the renderer's next period.
 #[derive(Debug, Clone)]
 pub struct Control {
-    /// Collected before every play and record, which its size assumes.
-    collector: collector::ControlEnd<Arc<AudioBuffer>>,
     requests: Requests,
 }
 
 impl Control {
-    pub(crate) fn new(
-        collector: collector::ControlEnd<Arc<AudioBuffer>>,
-        requests: Requests,
-    ) -> Self {
-        Self {
-            collector,
-            requests,
-        }
+    pub(crate) fn new(requests: Requests) -> Self {
+        Self { requests }
     }
 
     pub fn play(&self, audio: &Audio) -> Result<Voice, PlayError> {
-        self.collector.collect();
         Voice::play(&self.requests.voices, audio)
     }
 
@@ -82,14 +71,15 @@ impl Control {
     /// renderer writes it until it comes back. Refused while another
     /// recording runs, or while a voice holds `audio`.
     pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
-        self.collector.collect();
+        self.collect();
         Recording::record(&self.requests.recording, audio)
     }
 
-    /// Frees what the renderer has let go of, returning it to
-    /// `AudioMemory`. Every play and record does this first; call it when
+    /// Frees the audio of voices and recordings whose handles are gone,
+    /// returning it to `AudioMemory`. `record` does this first; call it when
     /// the app goes quiet, or before a load that needs the memory.
     pub fn collect(&self) {
-        self.collector.collect();
+        self.requests.voices.take_in();
+        self.requests.recording.take_in();
     }
 }

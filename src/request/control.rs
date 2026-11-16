@@ -29,6 +29,12 @@ impl<Q: Request> ControlEnd<Q> {
     pub fn try_reserve_including_headroom(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
         todo!()
     }
+
+    /// Takes in the replies that have arrived, dropping those whose handle
+    /// is gone, so what they hold is freed here. Reserving does this first.
+    pub fn take_in(&self) {
+        todo!()
+    }
 }
 
 /// Holds the end's lock until `open`; dropped unused, it sends nothing and

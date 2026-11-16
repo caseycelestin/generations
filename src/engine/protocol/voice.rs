@@ -15,8 +15,9 @@ pub(crate) enum VoiceRequest {
     StopAll,
 }
 
+/// A play's audio comes back with its reply; a stop's carries nothing.
 impl Request for VoiceRequest {
-    type Reply = ();
+    type Reply = Option<Arc<AudioBuffer>>;
     type Status = VoiceStatus;
 }
 
