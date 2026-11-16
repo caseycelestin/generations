@@ -6,8 +6,8 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, ControlError, PendingRecordingStatus, PendingVoiceStatus, RecordError, Recording,
-    StatusError, TryRecvStatusError, TryWaitError, Voice,
+    Control, PendingRecordingStatus, PendingVoiceStatus, PlayError, RecordError, Recording,
+    StatusError, StopError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;
@@ -23,6 +23,10 @@ use protocol::voice::VoiceRequest;
 /// channel needs: each holds one until its reply is taken.
 const RECORDERS: usize = 1;
 
+/// Headroom on the voice channel for `stop` and `stop_all`, so a burst of
+/// plays cannot leave them no room.
+const VOICE_STOP_HEADROOM: usize = 2;
+
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
 ///
@@ -37,8 +41,10 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     });
     let (collector_control, collector_realtime) =
         crate::collector::channel(collector_capacity(command_capacity, voices));
-    let (voices_control, voices_realtime) =
-        crate::request::channel::<VoiceRequest>(voice_capacity(command_capacity, voices));
+    let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
+        voice_capacity(command_capacity, voices),
+        VOICE_STOP_HEADROOM,
+    );
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
     (
@@ -55,9 +61,9 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
 }
 
 /// Every voice playing, plus `command_capacity` plays and stops on their
-/// way; each holds one until its reply is taken.
+/// way, plus the stops' headroom; each holds one until its reply is taken.
 fn voice_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + command_capacity
+    voices.get() + command_capacity + VOICE_STOP_HEADROOM
 }
 
 /// A voice reserves one event slot, its end, and holds it while it plays
@@ -180,10 +186,7 @@ mod tests {
         let (control, _renderer) = create(1, 1);
         let audio = audio(&[0.5; 2]);
         assert!(control.play(&audio).is_ok());
-        assert!(matches!(
-            control.play(&audio),
-            Err(ControlError::CommandsFull)
-        ));
+        assert!(matches!(control.play(&audio), Err(PlayError::Full)));
     }
 
     #[test]
