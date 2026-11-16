@@ -444,6 +444,12 @@ The project does not know about tiers.
 - **Taps and busses** on the hard-coded path.
 - **Master gain and bus limiter** before the clip.
 - **Stream errors** reported to a front panel.
+- **A guaranteed engine footprint.** Input rings are the only engine
+  memory with no bound: each `open_input` allocates what its `backlog`
+  asks. A `max_backlog` on `create`, checked by `open_input`, would bound
+  them at `inputs × max_backlog` stereo frames, so `create`'s arguments
+  and the `AudioMemory` budget fix everything. Allocating the rings in
+  `create` would also make opening an input allocation-free.
 - **Input frames dropped by skipping ahead** counted, in `InputStatus`,
   if a period or ring size needs diagnosing; `feed` already returns what
   a full ring let in.

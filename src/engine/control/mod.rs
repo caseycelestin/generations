@@ -110,11 +110,15 @@ impl Control {
     /// println!("ended: {:?}", input.try_wait()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
+    ///
+    /// # Panics
+    /// If `backlog` is zero.
     pub fn open_input(
         &self,
         layout: ChannelLayout,
         backlog: usize,
     ) -> Result<(Input, Feeder), ControlError> {
+        assert!(backlog > 0, "backlog must not be zero");
         let permit = self.requests.inputs.try_reserve()?;
         let (feeder, reader) = Feeder::new(layout, backlog);
         Ok((Input::open(permit, reader, layout), feeder))
