@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rtrb::{Consumer, Producer};
 use thiserror::Error;
@@ -175,4 +175,10 @@ struct Shared<Q: Request> {
 
 struct InFlight {
     id: RequestId,
+}
+
+/// A panic while locked leaves the rings whole, so a poisoned lock is taken
+/// anyway.
+fn lock<Q: Request>(shared: &Mutex<Shared<Q>>) -> MutexGuard<'_, Shared<Q>> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
 }
