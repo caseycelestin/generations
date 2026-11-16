@@ -57,8 +57,7 @@ impl Renderer {
     /// playing voice, summed and clipped.
     pub fn render(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
-        self.apply_voice_requests();
-        self.apply_recording_requests();
+        self.apply_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
         for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
             block.fill([0.0; Self::CHANNELS]);
@@ -73,6 +72,12 @@ impl Renderer {
             }
         }
         self.clean_up();
+    }
+
+    fn apply_requests(&mut self) {
+        self.apply_voice_requests();
+        self.apply_recording_requests();
+        self.apply_input_requests();
     }
 
     fn apply_voice_requests(&mut self) {
@@ -132,6 +137,16 @@ impl Renderer {
                     }
                     // Otherwise it is closed, and its reply has the last word.
                 }
+            }
+        }
+    }
+
+    fn apply_input_requests(&mut self) {
+        while let Some(received) = self.requests.inputs.try_recv() {
+            match received {
+                Received::Request(..) => todo!(),
+                Received::Cancel(_) => todo!(),
+                Received::Status(_) => todo!(),
             }
         }
     }
