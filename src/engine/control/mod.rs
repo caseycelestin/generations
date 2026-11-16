@@ -90,7 +90,7 @@ impl Control {
     ) -> Result<(Input, Feeder), ControlError> {
         let permit = self.requests.inputs.try_reserve()?;
         let (feeder, reader) = Feeder::new(layout, backlog);
-        Ok((Input::open(permit, reader), feeder))
+        Ok((Input::open(permit, reader, layout), feeder))
     }
 
     /// Frees the audio of voices and recordings whose handles are gone,

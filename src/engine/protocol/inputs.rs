@@ -3,11 +3,13 @@
 use rtrb::Consumer;
 
 use crate::config::Pcm;
+use crate::layout::ChannelLayout;
 use crate::request::Request;
 
 #[derive(Debug)]
 pub(crate) struct InputRequest {
     pub(crate) reader: Consumer<Pcm>,
+    pub(crate) layout: ChannelLayout,
 }
 
 /// The reader comes back with the reply, so the ring is freed on the

@@ -71,6 +71,10 @@ impl Renderer {
                 voice.render(scratch);
                 add(block, scratch);
             }
+            // Read even when nothing hears it, so the ring keeps moving.
+            for input in &mut self.inputs {
+                input.read(scratch);
+            }
             hard_clip(block);
             if let Some(recording) = &mut self.recording {
                 recording.write(block);
@@ -152,7 +156,8 @@ impl Renderer {
                 Received::Request(permit, request) => {
                     let room = self.inputs.len() < self.inputs.capacity();
                     debug_assert!(room, "one request per input");
-                    self.inputs.push(Input::open(permit, request.reader));
+                    self.inputs
+                        .push(Input::open(permit, request.reader, request.layout));
                 }
                 Received::Cancel(id) => {
                     if let Some(at) = self.inputs.iter().position(|input| input.is(id)) {

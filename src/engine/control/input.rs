@@ -5,6 +5,7 @@ use rtrb::Consumer;
 use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputRequest, InputStatus};
+use crate::layout::ChannelLayout;
 use crate::request::{self, RequestHandle, RequestPermit};
 
 #[derive(Debug)]
@@ -13,8 +14,12 @@ pub struct Input {
 }
 
 impl Input {
-    pub(crate) fn open(permit: RequestPermit<'_, InputRequest>, reader: Consumer<Pcm>) -> Self {
-        let handle = permit.open(InputRequest { reader });
+    pub(crate) fn open(
+        permit: RequestPermit<'_, InputRequest>,
+        reader: Consumer<Pcm>,
+        layout: ChannelLayout,
+    ) -> Self {
+        let handle = permit.open(InputRequest { reader, layout });
         Self { handle }
     }
 
