@@ -24,6 +24,8 @@ pub use control::{
 };
 pub use realtime::{RealtimeEnd, Received, ReplyPermit, StatusPermit};
 
+use rtrb::RingBuffer;
+
 /// Pairs a request type with its reply and with what it answers while
 /// open, when asked its status.
 pub trait Request {
@@ -35,6 +37,20 @@ pub trait Request {
 /// not order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestId(pub(crate) u64);
+
+/// What the ring to the real-time side carries.
+#[derive(Debug)]
+enum ToRealtime<Q> {
+    Request(RequestId, Q),
+    Cancel(RequestId),
+    Status(RequestId),
+}
+
+/// What the ring back carries.
+enum FromRealtime<Q: Request> {
+    Reply(RequestId, Q::Reply),
+    Status(RequestId, Q::Status),
+}
 
 /// `capacity` is in requests: the most that can await their reply at once.
 /// The ring out holds three times that, for each one's cancel and status
@@ -50,5 +66,9 @@ pub fn channel_with_headroom<Q: Request>(
     capacity: usize,
     headroom: usize,
 ) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
-    todo!()
+    let (to_realtime, from_control) = RingBuffer::new(3 * capacity);
+    let (to_control, from_realtime) = RingBuffer::new(2 * capacity);
+    let control = ControlEnd::new(to_realtime, from_realtime, capacity, headroom);
+    let realtime = RealtimeEnd::new(from_control, to_control);
+    (control, realtime)
 }

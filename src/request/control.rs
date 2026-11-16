@@ -2,9 +2,10 @@
 
 use std::marker::PhantomData;
 
+use rtrb::{Consumer, Producer};
 use thiserror::Error;
 
-use super::Request;
+use super::{FromRealtime, Request, ToRealtime};
 
 #[derive(Debug)]
 pub struct ControlEnd<Q>(PhantomData<Q>);
@@ -18,6 +19,15 @@ impl<Q> Clone for ControlEnd<Q> {
 }
 
 impl<Q: Request> ControlEnd<Q> {
+    pub(super) fn new(
+        to_realtime: Producer<ToRealtime<Q>>,
+        from_realtime: Consumer<FromRealtime<Q>>,
+        capacity: usize,
+        headroom: usize,
+    ) -> Self {
+        todo!()
+    }
+
     /// Reserves slots for a request, its cancel, one status question and the
     /// answers to both, so neither `open` nor `cancel` can fail. `Full` once
     /// only the headroom is free.

@@ -3,7 +3,9 @@
 
 use std::marker::PhantomData;
 
-use super::{Request, RequestId};
+use rtrb::{Consumer, Producer};
+
+use super::{FromRealtime, Request, RequestId, ToRealtime};
 
 /// Consumed by `close`, so a request is answered at most once. Dropped
 /// unanswered, it holds its request's slots for good: only right when the
@@ -57,6 +59,13 @@ pub enum Received<Q> {
 pub struct RealtimeEnd<Q>(PhantomData<Q>);
 
 impl<Q: Request> RealtimeEnd<Q> {
+    pub(super) fn new(
+        from_control: Consumer<ToRealtime<Q>>,
+        to_control: Producer<FromRealtime<Q>>,
+    ) -> Self {
+        todo!()
+    }
+
     pub fn try_recv(&mut self) -> Option<Received<Q>> {
         todo!()
     }
