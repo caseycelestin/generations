@@ -6,10 +6,6 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use crate::config::Pcm;
 use crate::layout::ChannelLayout;
 
-/// Capture periods a ring holds: room for the capture and audio clocks to
-/// disagree before frames are dropped.
-const RING_PERIODS: usize = 8;
-
 #[derive(Debug)]
 pub struct Feeder {
     frames: Producer<Pcm>,
@@ -21,8 +17,21 @@ pub struct Feeder {
 impl Feeder {
     /// The ring is whole frames, allocated here on the control side; the
     /// reading end goes to the renderer.
-    pub(crate) fn new(layout: ChannelLayout, period: usize) -> (Self, Consumer<Pcm>) {
-        let (frames, reader) = RingBuffer::new(period * RING_PERIODS * layout.count());
+    pub(crate) fn new(layout: ChannelLayout, backlog: usize) -> (Self, Consumer<Pcm>) {
+        let (frames, reader) = RingBuffer::new(backlog * layout.count());
         (Self { frames, layout }, reader)
+    }
+
+    /// Interleaved frames of the input's layout. What does not fit is
+    /// dropped, whole frames from the end; returns the frames written.
+    pub fn feed(&mut self, frames: &[Pcm]) -> usize {
+        let width = self.layout.count();
+        debug_assert_eq!(frames.len() % width, 0, "input is not whole frames");
+        let free = self.frames.slots();
+        let fits = frames.len().min(free - free % width);
+        if let Ok(chunk) = self.frames.write_chunk_uninit(fits) {
+            chunk.fill_from_iter(frames[..fits].iter().copied());
+        }
+        fits / width
     }
 }

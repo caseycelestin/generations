@@ -80,13 +80,16 @@ impl Control {
         Recording::record(&self.requests.recording, audio)
     }
 
+    /// `backlog` is how many frames can wait for the renderer's next period
+    /// before any are dropped: at least the longest output period, with
+    /// room to spare when the capture period is longer.
     pub fn open_input(
         &self,
         layout: ChannelLayout,
-        period: usize,
+        backlog: usize,
     ) -> Result<(Input, Feeder), ControlError> {
         let permit = self.requests.inputs.try_reserve()?;
-        let (feeder, reader) = Feeder::new(layout, period);
+        let (feeder, reader) = Feeder::new(layout, backlog);
         Ok((Input::open(permit, reader), feeder))
     }
 

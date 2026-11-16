@@ -203,6 +203,13 @@ or rejected instead. The history of how a shape was reached is in git.
   `NonZeroUsize` parameters made every caller wrap its constants.
   `voice_queue` may be zero: a play is then refused, not stolen, while
   every voice is held.
+- **Room for what waits on the renderer is a backlog.** `open_input`
+  takes `backlog`, the frames that can wait for its next period, sized by
+  the caller, who alone knows both devices' periods; a ring sized in
+  capture periods inside the crate overflowed when the output period was
+  longer. `queue` and `headroom` were weighed: headroom is a level in
+  audio and names the stop slots here. Not yet aligned: `voice_queue`
+  becomes `voice_backlog`.
 - **`control/` and `realtime/` never import each other;** both import
   `protocol/`. The source tree is the architecture, drawn in the crate
   docs. One exception: `open_input` makes the capture side's `Feeder`,
@@ -434,6 +441,9 @@ The project does not know about tiers.
 - **Taps and busses** on the hard-coded path.
 - **Master gain and bus limiter** before the clip.
 - **Stream errors** reported to a front panel.
+- **Input frames dropped by skipping ahead** counted, in `InputStatus`,
+  if a period or ring size needs diagnosing; `feed` already returns what
+  a full ring let in.
 - **Content-hash dedup** on add, and on import if it returns, also
   matching a renamed WAV back to its sample.
 - **Removing a whole lineage** as one operation.
