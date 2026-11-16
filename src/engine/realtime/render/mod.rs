@@ -1,4 +1,4 @@
-//! The audio thread: turns commands and audio into periods of output.
+//! The audio thread: turns requests and audio into periods of output.
 
 mod math;
 mod recording;
@@ -6,15 +6,9 @@ mod voices;
 
 use std::num::NonZeroUsize;
 
-use std::sync::Arc;
-
-use crate::audio::AudioBuffer;
-use crate::collector;
 use crate::config::Pcm;
-use crate::duplex::{self, Message};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
-use crate::engine::protocol::{Command, Event};
 use crate::request::{self, Received};
 use math::{add, hard_clip};
 use recording::Recording;
@@ -31,8 +25,6 @@ pub(crate) struct Requests {
 
 #[derive(Debug)]
 pub struct Renderer {
-    channel: duplex::RealtimeEnd<Command, Event>,
-    collector: collector::RealtimeEnd<Arc<AudioBuffer>>,
     requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
@@ -50,15 +42,8 @@ impl Renderer {
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
-    pub(crate) fn new(
-        channel: duplex::RealtimeEnd<Command, Event>,
-        collector: collector::RealtimeEnd<Arc<AudioBuffer>>,
-        requests: Requests,
-        voices: NonZeroUsize,
-    ) -> Self {
+    pub(crate) fn new(requests: Requests, voices: NonZeroUsize) -> Self {
         Self {
-            channel,
-            collector,
             requests,
             voices: Voices::new(voices),
             recording: None,

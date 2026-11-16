@@ -15,7 +15,6 @@ pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
 
-use crate::duplex::{self, Capacity};
 use protocol::recording::RecordingRequest;
 use protocol::voice::VoiceRequest;
 
@@ -35,14 +34,6 @@ const VOICE_STOP_HEADROOM: usize = 2;
 pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     assert!(command_capacity > 0, "command_capacity must not be zero");
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    // Only the renderer still reads duplex, until it is ported.
-    let (_, realtime) = duplex::channel(Capacity {
-        commands: command_capacity,
-        events: event_capacity(command_capacity, voices),
-    });
-    // Only the renderer still sends to the collector, until it is ported.
-    let (_, collector_realtime) =
-        crate::collector::channel(collector_capacity(command_capacity, voices));
     let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
         voice_capacity(command_capacity, voices),
         VOICE_STOP_HEADROOM,
@@ -55,8 +46,6 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
             recording: recording_control,
         }),
         Renderer::new(
-            realtime,
-            collector_realtime,
             realtime::render::Requests {
                 voices: voices_realtime,
                 recording: recording_realtime,
@@ -70,20 +59,6 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
 /// way, plus the stops' headroom; each holds one until its reply is taken.
 fn voice_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
     voices.get() + command_capacity + VOICE_STOP_HEADROOM
-}
-
-/// A voice reserves one event slot, its end, and holds it while it plays
-/// or waits in a queued command; a recording reserves two, its start and
-/// its end. Past this, an open is refused with `EventsFull`.
-fn event_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + 2 + command_capacity
-}
-
-/// Only voices give audio up. Every play collects first, so between
-/// collects the renderer gives up at most the voices it holds and those
-/// arriving in queued commands.
-fn collector_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + command_capacity
 }
 
 #[cfg(test)]

@@ -12,39 +12,9 @@ use crate::audio::AudioBuffer;
 pub(crate) mod recording;
 pub(crate) mod voice;
 
-use voice::VoiceRequest;
-
-#[derive(Debug)]
-pub(crate) enum Command {
-    Voice(VoiceRequest),
-}
-
-impl From<VoiceRequest> for Command {
-    fn from(request: VoiceRequest) -> Self {
-        Self::Voice(request)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) enum Event {
-    Voice,
-}
-
-/// A voice command's reply carries nothing.
-impl TryFrom<Event> for () {
-    type Error = Event;
-
-    fn try_from(event: Event) -> Result<Self, Event> {
-        match event {
-            Event::Voice => Ok(()),
-            other => Err(other),
-        }
-    }
-}
-
 /// Names audio to the renderer without sending it, so nothing comes back
 /// to be freed. Sound only while the audio cannot be freed before the
-/// command is applied: a later buffer at the same address then starts
+/// request is applied: a later buffer at the same address then starts
 /// behind it on the ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BufferAddress(usize);
