@@ -70,8 +70,17 @@ impl<Q: Request> ControlEnd<Q> {
 
 /// Holds the end's lock until `open`; dropped unused, it sends nothing and
 /// gives its room back.
-#[derive(Debug)]
-pub struct RequestPermit<'a, Q>(PhantomData<&'a Q>);
+pub struct RequestPermit<'a, Q: Request> {
+    end: &'a ControlEnd<Q>,
+    shared: MutexGuard<'a, Shared<Q>>,
+}
+
+/// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
+impl<Q: Request> fmt::Debug for RequestPermit<'_, Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequestPermit").finish_non_exhaustive()
+    }
+}
 
 impl<Q: Request> RequestPermit<'_, Q> {
     pub fn open(self, request: Q) -> RequestHandle<Q> {
