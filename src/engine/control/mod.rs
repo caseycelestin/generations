@@ -5,7 +5,7 @@ mod recording;
 mod requests;
 mod voice;
 
-pub use input::Input;
+pub use input::{Input, PendingInputStatus};
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
 pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
