@@ -9,12 +9,13 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
+use crate::collector;
 use crate::config::Pcm;
 use crate::duplex::{self, Message};
-use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd, RecordingRequest};
+use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceEnd, VoiceRequest};
 use crate::engine::protocol::{Command, Event};
-use crate::{collector, request};
+use crate::request::{self, Received};
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
@@ -70,6 +71,7 @@ impl Renderer {
     pub fn render(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
         self.apply_commands();
+        self.apply_recording_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
         for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
             block.fill([0.0; Self::CHANNELS]);
@@ -109,17 +111,30 @@ impl Renderer {
                         voice.end(VoiceEnd::Stopped, &mut self.channel, &mut self.collector);
                     }
                 }
-                Command::Recording(RecordingCommand::Start(audio)) => {
-                    if self.recording.is_some() {
-                        Recording::refuse(id, audio, &mut self.channel);
-                    } else {
-                        self.recording = Some(Recording::start(id, audio, &mut self.channel));
+            }
+        }
+    }
+
+    fn apply_recording_requests(&mut self) {
+        while let Some(received) = self.requests.recording.try_recv() {
+            match received {
+                Received::Request(permit, RecordingRequest::Start(audio)) => {
+                    debug_assert!(self.recording.is_none(), "one request per recorder");
+                    self.recording = Some(Recording::start(permit, audio));
+                }
+                Received::Cancel(id) => {
+                    if let Some(stopped) = self.recording.take_if(|recording| recording.is(id)) {
+                        stopped.end(RecordingEnd::Stopped, &mut self.requests.recording);
                     }
                 }
-                Command::Recording(RecordingCommand::Stop) => {
-                    if let Some(stopped) = self.recording.take_if(|recording| recording.is(id)) {
-                        stopped.end(RecordingEnd::Stopped, &mut self.channel);
+                Received::Status(permit) => {
+                    let held = self.recording.as_ref();
+                    if held.is_some_and(|recording| recording.is(permit.id())) {
+                        self.requests
+                            .recording
+                            .answer(permit, RecordingStatus::Recording);
                     }
+                    // Otherwise it is closed, and its reply has the last word.
                 }
             }
         }
@@ -130,7 +145,7 @@ impl Renderer {
             voice.end(VoiceEnd::Finished, &mut self.channel, &mut self.collector);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
-            full.end(RecordingEnd::Full, &mut self.channel);
+            full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
     }
 }
