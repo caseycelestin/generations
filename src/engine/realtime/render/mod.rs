@@ -182,6 +182,9 @@ impl Renderer {
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
+        for gone in self.inputs.extract_if(.., |input| input.feeder_gone()) {
+            gone.end(&mut self.requests.inputs);
+        }
     }
 }
 

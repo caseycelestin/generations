@@ -56,6 +56,10 @@ impl Input {
         chunk.commit_all();
     }
 
+    pub(crate) fn feeder_gone(&self) -> bool {
+        self.reader.is_abandoned()
+    }
+
     pub(crate) fn is(&self, id: RequestId) -> bool {
         self.permit.id() == id
     }
