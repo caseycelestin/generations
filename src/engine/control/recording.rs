@@ -67,7 +67,7 @@ impl Recording {
             Ok(permit) => permit,
             Err(error) => return Err(RecordError::refused(error, Audio::from_shared(audio))),
         };
-        let handle = permit.send(RecordingRequest::Start(audio));
+        let handle = permit.open(RecordingRequest::Start(audio));
         Ok(Self {
             handle,
             state: RecordingState::Recording,
@@ -119,7 +119,7 @@ impl Recording {
     }
 
     fn receive(&mut self) {
-        if let Ok((why, audio)) = self.handle.try_recv() {
+        if let Ok((why, audio)) = self.handle.try_wait() {
             self.state = RecordingState::Ended(why);
             self.audio = Some(audio);
         }

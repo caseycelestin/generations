@@ -6,8 +6,9 @@
 //! - On the real-time side every operation is wait-free and bounded: it
 //!   never allocates, frees, locks or blocks. The control side may.
 //! - Memory is fixed at creation.
-//! - A reservation holds room for a request, its cancel and its reply, so it
-//!   is the only step that can be refused; nothing the real-time side sends
+//! - A reservation holds room for a request, its cancel, one status
+//!   question at a time and the answers to both. Past it, only a second
+//!   question while one is out is refused; nothing the real-time side sends
 //!   is lost.
 //! - Each direction is in order.
 //!
@@ -17,15 +18,17 @@
 mod control;
 mod realtime;
 
-pub use control::{ControlEnd, RequestHandle, RequestPermit};
-pub use realtime::{RealtimeEnd, Received, ReplyPermit};
+pub use control::{
+    ControlEnd, PendingStatus, RequestHandle, RequestPermit, ReserveError, StatusError,
+    TryRecvStatusError, TryWaitError,
+};
+pub use realtime::{RealtimeEnd, Received, ReplyPermit, StatusPermit};
 
-use thiserror::Error;
-
-/// Pairs a request type with its reply, so `send` knows what its handle
-/// returns.
+/// Pairs a request type with its reply and with what it answers while
+/// open, when asked its status.
 pub trait Request {
     type Reply;
+    type Status;
 }
 
 /// Unique within a channel and never reused; names, not ages, so they do
@@ -33,28 +36,10 @@ pub trait Request {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestId(pub(crate) u64);
 
-/// Nothing was sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum ReserveError {
-    #[error("too many requests await their reply")]
-    Full,
-    #[error("the real-time end is gone")]
-    Disconnected,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum TryRecvError {
-    /// Not come yet, or already taken.
-    #[error("no reply to take")]
-    Empty,
-    /// Only once no reply is waiting: one that came first is still taken.
-    #[error("the real-time end is gone; no reply will come")]
-    Disconnected,
-}
-
 /// `capacity` is in requests: the most that can await their reply at once.
-/// The ring out holds twice that, for each one's cancel, so neither ring
-/// ever fills.
+/// The ring out holds three times that, for each one's cancel and status
+/// question, and the ring back twice, for each one's status answer, so
+/// neither ring ever fills.
 pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     todo!()
 }

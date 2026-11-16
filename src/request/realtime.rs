@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use super::{Request, RequestId};
 
-/// Consumed by `reply`, so a request is answered at most once. Dropped
+/// Consumed by `close`, so a request is answered at most once. Dropped
 /// unanswered, it holds its request's slots for good: only right when the
 /// channel is going away.
 #[derive(Debug)]
@@ -14,7 +14,22 @@ pub struct ReplyPermit {
 }
 
 impl ReplyPermit {
-    /// To match its cancel.
+    /// To match its cancel and status questions.
+    pub fn id(&self) -> RequestId {
+        self.id
+    }
+}
+
+/// For one status question. Dropped unanswered, it holds its slot for good,
+/// unless its request is answered by now: the control side then has its
+/// reply.
+#[derive(Debug)]
+pub struct StatusPermit {
+    id: RequestId,
+}
+
+impl StatusPermit {
+    /// The request asked about.
     pub fn id(&self) -> RequestId {
         self.id
     }
@@ -25,6 +40,9 @@ pub enum Received<Q> {
     Request(ReplyPermit, Q),
     /// Names a request already received, which may be answered by now.
     Cancel(RequestId),
+    /// Asks the status of a request already received, which may be answered
+    /// by now.
+    Status(StatusPermit),
 }
 
 #[derive(Debug)]
@@ -35,8 +53,15 @@ impl<Q: Request> RealtimeEnd<Q> {
         todo!()
     }
 
-    /// Cannot fail: the slot was reserved with the request.
-    pub fn reply(&mut self, permit: ReplyPermit, reply: Q::Reply) {
+    /// Sends the request's reply and ends it; its questions still out are
+    /// closed. Cannot fail: the slot was reserved with the request.
+    pub fn close(&mut self, permit: ReplyPermit, reply: Q::Reply) {
+        todo!()
+    }
+
+    /// Leaves the request open. Cannot fail: the slot was reserved with the
+    /// request.
+    pub fn answer(&mut self, permit: StatusPermit, status: Q::Status) {
         todo!()
     }
 }

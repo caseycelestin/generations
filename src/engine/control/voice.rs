@@ -21,7 +21,7 @@ impl Voice {
     ) -> Result<Self, ControlError> {
         let permit = requests.try_reserve()?;
         let audio_clone = Arc::clone(audio.shared());
-        let handle = permit.send(VoiceRequest::Play(audio_clone));
+        let handle = permit.open(VoiceRequest::Play(audio_clone));
         Ok(Self {
             handle,
             state: VoiceState::Playing,
