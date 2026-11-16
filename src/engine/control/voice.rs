@@ -5,18 +5,17 @@ use std::sync::Arc;
 use super::ControlError;
 use crate::audio::Audio;
 use crate::engine::protocol::voice::{VoiceRequest, VoiceState};
-use crate::engine::protocol::{Command, Event};
 use crate::request::{ControlEnd, RequestHandle};
 
 #[derive(Debug)]
 pub struct Voice {
-    handle: RequestHandle<(), Command, Event>,
+    handle: RequestHandle<VoiceRequest>,
     state: VoiceState,
 }
 
 impl Voice {
     pub(crate) fn play(
-        requests: &ControlEnd<Command, Event>,
+        requests: &ControlEnd<VoiceRequest>,
         audio: &Audio,
     ) -> Result<Self, ControlError> {
         let permit = requests.try_reserve()?;

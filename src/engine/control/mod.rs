@@ -87,7 +87,7 @@ impl Control {
 
     pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
         self.collector.collect();
-        Voice::play(&self.requests, audio)
+        Voice::play(&self.requests.voices, audio)
     }
 
     /// Stops every voice playing `audio`.
