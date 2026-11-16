@@ -90,7 +90,8 @@ impl<Q: Request> RealtimeEnd<Q> {
     /// Sends the request's reply and ends it; its questions still out are
     /// closed. Cannot fail: the slot was reserved with the request.
     pub fn close(&mut self, permit: ReplyPermit, reply: Q::Reply) {
-        todo!()
+        let pushed = self.to_control.push(FromRealtime::Reply(permit.id, reply));
+        debug_assert!(pushed.is_ok(), "the ring holds two messages per request");
     }
 
     /// Leaves the request open. Cannot fail: the slot was reserved with the
