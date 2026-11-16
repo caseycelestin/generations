@@ -19,8 +19,14 @@ impl<Q> Clone for ControlEnd<Q> {
 
 impl<Q: Request> ControlEnd<Q> {
     /// Reserves slots for a request, its cancel, one status question and the
-    /// answers to both, so neither `open` nor `cancel` can fail.
+    /// answers to both, so neither `open` nor `cancel` can fail. `Full` once
+    /// only the headroom is free.
     pub fn try_reserve(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
+        todo!()
+    }
+
+    /// As `try_reserve`, but may use the headroom too.
+    pub fn try_reserve_including_headroom(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
         todo!()
     }
 }

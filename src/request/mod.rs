@@ -41,5 +41,14 @@ pub struct RequestId(pub(crate) u64);
 /// question, and the ring back twice, for each one's status answer, so
 /// neither ring ever fills.
 pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
+    channel_with_headroom(capacity, 0)
+}
+
+/// As `channel`, with the last `headroom` slots of `capacity` kept for
+/// `try_reserve_including_headroom`, so ordinary requests cannot crowd it out.
+pub fn channel_with_headroom<Q: Request>(
+    capacity: usize,
+    headroom: usize,
+) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     todo!()
 }
