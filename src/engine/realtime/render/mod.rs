@@ -8,7 +8,7 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputRequest, InputStatus};
+use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
 use crate::request::{self, Received};
@@ -162,7 +162,7 @@ impl Renderer {
                 Received::Cancel(id) => {
                     if let Some(at) = self.inputs.iter().position(|input| input.is(id)) {
                         let stopped = self.inputs.swap_remove(at);
-                        stopped.end(&mut self.requests.inputs);
+                        stopped.end(InputEnd::Stopped, &mut self.requests.inputs);
                     }
                 }
                 Received::Status(permit) => {
@@ -183,7 +183,7 @@ impl Renderer {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
         for gone in self.inputs.extract_if(.., |input| input.feeder_gone()) {
-            gone.end(&mut self.requests.inputs);
+            gone.end(InputEnd::FeederGone, &mut self.requests.inputs);
         }
     }
 }

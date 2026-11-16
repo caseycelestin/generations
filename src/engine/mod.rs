@@ -10,7 +10,7 @@ pub use control::{
     PlayError, RecordError, Recording, StatusError, StopError, TryRecvStatusError, TryWaitError,
     Voice,
 };
-pub use protocol::inputs::InputStatus;
+pub use protocol::inputs::{InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;
 pub use realtime::capture::Feeder;

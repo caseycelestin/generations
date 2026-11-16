@@ -4,7 +4,7 @@ use rtrb::Consumer;
 
 use super::{Frame, Renderer};
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::InputRequest;
+use crate::engine::protocol::inputs::{InputEnd, InputRequest};
 use crate::layout::ChannelLayout;
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 
@@ -65,7 +65,7 @@ impl Input {
     }
 
     /// The one way an input leaves: its reader goes back in the reply.
-    pub(crate) fn end(self, requests: &mut RealtimeEnd<InputRequest>) {
-        requests.close(self.permit, self.reader);
+    pub(crate) fn end(self, why: InputEnd, requests: &mut RealtimeEnd<InputRequest>) {
+        requests.close(self.permit, (why, self.reader));
     }
 }

@@ -4,7 +4,7 @@ use rtrb::Consumer;
 
 use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputRequest, InputStatus};
+use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::layout::ChannelLayout;
 use crate::request::{self, RequestHandle, RequestPermit};
 
@@ -33,10 +33,10 @@ impl Input {
         Ok(PendingInputStatus(pending))
     }
 
-    /// `Ok` once it has ended.
-    pub fn try_wait(&mut self) -> Result<(), TryWaitError> {
-        self.handle.try_wait()?;
-        Ok(())
+    /// Why it ended, once it has; its ring is freed here.
+    pub fn try_wait(&mut self) -> Result<InputEnd, TryWaitError> {
+        let (why, _reader) = self.handle.try_wait()?;
+        Ok(why)
     }
 }
 
