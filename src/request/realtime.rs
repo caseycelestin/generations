@@ -79,7 +79,12 @@ impl<Q: Request> RealtimeEnd<Q> {
     }
 
     pub fn try_recv(&mut self) -> Option<Received<Q>> {
-        todo!()
+        let received = match self.from_control.pop().ok()? {
+            ToRealtime::Request(id, request) => Received::Request(ReplyPermit { id }, request),
+            ToRealtime::Cancel(id) => Received::Cancel(id),
+            ToRealtime::Status(id) => Received::Status(StatusPermit { id }),
+        };
+        Some(received)
     }
 
     /// Sends the request's reply and ends it; its questions still out are
