@@ -115,6 +115,7 @@ impl<Q: Request> RequestPermit<'_, Q> {
         RequestHandle {
             shared: Arc::clone(&self.end.shared),
             id,
+            taken: false,
         }
     }
 }
@@ -131,6 +132,8 @@ impl<Q: Request> Drop for RequestPermit<'_, Q> {
 pub struct RequestHandle<Q: Request> {
     shared: Arc<Mutex<Shared<Q>>>,
     id: RequestId,
+    /// Its reply was taken, so its record is gone.
+    taken: bool,
 }
 
 /// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
@@ -156,6 +159,14 @@ impl<Q: Request> RequestHandle<Q> {
     /// Answered from the real-time side's next look at the request.
     pub fn request_status(&mut self) -> Result<PendingStatus<Q>, StatusError> {
         todo!()
+    }
+}
+
+impl<Q: Request> Drop for RequestHandle<Q> {
+    fn drop(&mut self) {
+        if !self.taken {
+            lock(&self.shared).abandon(self.id);
+        }
     }
 }
 
@@ -268,6 +279,17 @@ impl<Q: Request> Shared<Q> {
                     }
                 }
             }
+        }
+    }
+
+    /// Frees the record now if its reply has come, or else when it does.
+    fn abandon(&mut self, id: RequestId) {
+        self.take_in();
+        let index = self.index_of(id);
+        if self.requests[index].reply.is_some() {
+            self.requests.swap_remove(index);
+        } else {
+            self.requests[index].abandoned = true;
         }
     }
 
