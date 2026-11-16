@@ -8,7 +8,7 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::InputRequest;
+use crate::engine::protocol::inputs::{InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
 use crate::request::{self, Received};
@@ -149,9 +149,23 @@ impl Renderer {
     fn apply_input_requests(&mut self) {
         while let Some(received) = self.requests.inputs.try_recv() {
             match received {
-                Received::Request(..) => todo!(),
-                Received::Cancel(_) => todo!(),
-                Received::Status(_) => todo!(),
+                Received::Request(permit, request) => {
+                    let room = self.inputs.len() < self.inputs.capacity();
+                    debug_assert!(room, "one request per input");
+                    self.inputs.push(Input::open(permit, request.reader));
+                }
+                Received::Cancel(id) => {
+                    if let Some(at) = self.inputs.iter().position(|input| input.is(id)) {
+                        let stopped = self.inputs.swap_remove(at);
+                        stopped.end(&mut self.requests.inputs);
+                    }
+                }
+                Received::Status(permit) => {
+                    if self.inputs.iter().any(|input| input.is(permit.id())) {
+                        self.requests.inputs.answer(permit, InputStatus {});
+                    }
+                    // Otherwise it is closed, and its reply has the last word.
+                }
             }
         }
     }
