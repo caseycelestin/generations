@@ -146,8 +146,14 @@ impl<Q: Request> fmt::Debug for RequestHandle<Q> {
 }
 
 impl<Q: Request> RequestHandle<Q> {
+    /// Takes in every reply that has arrived, not only this one's.
     pub fn try_wait(&mut self) -> Result<Q::Reply, TryWaitError> {
-        todo!()
+        if self.taken {
+            return Err(TryWaitError::Taken);
+        }
+        let reply = lock(&self.shared).take_reply(self.id)?;
+        self.taken = true;
+        Ok(reply)
     }
 
     /// The request still replies once. Does nothing after the first call,
@@ -194,9 +200,8 @@ pub enum ReserveError {
 pub enum TryWaitError {
     #[error("no reply yet")]
     Empty,
-    /// Its reply was taken: the request is closed.
     #[error("the reply was already taken")]
-    Closed,
+    Taken,
     /// Only once no reply is waiting: one that came first is still taken.
     #[error("the real-time end is gone; no reply will come")]
     Disconnected,
@@ -280,6 +285,21 @@ impl<Q: Request> Shared<Q> {
                 }
             }
         }
+    }
+
+    /// Takes everything in first, as this request's reply may be behind
+    /// others'. Its record goes with the reply.
+    fn take_reply(&mut self, id: RequestId) -> Result<Q::Reply, TryWaitError> {
+        self.take_in();
+        let index = self.index_of(id);
+        let Some(reply) = self.requests[index].reply.take() else {
+            if self.from_realtime.is_abandoned() {
+                return Err(TryWaitError::Disconnected);
+            }
+            return Err(TryWaitError::Empty);
+        };
+        self.requests.swap_remove(index);
+        Ok(reply)
     }
 
     /// Frees the record now if its reply has come, or else when it does.

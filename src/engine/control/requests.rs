@@ -24,7 +24,7 @@ impl From<request::TryWaitError> for TryWaitError {
     fn from(error: request::TryWaitError) -> Self {
         match error {
             request::TryWaitError::Empty => Self::NotEnded,
-            request::TryWaitError::Closed => Self::Taken,
+            request::TryWaitError::Taken => Self::Taken,
             request::TryWaitError::Disconnected => Self::RendererGone,
         }
     }
