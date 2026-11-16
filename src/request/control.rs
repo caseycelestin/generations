@@ -116,6 +116,7 @@ impl<Q: Request> RequestPermit<'_, Q> {
             shared: Arc::clone(&self.end.shared),
             id,
             taken: false,
+            cancelled: false,
         }
     }
 }
@@ -134,6 +135,7 @@ pub struct RequestHandle<Q: Request> {
     id: RequestId,
     /// Its reply was taken, so its record is gone.
     taken: bool,
+    cancelled: bool,
 }
 
 /// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
@@ -159,7 +161,13 @@ impl<Q: Request> RequestHandle<Q> {
     /// The request still replies once. Does nothing after the first call,
     /// or once the reply is taken.
     pub fn cancel(&mut self) {
-        todo!()
+        if self.taken || self.cancelled {
+            return;
+        }
+        self.cancelled = true;
+        let message = ToRealtime::Cancel(self.id);
+        let pushed = lock(&self.shared).to_realtime.push(message);
+        assert!(pushed.is_ok(), "the ring holds three messages per request");
     }
 
     /// Answered from the real-time side's next look at the request.
