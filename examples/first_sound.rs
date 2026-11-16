@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
     let mut project = Project::open(&dir)?;
-    // Room for 64 commands in flight and 16 voices at once.
+    // 16 voices at once, and room for 64 plays and stops on their way.
     let (control, mut renderer) = engine::create(64, 16);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
@@ -45,14 +45,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("saved as {id:?}");
 
     println!("pluck");
-    let first = control.play(&pluck)?;
+    let mut first = control.play(&pluck)?;
     sleep(Duration::from_millis(600));
-    println!("first: {:?}", first.state());
+    println!("first ended: {}", first.try_wait().is_ok());
     println!("pluck again, over the first one's tail");
-    let second = control.play(&pluck)?;
+    let mut second = control.play(&pluck)?;
     sleep(Duration::from_millis(1200));
     // Both have played to their last frame by now.
-    println!("first: {:?}, second: {:?}", first.state(), second.state());
+    println!(
+        "first ended: {}, second ended: {}",
+        first.try_wait().is_ok(),
+        second.try_wait().is_ok()
+    );
     control.collect();
 
     // The audio thread queues its complaints; this is where they are read.

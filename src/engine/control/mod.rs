@@ -1,73 +1,86 @@
 //! The control side: runs on UI or event threads. May lock and allocate.
 
-mod handle;
 mod recording;
-mod rings;
+mod requests;
 mod voice;
 
-pub use recording::{RecordError, Recording};
-pub use voice::Voice;
+pub use recording::{PendingRecordingStatus, RecordError, Recording};
+pub(crate) use requests::Requests;
+pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
+pub use voice::{PendingVoiceStatus, PlayError, Voice};
 
-use rtrb::{Consumer, Producer};
+use std::sync::Arc;
+
 use thiserror::Error;
 
 use crate::audio::Audio;
-use crate::engine::protocol::voice::VoiceCommand;
-use crate::engine::protocol::{BufferAddress, Command, Event, HandleId, Message};
-use rings::SharedRings;
+use crate::engine::protocol::voice::VoiceRequest;
+use crate::request;
 
-#[derive(Debug, Error)]
-pub enum ControlError {
-    /// The renderer has not caught up; nothing was sent.
-    #[error("the command ring is full")]
-    CommandsFull,
+/// Nothing was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum StopError {
+    /// They clear within a period.
+    #[error("earlier stops are still on their way")]
+    Busy,
+    #[error("the renderer is gone")]
+    RendererGone,
 }
 
-/// Clones act on the same renderer. Every command, from here or from a
+impl From<request::ReserveError> for StopError {
+    fn from(error: request::ReserveError) -> Self {
+        match error {
+            request::ReserveError::Full => Self::Busy,
+            request::ReserveError::Disconnected => Self::RendererGone,
+        }
+    }
+}
+
+/// Clones act on the same renderer. Every request, from here or from a
 /// handle, takes effect at the renderer's next period.
 #[derive(Debug, Clone)]
 pub struct Control {
-    rings: SharedRings,
-    id: HandleId,
+    requests: Requests,
 }
 
 impl Control {
-    pub(crate) fn new(
-        to_renderer: Producer<Message<Command>>,
-        from_renderer: Consumer<Message<Event>>,
-    ) -> Self {
-        let rings = SharedRings::new(to_renderer, from_renderer);
-        let id = rings.next_id();
-        Self { rings, id }
+    pub(crate) fn new(requests: Requests) -> Self {
+        Self { requests }
     }
 
-    pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
-        Voice::play(self.rings.clone(), audio)
+    pub fn play(&self, audio: &Audio) -> Result<Voice, PlayError> {
+        Voice::play(&self.requests.voices, audio)
     }
 
     /// Stops every voice playing `audio`.
-    pub fn stop(&self, audio: &Audio) -> Result<(), ControlError> {
-        let address = BufferAddress::of(audio.shared());
-        self.rings.send(self.id, VoiceCommand::RemoveAudio(address))
+    pub fn stop(&self, audio: &Audio) -> Result<(), StopError> {
+        let permit = self.requests.voices.try_reserve_including_headroom()?;
+        let audio_clone = Arc::clone(audio.shared());
+        // Its handle is dropped: the reply only brings the clone back.
+        permit.open(VoiceRequest::StopAudio(audio_clone));
+        Ok(())
     }
 
     /// Stops every voice; a recording runs on.
-    pub fn stop_all(&self) -> Result<(), ControlError> {
-        self.rings.send(self.id, VoiceCommand::RemoveAll)
+    pub fn stop_all(&self) -> Result<(), StopError> {
+        let permit = self.requests.voices.try_reserve_including_headroom()?;
+        permit.open(VoiceRequest::StopAll);
+        Ok(())
     }
 
     /// Records the main out into `audio`, from empty. By value: the
     /// renderer writes it until it comes back. Refused while another
-    /// recording runs, as its state shows, and at once while a voice holds
-    /// `audio`.
+    /// recording runs, or while a voice holds `audio`.
     pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
-        Recording::record(self.rings.clone(), audio)
+        self.collect();
+        Recording::record(&self.requests.recording, audio)
     }
 
-    /// Frees what the renderer has handed back, returning it to
-    /// `AudioMemory`. Every send does this first; call it when the app goes
-    /// quiet, or before a load that needs the memory.
+    /// Frees the audio of voices and recordings whose handles are gone,
+    /// returning it to `AudioMemory`. `record` does this first; call it when
+    /// the app goes quiet, or before a load that needs the memory.
     pub fn collect(&self) {
-        self.rings.collect();
+        self.requests.voices.take_in();
+        self.requests.recording.take_in();
     }
 }

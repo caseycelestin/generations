@@ -4,15 +4,11 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::ControlError;
-use super::handle::{Handle, Inbox};
-use super::rings::SharedRings;
-use crate::audio::Audio;
-use crate::engine::protocol::Event;
-use crate::engine::protocol::recording::{
-    RecordingCommand, RecordingEvent, RecordingSpec, RecordingState,
-};
+use super::{StatusError, TryRecvStatusError, TryWaitError};
+use crate::audio::{Audio, AudioBuffer};
+use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::layout::ChannelLayout;
+use crate::request::{self, ControlEnd, RequestHandle, ReserveError};
 
 /// A refused `record`, holding the audio it was given.
 #[derive(Debug, Error)]
@@ -20,90 +16,113 @@ pub enum RecordError {
     /// The main out is stereo, so mono audio cannot hold it.
     #[error("recording needs stereo audio")]
     NotStereo(Audio),
-    /// Stop its voices and try again.
+    /// Stop its voices, then wait on or drop their handles, which hold it
+    /// until then.
     #[error("a voice still holds the audio")]
     AudioInUse(Audio),
-    /// The renderer has not caught up; nothing was sent.
-    #[error("the command ring is full")]
-    CommandsFull(Audio),
+    /// Another recording holds the recorder until its reply is taken;
+    /// nothing was sent.
+    #[error("another recording holds the recorder")]
+    Full(Audio),
+    /// The renderer is gone; nothing was sent.
+    #[error("the renderer is gone")]
+    Disconnected(Audio),
 }
 
 impl RecordError {
     pub fn into_audio(self) -> Audio {
         match self {
-            Self::NotStereo(audio) | Self::AudioInUse(audio) | Self::CommandsFull(audio) => audio,
+            Self::NotStereo(audio)
+            | Self::AudioInUse(audio)
+            | Self::Full(audio)
+            | Self::Disconnected(audio) => audio,
+        }
+    }
+
+    fn refused(error: ReserveError, audio: Audio) -> Self {
+        match error {
+            ReserveError::Full => Self::Full(audio),
+            ReserveError::Disconnected => Self::Disconnected(audio),
         }
     }
 }
 
+/// Holds the recorder until `try_wait` returns `Ok` or it is dropped.
 #[derive(Debug)]
 pub struct Recording {
-    handle: Handle<RecordingEvent>,
+    handle: RequestHandle<RecordingRequest>,
 }
 
 impl Recording {
-    pub(crate) fn record(rings: SharedRings, audio: Audio) -> Result<Self, RecordError> {
+    pub(crate) fn record(
+        requests: &ControlEnd<RecordingRequest>,
+        audio: Audio,
+    ) -> Result<Self, RecordError> {
+        let audio = Self::validate(audio)?;
+        let audio = Self::prepare(audio);
+        let permit = match requests.try_reserve() {
+            Ok(permit) => permit,
+            Err(error) => return Err(RecordError::refused(error, Audio::from_shared(audio))),
+        };
+        let handle = permit.open(RecordingRequest::Start(audio));
+        Ok(Self { handle })
+    }
+
+    pub fn stop(&mut self) {
+        self.handle.cancel();
+    }
+
+    /// Asks the renderer, which answers at its next period.
+    pub fn request_status(&mut self) -> Result<PendingRecordingStatus, StatusError> {
+        let pending = self.handle.request_status()?;
+        Ok(PendingRecordingStatus(pending))
+    }
+
+    /// How it ended, with the audio holding what was recorded; once.
+    pub fn try_wait(&mut self) -> Result<(RecordingEnd, Audio), TryWaitError> {
+        let (why, audio) = self.handle.try_wait()?;
+        Ok((why, Audio::from_shared(audio)))
+    }
+
+    /// Ended voices must have been collected first, or they still count as
+    /// holding `audio`.
+    fn validate(audio: Audio) -> Result<Audio, RecordError> {
         if audio.layout() != ChannelLayout::Stereo {
             return Err(RecordError::NotStereo(audio));
         }
-        // Collected first, so ended voices have let go. The caller gave up
-        // theirs, so nothing can clone it: the count can only fall before
-        // the send.
-        rings.collect();
+        // The caller gave up theirs, so nothing can clone it: the count can
+        // only fall before the send.
         if Arc::strong_count(audio.shared()) > 1 {
             return Err(RecordError::AudioInUse(audio));
         }
+        Ok(audio)
+    }
+
+    /// `audio` must have passed `validate`.
+    fn prepare(audio: Audio) -> Arc<AudioBuffer> {
         let mut audio = audio.into_shared();
         let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
         buffer.clear();
         buffer.prefault();
-        let spec = RecordingSpec { audio };
-        match Handle::open(&rings, spec, RecordingCommand::Start) {
-            Ok(handle) => Ok(Self { handle }),
-            Err(spec) => Err(RecordError::CommandsFull(Audio::from_shared(spec.audio))),
-        }
-    }
-
-    pub fn stop(&self) -> Result<(), ControlError> {
-        self.handle.send(RecordingCommand::Stop)
-    }
-
-    pub fn state(&self) -> RecordingState {
-        self.handle.inbox().state
-    }
-
-    /// The audio, once the renderer has let go of it: after the recording
-    /// ends, or at once if it was refused. `None` until then, and after it
-    /// has been taken.
-    pub fn take(&mut self) -> Option<Audio> {
-        let spec = self.handle.inbox().spec.take();
-        spec.map(|spec| Audio::from_shared(spec.audio))
-    }
-}
-
-/// Keeps the last event whole, so its spec waits here for `take`. The event
-/// that hands the spec back is the last.
-impl Inbox for RecordingEvent {
-    fn deliver(&mut self, event: Event) -> bool {
-        let Event::Recording(event) = event else {
-            unreachable!("an id belongs to one feature");
-        };
-        let last = event.spec.is_some();
-        *self = event;
-        last
+        audio
     }
 }
 
 /// Stops a recording still running, since nothing could take its audio
-/// once the handle is gone. A full ring loses the stop; the take then runs
-/// until its audio is full.
+/// once the handle is gone.
 impl Drop for Recording {
     fn drop(&mut self) {
-        if matches!(
-            self.state(),
-            RecordingState::Pending | RecordingState::Recording
-        ) {
-            let _ = self.stop();
-        }
+        self.handle.cancel();
+    }
+}
+
+/// The renderer's answer to one status question about a recording.
+#[derive(Debug)]
+pub struct PendingRecordingStatus(request::PendingStatus<RecordingRequest>);
+
+impl PendingRecordingStatus {
+    pub fn try_recv(&mut self) -> Result<RecordingStatus, TryRecvStatusError> {
+        let status = self.0.try_recv()?;
+        Ok(status)
     }
 }

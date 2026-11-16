@@ -1,7 +1,7 @@
 //! The engine as a user sees it: load a sample from a project,
 //! make an engine, keep the control, play its audio as voices, and give the
 //! renderer to the audio thread to render periods. One voice plays out, one
-//! is stopped, and each reports how it ended. The main out is recorded
+//! is stopped, and each reports once it has ended. The main out is recorded
 //! while they play. Nothing is heard: the periods go to a buffer, not a
 //! device.
 //!
@@ -12,7 +12,7 @@ use std::error::Error;
 use std::path::Path;
 use std::thread;
 
-use generations::engine::{self, RecordingState, VoiceState};
+use generations::engine;
 use generations::{AudioMemory, ChannelLayout, Project, SampleId};
 
 /// A generous guess for a desktop.
@@ -23,19 +23,22 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut project = Project::open(Path::new("project"))?;
     let audio = project.load(SampleId(0), &memory)?;
 
-    // Room for 64 commands in flight and 16 voices at once.
+    // 16 voices at once, and room for 64 plays and stops on their way.
     let (control, renderer) = engine::create(64, 16);
 
     // Clones are the same engine.
     let _ui = control.clone();
 
-    let played = control.play(&audio)?;
-    let stopped = control.play(&audio)?;
-    stopped.stop()?;
+    let mut played = control.play(&audio)?;
+    let mut stopped = control.play(&audio)?;
+    stopped.stop();
 
     // Room for a second of the main out, paid for now.
     let take = memory.alloc(ChannelLayout::Stereo, 48_000)?;
     let mut recording = control.record(take)?;
+
+    // Asked now, answered at the renderer's next period.
+    let mut status = played.request_status()?;
 
     // A device callback would own the renderer.
     let audio_thread = thread::spawn(move || {
@@ -49,27 +52,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     audio_thread.join().expect("audio thread");
 
-    recording.stop()?;
-
-    // The audio thread reports each change: started, refused, ended.
-    match recording.state() {
-        RecordingState::Pending => println!("not started yet"),
-        RecordingState::Recording => println!("still recording"),
-        RecordingState::Refused => println!("refused: the recorder was busy"),
-        RecordingState::Ended(why) => println!("recording ended: {why:?}"),
+    match status.try_recv() {
+        Ok(status) => println!("the renderer said: {status:?}"),
+        Err(error) => println!("no answer: {error}"),
     }
 
-    // Once it has ended, the audio comes back, here to be kept.
-    if let Some(recorded) = recording.take() {
-        project.add_sample(&recorded)?;
+    recording.stop();
+
+    // How it ended, with the audio holding what was recorded, here to be
+    // kept; once.
+    match recording.try_wait() {
+        Ok((why, recorded)) => {
+            println!("recording ended: {why:?}");
+            project.add_sample(&recorded)?;
+        }
+        Err(error) => println!("no result: {error}"),
     }
 
-    // The audio thread reports how a voice ended, once it has: here
-    // Finished, then Stopped.
-    for voice in [&played, &stopped] {
-        match voice.state() {
-            VoiceState::Playing => println!("still playing"),
-            VoiceState::Ended(why) => println!("ended: {why:?}"),
+    // Whether each voice has ended; taking that also frees its slot.
+    for voice in [&mut played, &mut stopped] {
+        match voice.try_wait() {
+            Ok(()) => println!("ended"),
+            Err(error) => println!("not ended: {error}"),
         }
     }
 

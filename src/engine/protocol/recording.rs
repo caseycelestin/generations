@@ -3,36 +3,23 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
+use crate::request::Request;
 
 #[derive(Debug)]
-pub(crate) enum RecordingCommand {
-    Start(RecordingSpec),
-    /// Stops the sender's take; from any other sender, does nothing.
-    Stop,
+pub(crate) enum RecordingRequest {
+    Start(Arc<AudioBuffer>),
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct RecordingEvent {
-    pub(crate) state: RecordingState,
-    /// Back only when the renderer lets go: on `Refused` and `Ended`.
-    pub(crate) spec: Option<RecordingSpec>,
+/// Its audio comes back with why it ended, which says what the audio holds.
+impl Request for RecordingRequest {
+    type Reply = (RecordingEnd, Arc<AudioBuffer>);
+    type Status = RecordingStatus;
 }
 
-#[derive(Debug)]
-pub(crate) struct RecordingSpec {
-    pub(crate) audio: Arc<AudioBuffer>,
-}
-
-/// What the audio thread last said about a recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RecordingState {
-    /// Sent; the renderer has not started it yet.
-    #[default]
-    Pending,
+/// The renderer's answer, while it holds the recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordingStatus {
     Recording,
-    /// Never started: the recorder was busy.
-    Refused,
-    Ended(RecordingEnd),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

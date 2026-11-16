@@ -3,48 +3,26 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-
-use super::BufferAddress;
+use crate::request::Request;
 
 #[derive(Debug)]
-pub(crate) enum VoiceCommand {
-    Add(VoiceSpec),
-    /// Removes the sender's voice; from any other sender, does nothing.
-    Remove,
+pub(crate) enum VoiceRequest {
+    Play(Arc<AudioBuffer>),
     /// Every voice playing this audio.
-    RemoveAudio(BufferAddress),
-    RemoveAll,
+    StopAudio(Arc<AudioBuffer>),
+    StopAll,
 }
 
-#[derive(Debug, Default)]
-pub(crate) struct VoiceEvent {
-    pub(crate) state: VoiceState,
-    /// Back only when the renderer lets go: on `Ended`.
-    pub(crate) spec: Option<VoiceSpec>,
+/// What a request carried comes back with its reply, to be freed on the
+/// control side: a play's audio, or the audio a stop named. A stop-all
+/// carries nothing.
+impl Request for VoiceRequest {
+    type Reply = Option<Arc<AudioBuffer>>;
+    type Status = VoiceStatus;
 }
 
-/// Fixed for the voice's life; the renderer keeps it whole beside its
-/// playing state, to hand back.
-#[derive(Debug)]
-pub(crate) struct VoiceSpec {
-    pub(crate) audio: Arc<AudioBuffer>,
-}
-
-/// What the audio thread last said about a voice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum VoiceState {
-    /// Not reported ended yet: playing, or about to.
-    #[default]
-    Playing,
-    Ended(VoiceEnd),
-}
-
+/// The renderer's answer, while it holds the voice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceEnd {
-    /// It played to its last frame.
-    Finished,
-    /// Its `stop` arrived.
-    Stopped,
-    /// It was the oldest when a new voice needed its place.
-    Cut,
+pub enum VoiceStatus {
+    Playing,
 }

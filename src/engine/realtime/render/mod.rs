@@ -1,4 +1,4 @@
-//! The audio thread: turns commands and audio into periods of output.
+//! The audio thread: turns requests and audio into periods of output.
 
 mod math;
 mod recording;
@@ -6,22 +6,26 @@ mod voices;
 
 use std::num::NonZeroUsize;
 
-use rtrb::{Consumer, Producer};
-
 use crate::config::Pcm;
-use crate::engine::protocol::recording::{RecordingCommand, RecordingEnd};
-use crate::engine::protocol::voice::{VoiceCommand, VoiceEnd};
-use crate::engine::protocol::{Command, Event, Message};
+use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
+use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
+use crate::request::{self, Received};
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
 
 type Frame = [Pcm; Renderer::CHANNELS];
 
+/// One request channel per actor, at its real-time end.
+#[derive(Debug)]
+pub(crate) struct Requests {
+    pub(crate) voices: request::RealtimeEnd<VoiceRequest>,
+    pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
+}
+
 #[derive(Debug)]
 pub struct Renderer {
-    from_control: Consumer<Message<Command>>,
-    to_control: Producer<Message<Event>>,
+    requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
     /// One sound's frames for the block, before they join the mix.
@@ -38,14 +42,9 @@ impl Renderer {
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
-    pub(crate) fn new(
-        from_control: Consumer<Message<Command>>,
-        to_control: Producer<Message<Event>>,
-        voices: NonZeroUsize,
-    ) -> Self {
+    pub(crate) fn new(requests: Requests, voices: NonZeroUsize) -> Self {
         Self {
-            from_control,
-            to_control,
+            requests,
             voices: Voices::new(voices),
             recording: None,
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
@@ -56,7 +55,8 @@ impl Renderer {
     /// playing voice, summed and clipped.
     pub fn render(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
-        self.apply_commands();
+        self.apply_voice_requests();
+        self.apply_recording_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
         for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
             block.fill([0.0; Self::CHANNELS]);
@@ -73,40 +73,62 @@ impl Renderer {
         self.clean_up();
     }
 
-    fn apply_commands(&mut self) {
-        while let Ok(Message { id, data: command }) = self.from_control.pop() {
-            match command {
-                Command::Voice(VoiceCommand::Add(spec)) => {
-                    if let Some(replaced) = self.voices.add(Voice::new(id, spec)) {
-                        replaced.end(VoiceEnd::Cut, &mut self.to_control);
+    fn apply_voice_requests(&mut self) {
+        while let Some(received) = self.requests.voices.try_recv() {
+            match received {
+                Received::Request(permit, VoiceRequest::Play(audio)) => {
+                    if let Some(cut) = self.voices.add(Voice::new(permit, audio)) {
+                        cut.end(&mut self.requests.voices);
                     }
                 }
-                Command::Voice(VoiceCommand::Remove) => {
-                    if let Some(stopped) = self.voices.remove(id) {
-                        stopped.end(VoiceEnd::Stopped, &mut self.to_control);
+                Received::Request(permit, VoiceRequest::StopAudio(audio)) => {
+                    for voice in self.voices.extract_if(|voice| voice.plays(&audio)) {
+                        voice.end(&mut self.requests.voices);
                     }
+                    // The audio goes back with the reply, never freed here.
+                    self.requests.voices.close(permit, Some(audio));
                 }
-                Command::Voice(VoiceCommand::RemoveAudio(audio)) => {
-                    for voice in self.voices.extract_if(|voice| voice.plays(audio)) {
-                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
-                    }
-                }
-                Command::Voice(VoiceCommand::RemoveAll) => {
+                Received::Request(permit, VoiceRequest::StopAll) => {
                     for voice in self.voices.drain() {
-                        voice.end(VoiceEnd::Stopped, &mut self.to_control);
+                        voice.end(&mut self.requests.voices);
+                    }
+                    self.requests.voices.close(permit, None);
+                }
+                Received::Cancel(id) => {
+                    if let Some(stopped) = self.voices.remove(id) {
+                        stopped.end(&mut self.requests.voices);
                     }
                 }
-                Command::Recording(RecordingCommand::Start(spec)) => {
-                    if self.recording.is_some() {
-                        Recording::refuse(id, spec, &mut self.to_control);
-                    } else {
-                        self.recording = Some(Recording::start(id, spec, &mut self.to_control));
+                Received::Status(permit) => {
+                    if self.voices.holds(permit.id()) {
+                        self.requests.voices.answer(permit, VoiceStatus::Playing);
                     }
+                    // Otherwise it is closed, and its reply has the last word.
                 }
-                Command::Recording(RecordingCommand::Stop) => {
+            }
+        }
+    }
+
+    fn apply_recording_requests(&mut self) {
+        while let Some(received) = self.requests.recording.try_recv() {
+            match received {
+                Received::Request(permit, RecordingRequest::Start(audio)) => {
+                    debug_assert!(self.recording.is_none(), "one request per recorder");
+                    self.recording = Some(Recording::start(permit, audio));
+                }
+                Received::Cancel(id) => {
                     if let Some(stopped) = self.recording.take_if(|recording| recording.is(id)) {
-                        stopped.end(RecordingEnd::Stopped, &mut self.to_control);
+                        stopped.end(RecordingEnd::Stopped, &mut self.requests.recording);
                     }
+                }
+                Received::Status(permit) => {
+                    let held = self.recording.as_ref();
+                    if held.is_some_and(|recording| recording.is(permit.id())) {
+                        self.requests
+                            .recording
+                            .answer(permit, RecordingStatus::Recording);
+                    }
+                    // Otherwise it is closed, and its reply has the last word.
                 }
             }
         }
@@ -114,10 +136,10 @@ impl Renderer {
 
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
-            voice.end(VoiceEnd::Finished, &mut self.to_control);
+            voice.end(&mut self.requests.voices);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
-            full.end(RecordingEnd::Full, &mut self.to_control);
+            full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
     }
 }
@@ -126,105 +148,80 @@ impl Renderer {
 mod tests {
     use std::sync::Arc;
 
-    use rtrb::RingBuffer;
-
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
-    use crate::engine::protocol::recording::{RecordingEvent, RecordingSpec, RecordingState};
-    use crate::engine::protocol::voice::{VoiceSpec, VoiceState};
-    use crate::engine::protocol::{BufferAddress, HandleId};
     use crate::layout::ChannelLayout;
+    use crate::request::{ControlEnd, RequestHandle, TryRecvStatusError, TryWaitError};
     use crate::testing::buffer;
 
-    /// A renderer with `voices` places, and the control side's ring ends.
-    fn renderer(
-        voices: usize,
-    ) -> (
-        Producer<Message<Command>>,
-        Consumer<Message<Event>>,
-        Renderer,
-    ) {
-        let (to_renderer, from_control) = RingBuffer::new(16);
-        let (to_control, from_renderer) = RingBuffer::new(32);
+    /// The control ends of the renderer's channels.
+    struct Ends {
+        voices: ControlEnd<VoiceRequest>,
+        recording: ControlEnd<RecordingRequest>,
+    }
+
+    /// A renderer with `voices` places, and the control ends of its channels.
+    fn renderer(voices: usize) -> (Ends, Renderer) {
+        let (voices_control, voices_realtime) = request::channel_with_headroom(voices + 16, 2);
+        let (recording_control, recording_realtime) = request::channel(1);
+        let ends = Ends {
+            voices: voices_control,
+            recording: recording_control,
+        };
+        let requests = Requests {
+            voices: voices_realtime,
+            recording: recording_realtime,
+        };
         let voices = NonZeroUsize::new(voices).unwrap();
-        let renderer = Renderer::new(from_control, to_control, voices);
-        (to_renderer, from_renderer, renderer)
+        (ends, Renderer::new(requests, voices))
     }
 
-    /// Sends an add from `sender` for a mono voice of `samples`, as
-    /// `Control::play` does.
-    fn play(to_renderer: &mut Producer<Message<Command>>, sender: HandleId, samples: &[Pcm]) {
-        let audio = Arc::new(buffer(ChannelLayout::Mono, samples));
-        play_audio(to_renderer, sender, audio)
+    /// Opens a mono voice of `samples`, as `Control::play` does.
+    fn play(ends: &Ends, samples: &[Pcm]) -> RequestHandle<VoiceRequest> {
+        play_audio(ends, Arc::new(buffer(ChannelLayout::Mono, samples)))
     }
 
-    /// Sends an add from `sender` for a voice of `audio`, for voices that
-    /// share it.
-    fn play_audio(
-        to_renderer: &mut Producer<Message<Command>>,
-        sender: HandleId,
-        audio: Arc<AudioBuffer>,
-    ) {
-        let spec = VoiceSpec { audio };
-        to_renderer
-            .push(Message {
-                id: sender,
-                data: VoiceCommand::Add(spec).into(),
-            })
-            .unwrap();
+    /// Opens a voice of `audio`, for voices that share it.
+    fn play_audio(ends: &Ends, audio: Arc<AudioBuffer>) -> RequestHandle<VoiceRequest> {
+        ends.voices
+            .try_reserve()
+            .unwrap()
+            .open(VoiceRequest::Play(audio))
     }
 
-    /// Which voices ended, and how, in order. Each one's event must hand
-    /// its spec back.
-    fn ended(from_renderer: &mut Consumer<Message<Event>>) -> Vec<(HandleId, VoiceState)> {
-        let mut ended = Vec::new();
-        while let Ok(back) = from_renderer.pop() {
-            if let Event::Voice(event) = back.data {
-                assert!(event.spec.is_some(), "the spec is handed back");
-                ended.push((back.id, event.state));
-            }
-        }
-        ended
+    /// Opens a stop, as `Control::stop` and `stop_all` do.
+    fn stop(ends: &Ends, request: VoiceRequest) {
+        ends.voices
+            .try_reserve_including_headroom()
+            .unwrap()
+            .open(request);
     }
 
-    /// Sends a start for a recording into empty stereo audio with room for
-    /// `frames`, as `Control::record` does.
-    fn start(to_renderer: &mut Producer<Message<Command>>, frames: usize) -> HandleId {
+    fn ended(voice: &mut RequestHandle<VoiceRequest>) -> bool {
+        voice.try_wait().is_ok()
+    }
+
+    /// Opens a recording into empty stereo audio with room for `frames`, as
+    /// `Control::record` does.
+    fn start(ends: &Ends, frames: usize) -> RequestHandle<RecordingRequest> {
         let audio = AudioMemory::new()
             .alloc_buffer(ChannelLayout::Stereo, frames)
             .unwrap();
-        let audio = Arc::new(audio);
-        let id = HandleId(0);
-        let spec = RecordingSpec { audio };
-        to_renderer
-            .push(Message {
-                id,
-                data: RecordingCommand::Start(spec).into(),
-            })
-            .unwrap();
-        id
+        ends.recording
+            .try_reserve()
+            .unwrap()
+            .open(RecordingRequest::Start(Arc::new(audio)))
     }
 
-    /// What came back for recordings, in order.
-    fn returned(from_renderer: &mut Consumer<Message<Event>>) -> Vec<RecordingEvent> {
-        let mut returned = Vec::new();
-        while let Ok(back) = from_renderer.pop() {
-            if let Event::Recording(event) = back.data {
-                returned.push(event);
-            }
-        }
-        returned
-    }
-
-    fn samples(spec: &RecordingSpec) -> Vec<Pcm> {
-        spec.audio.frames_in(0..spec.audio.frames()).to_vec()
+    fn samples(audio: &AudioBuffer) -> Vec<Pcm> {
+        audio.frames_in(0..audio.frames()).to_vec()
     }
 
     #[test]
     fn voices_are_summed() {
-        let (mut to_renderer, _from_renderer, mut renderer) = renderer(2);
-        play(&mut to_renderer, HandleId(0), &[0.25; 8]);
-        play(&mut to_renderer, HandleId(0), &[0.5; 8]);
+        let (ends, mut renderer) = renderer(2);
+        let _quiet = play(&ends, &[0.25; 8]);
+        let _loud = play(&ends, &[0.5; 8]);
         let mut out = vec![0.0; 8 * 2];
         renderer.render(&mut out);
         assert_eq!(out, vec![0.75; 8 * 2]);
@@ -232,9 +229,9 @@ mod tests {
 
     #[test]
     fn the_sum_is_clipped() {
-        let (mut to_renderer, _from_renderer, mut renderer) = renderer(2);
-        play(&mut to_renderer, HandleId(0), &[0.75; 4]);
-        play(&mut to_renderer, HandleId(0), &[0.75; 4]);
+        let (ends, mut renderer) = renderer(2);
+        let _first = play(&ends, &[0.75; 4]);
+        let _second = play(&ends, &[0.75; 4]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
         assert_eq!(out, vec![1.0; 4 * 2]);
@@ -244,8 +241,8 @@ mod tests {
     fn a_period_longer_than_a_block_plays_on_without_a_gap() {
         let frames = Renderer::BLOCK_FRAMES * 2 + 10;
         let ramp: Vec<Pcm> = (0..frames).map(|i| i as Pcm / 1000.0).collect();
-        let (mut to_renderer, _from_renderer, mut renderer) = renderer(1);
-        play(&mut to_renderer, HandleId(0), &ramp);
+        let (ends, mut renderer) = renderer(1);
+        let _voice = play(&ends, &ramp);
         let mut out = vec![0.0; frames * 2];
         renderer.render(&mut out);
         let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
@@ -254,8 +251,8 @@ mod tests {
 
     #[test]
     fn periods_shorter_than_a_block_play_on_without_a_gap() {
-        let (mut to_renderer, _from_renderer, mut renderer) = renderer(1);
-        play(&mut to_renderer, HandleId(0), &[0.1, 0.2, 0.3, 0.4]);
+        let (ends, mut renderer) = renderer(1);
+        let _voice = play(&ends, &[0.1, 0.2, 0.3, 0.4]);
         let mut out = vec![0.0; 2 * 2];
         renderer.render(&mut out);
         renderer.render(&mut out);
@@ -263,193 +260,118 @@ mod tests {
     }
 
     #[test]
-    fn a_voice_that_plays_out_ends_finished_and_is_handed_back() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        play(&mut to_renderer, HandleId(0), &[0.5; 4]);
-        let mut out = vec![0.0; 8 * 2];
-        renderer.render(&mut out);
-        assert_eq!(
-            ended(&mut from_renderer),
-            [(HandleId(0), VoiceState::Ended(VoiceEnd::Finished))]
-        );
+    fn a_voice_that_plays_out_ends() {
+        let (ends, mut renderer) = renderer(1);
+        let mut voice = play(&ends, &[0.5; 4]);
+        renderer.render(&mut [0.0; 8 * 2]);
+        assert!(ended(&mut voice));
     }
 
     #[test]
-    fn a_removed_voice_ends_stopped_and_falls_silent() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        play(&mut to_renderer, HandleId(0), &[0.5; 64]);
+    fn a_cancelled_voice_ends_and_falls_silent() {
+        let (ends, mut renderer) = renderer(1);
+        let mut voice = play(&ends, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
-        to_renderer
-            .push(Message {
-                id: HandleId(0),
-                data: VoiceCommand::Remove.into(),
-            })
-            .unwrap();
+        voice.cancel();
         renderer.render(&mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
-        assert_eq!(
-            ended(&mut from_renderer),
-            [(HandleId(0), VoiceState::Ended(VoiceEnd::Stopped))]
-        );
+        assert!(ended(&mut voice));
     }
 
     #[test]
-    fn remove_all_ends_every_voice_stopped_and_falls_silent() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(2);
-        play(&mut to_renderer, HandleId(0), &[0.5; 64]);
-        play(&mut to_renderer, HandleId(1), &[0.5; 64]);
+    fn stop_all_ends_every_voice_and_falls_silent() {
+        let (ends, mut renderer) = renderer(2);
+        let mut first = play(&ends, &[0.5; 64]);
+        let mut second = play(&ends, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
-        to_renderer
-            .push(Message {
-                id: HandleId(0),
-                data: VoiceCommand::RemoveAll.into(),
-            })
-            .unwrap();
+        stop(&ends, VoiceRequest::StopAll);
         renderer.render(&mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
-        assert_eq!(
-            ended(&mut from_renderer),
-            [
-                (HandleId(0), VoiceState::Ended(VoiceEnd::Stopped)),
-                (HandleId(1), VoiceState::Ended(VoiceEnd::Stopped)),
-            ]
-        );
+        assert!(ended(&mut first));
+        assert!(ended(&mut second));
     }
 
     #[test]
-    fn remove_audio_ends_only_the_voices_playing_it() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(3);
-        let removed = Arc::new(buffer(ChannelLayout::Mono, &[0.5; 64]));
-        play_audio(&mut to_renderer, HandleId(0), Arc::clone(&removed));
-        play_audio(&mut to_renderer, HandleId(1), Arc::clone(&removed));
-        play(&mut to_renderer, HandleId(2), &[0.25; 64]);
+    fn stop_audio_ends_only_the_voices_playing_it() {
+        let (ends, mut renderer) = renderer(3);
+        let stopped = Arc::new(buffer(ChannelLayout::Mono, &[0.5; 64]));
+        let mut first = play_audio(&ends, Arc::clone(&stopped));
+        let mut second = play_audio(&ends, Arc::clone(&stopped));
+        let mut kept = play(&ends, &[0.25; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&mut out);
-        let address = BufferAddress::of(&removed);
-        to_renderer
-            .push(Message {
-                id: HandleId(0),
-                data: VoiceCommand::RemoveAudio(address).into(),
-            })
-            .unwrap();
+        stop(&ends, VoiceRequest::StopAudio(Arc::clone(&stopped)));
         renderer.render(&mut out);
         assert_eq!(out, vec![0.25; 4 * 2]);
-        assert_eq!(
-            ended(&mut from_renderer),
-            [
-                (HandleId(0), VoiceState::Ended(VoiceEnd::Stopped)),
-                (HandleId(1), VoiceState::Ended(VoiceEnd::Stopped)),
-            ]
-        );
+        assert!(ended(&mut first));
+        assert!(ended(&mut second));
+        assert!(!ended(&mut kept));
     }
 
     #[test]
     fn a_new_voice_in_a_full_pool_cuts_the_oldest() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        play(&mut to_renderer, HandleId(0), &[0.5; 64]);
-        play(&mut to_renderer, HandleId(1), &[0.5; 64]);
+        let (ends, mut renderer) = renderer(1);
+        let mut oldest = play(&ends, &[0.5; 64]);
+        let mut newest = play(&ends, &[0.5; 64]);
         renderer.render(&mut [0.0; 4 * 2]);
-        assert_eq!(
-            ended(&mut from_renderer),
-            [(HandleId(0), VoiceState::Ended(VoiceEnd::Cut))]
-        );
+        assert!(ended(&mut oldest));
+        assert!(!ended(&mut newest));
+    }
+
+    #[test]
+    fn a_held_voice_answers_that_it_plays() {
+        let (ends, mut renderer) = renderer(1);
+        let mut voice = play(&ends, &[0.5; 64]);
+        let mut status = voice.request_status().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(status.try_recv(), Ok(VoiceStatus::Playing));
+    }
+
+    #[test]
+    fn a_question_its_voice_closes_before_comes_back_closed() {
+        let (ends, mut renderer) = renderer(1);
+        let mut voice = play(&ends, &[0.5; 64]);
+        renderer.render(&mut [0.0; 4 * 2]);
+        voice.cancel();
+        let mut status = voice.request_status().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(status.try_recv(), Err(TryRecvStatusError::Closed));
     }
 
     #[test]
     fn a_recording_writes_what_is_heard_until_stopped() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        play(&mut to_renderer, HandleId(0), &[0.25; 64]);
-        let id = start(&mut to_renderer, 64);
+        let (ends, mut renderer) = renderer(1);
+        let _voice = play(&ends, &[0.25; 64]);
+        let mut recording = start(&ends, 64);
         renderer.render(&mut [0.0; 4 * 2]);
-        assert!(matches!(
-            returned(&mut from_renderer)[..],
-            [RecordingEvent {
-                state: RecordingState::Recording,
-                spec: None
-            }]
-        ));
+        assert_eq!(recording.try_wait().err(), Some(TryWaitError::Empty));
 
-        to_renderer
-            .push(Message {
-                id,
-                data: RecordingCommand::Stop.into(),
-            })
-            .unwrap();
+        recording.cancel();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        let [
-            RecordingEvent {
-                state: RecordingState::Ended(RecordingEnd::Stopped),
-                spec: Some(spec),
-            },
-        ] = &returned(&mut from_renderer)[..]
-        else {
-            panic!("the recording did not end stopped");
-        };
-        assert_eq!(samples(spec), vec![0.25; 4 * 2]);
+        let (why, audio) = recording.try_wait().unwrap();
+        assert_eq!(why, RecordingEnd::Stopped);
+        assert_eq!(samples(&audio), vec![0.25; 4 * 2]);
     }
 
     #[test]
     fn a_recording_ends_full_when_its_audio_has_no_room() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        start(&mut to_renderer, 3);
+        let (ends, mut renderer) = renderer(1);
+        let mut recording = start(&ends, 3);
         renderer.render(&mut [0.0; 8 * 2]);
-        let [
-            RecordingEvent {
-                state: RecordingState::Recording,
-                ..
-            },
-            RecordingEvent {
-                state: RecordingState::Ended(RecordingEnd::Full),
-                spec: Some(spec),
-            },
-        ] = &returned(&mut from_renderer)[..]
-        else {
-            panic!("the recording did not end full");
-        };
-        assert_eq!(samples(spec).len(), 3 * 2);
+        let (why, audio) = recording.try_wait().unwrap();
+        assert_eq!(why, RecordingEnd::Full);
+        assert_eq!(samples(&audio).len(), 3 * 2);
     }
 
     #[test]
-    fn a_start_while_recording_is_refused_and_the_first_runs_on() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        start(&mut to_renderer, 64);
-        start(&mut to_renderer, 64);
+    fn a_held_recording_answers_that_it_records() {
+        let (ends, mut renderer) = renderer(1);
+        let mut recording = start(&ends, 64);
+        let mut status = recording.request_status().unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
-        assert!(matches!(
-            returned(&mut from_renderer)[..],
-            [
-                RecordingEvent {
-                    state: RecordingState::Recording,
-                    ..
-                },
-                RecordingEvent {
-                    state: RecordingState::Refused,
-                    spec: Some(_),
-                },
-            ]
-        ));
-    }
-
-    #[test]
-    fn a_stop_naming_another_recording_does_nothing() {
-        let (mut to_renderer, mut from_renderer, mut renderer) = renderer(1);
-        start(&mut to_renderer, 64);
-        to_renderer
-            .push(Message {
-                id: HandleId(1),
-                data: RecordingCommand::Stop.into(),
-            })
-            .unwrap();
-        renderer.render(&mut [0.0; 4 * 2]);
-        assert!(matches!(
-            returned(&mut from_renderer)[..],
-            [RecordingEvent {
-                state: RecordingState::Recording,
-                ..
-            }]
-        ));
+        assert_eq!(status.try_recv(), Ok(RecordingStatus::Recording));
     }
 }

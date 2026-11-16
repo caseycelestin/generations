@@ -15,6 +15,8 @@
 //! audio            AudioMemory, the one source of audio memory, with an
 //!                  optional budget; Audio, a caller's piece of it
 //! project          the disk: a directory of WAVs and a manifest
+//! request/         requests from control-side callers to a real-time side,
+//!                  each answered once; knows nothing of audio
 //! engine/          everything heard; create() makes both sides
 //!   protocol/        what crosses between the two sides
 //!   control/         the control side: Control and its handles
@@ -36,6 +38,7 @@ pub mod config;
 pub mod engine;
 mod layout;
 pub mod project;
+pub mod request;
 #[cfg(test)]
 mod testing;
 

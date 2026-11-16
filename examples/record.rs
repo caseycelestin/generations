@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::engine::{self, RecordingState};
+use generations::engine::{self, TryWaitError};
 use generations::{AudioMemory, ChannelLayout};
 
 mod device;
@@ -21,7 +21,7 @@ const AUDIO_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
-    // Room for 64 commands in flight and 16 voices at once.
+    // 16 voices at once, and room for 64 plays and stops on their way.
     let (control, mut renderer) = engine::create(64, 16);
     let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
 
@@ -48,18 +48,19 @@ fn main() -> Result<(), Box<dyn Error>> {
         control.play(pluck)?;
         sleep(Duration::from_millis(400));
     }
-    while !matches!(recording.state(), RecordingState::Ended(_)) {
-        sleep(Duration::from_millis(50));
-    }
-    println!("recording: {:?}", recording.state());
+    let (why, recorded) = loop {
+        match recording.try_wait() {
+            Ok(result) => break result,
+            Err(TryWaitError::NotEnded) => sleep(Duration::from_millis(50)),
+            Err(error) => return Err(error.into()),
+        }
+    };
+    println!("recording ended: {why:?}");
 
-    let recorded = recording
-        .take()
-        .ok_or("an ended take hands its audio back")?;
     println!("playing back {} frames", recorded.frames());
-    let playback = control.play(&recorded)?;
+    let mut playback = control.play(&recorded)?;
     sleep(Duration::from_millis(2200));
-    println!("playback: {:?}", playback.state());
+    println!("playback ended: {}", playback.try_wait().is_ok());
 
     // The audio thread queues its complaints; this is where they are read.
     while let Some(e) = stream.error() {
