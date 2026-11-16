@@ -7,7 +7,7 @@ mod voice;
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
 pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
-pub use voice::Voice;
+pub use voice::{PendingVoiceStatus, Voice};
 
 use std::sync::Arc;
 

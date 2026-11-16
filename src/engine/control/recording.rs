@@ -46,6 +46,7 @@ impl RecordError {
     }
 }
 
+/// Holds the recorder until `try_wait` returns `Ok` or it is dropped.
 #[derive(Debug)]
 pub struct Recording {
     handle: RequestHandle<RecordingRequest>,

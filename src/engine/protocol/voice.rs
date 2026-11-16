@@ -17,12 +17,12 @@ pub(crate) enum VoiceRequest {
 
 impl Request for VoiceRequest {
     type Reply = ();
-    type Status = VoiceState;
+    type Status = VoiceStatus;
 }
 
 /// What the audio thread last said about a voice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceState {
+pub enum VoiceStatus {
     /// Not reported ended yet: playing, or about to.
     Playing,
     Ended,

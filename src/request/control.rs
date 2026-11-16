@@ -36,8 +36,9 @@ impl<Q: Request> RequestPermit<'_, Q> {
     }
 }
 
-/// Dropping it lets the request run on; its reply is dropped when it
-/// arrives.
+/// Holds its request's slot until the reply is taken or the handle is
+/// dropped; an arrived reply still holds it. Dropped, the request runs on
+/// and its reply is dropped when it arrives.
 #[derive(Debug)]
 pub struct RequestHandle<Q>(PhantomData<Q>);
 

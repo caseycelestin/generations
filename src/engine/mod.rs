@@ -6,11 +6,11 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, ControlError, PendingRecordingStatus, RecordError, Recording, StatusError,
-    TryRecvStatusError, TryWaitError, Voice,
+    Control, ControlError, PendingRecordingStatus, PendingVoiceStatus, RecordError, Recording,
+    StatusError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
-pub use protocol::voice::VoiceState;
+pub use protocol::voice::VoiceStatus;
 pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
@@ -99,13 +99,13 @@ mod tests {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 2]);
         let mut voice = control.play(&audio).unwrap();
-        assert_eq!(voice.state(), VoiceState::Playing);
+        assert_eq!(voice.state(), VoiceStatus::Playing);
 
         let mut out = vec![0.0; 3 * 2];
         renderer.render(&mut out);
 
         assert_eq!(out, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
-        assert_eq!(voice.state(), VoiceState::Ended);
+        assert_eq!(voice.state(), VoiceStatus::Ended);
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
         voice.stop();
         renderer.render(&mut [0.0; 4 * 2]);
 
-        assert_eq!(voice.state(), VoiceState::Ended);
+        assert_eq!(voice.state(), VoiceStatus::Ended);
     }
 
     #[test]
@@ -135,9 +135,9 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         control.collect();
 
-        assert_eq!(first.state(), VoiceState::Ended);
-        assert_eq!(second.state(), VoiceState::Ended);
-        assert_eq!(kept.state(), VoiceState::Playing);
+        assert_eq!(first.state(), VoiceStatus::Ended);
+        assert_eq!(second.state(), VoiceStatus::Ended);
+        assert_eq!(kept.state(), VoiceStatus::Playing);
         assert_eq!(Arc::strong_count(stopped.shared()), 1);
     }
 
@@ -153,8 +153,8 @@ mod tests {
         renderer.render(&mut [0.0; 4 * 2]);
         control.collect();
 
-        assert_eq!(first.state(), VoiceState::Ended);
-        assert_eq!(second.state(), VoiceState::Ended);
+        assert_eq!(first.state(), VoiceStatus::Ended);
+        assert_eq!(second.state(), VoiceStatus::Ended);
         assert_eq!(Arc::strong_count(audio.shared()), 1);
     }
 

@@ -12,7 +12,7 @@ use std::error::Error;
 use std::path::Path;
 use std::thread;
 
-use generations::engine::{self, RecordingStatus, VoiceState};
+use generations::engine::{self, RecordingStatus, VoiceStatus};
 use generations::{AudioMemory, ChannelLayout, Project, SampleId};
 
 /// A generous guess for a desktop.
@@ -65,8 +65,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // The audio thread reports when a voice has ended.
     for voice in [&mut played, &mut stopped] {
         match voice.state() {
-            VoiceState::Playing => println!("still playing"),
-            VoiceState::Ended => println!("ended"),
+            VoiceStatus::Playing => println!("still playing"),
+            VoiceStatus::Ended => println!("ended"),
         }
     }
 
