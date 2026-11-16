@@ -13,6 +13,7 @@ pub use control::{
 pub use protocol::inputs::InputStatus;
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;
+pub use realtime::capture::Feeder;
 pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;

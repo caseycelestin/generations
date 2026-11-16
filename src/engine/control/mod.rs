@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::audio::Audio;
 use crate::engine::protocol::voice::VoiceRequest;
+use crate::engine::realtime::capture::Feeder;
 use crate::request;
 
 /// Nothing was sent.
@@ -78,9 +79,9 @@ impl Control {
         Recording::record(&self.requests.recording, audio)
     }
 
-    pub fn open_input(&self) -> Result<Input, ControlError> {
+    pub fn open_input(&self) -> Result<(Input, Feeder), ControlError> {
         let permit = self.requests.inputs.try_reserve()?;
-        Ok(Input::open(permit))
+        Ok((Input::open(permit), Feeder {}))
     }
 
     /// Frees the audio of voices and recordings whose handles are gone,

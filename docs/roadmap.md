@@ -205,7 +205,10 @@ or rejected instead. The history of how a shape was reached is in git.
   every voice is held.
 - **`control/` and `realtime/` never import each other;** both import
   `protocol/`. The source tree is the architecture, drawn in the crate
-  docs.
+  docs. One exception: `open_input` makes the capture side's `Feeder`,
+  the one real-time end `Control` hands out rather than sends, so
+  `control/` imports it. Defining it in `protocol/` kept the rule, but
+  put real-time code among plain data.
 
 ### Requests
 
