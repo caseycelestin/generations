@@ -103,3 +103,11 @@ pub(crate) struct Requests {
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
     pub(crate) inputs: request::ControlEnd<InputRequest>,
 }
+
+impl Requests {
+    pub(crate) fn take_in(&self) {
+        self.voices.take_in();
+        self.recording.take_in();
+        self.inputs.take_in();
+    }
+}

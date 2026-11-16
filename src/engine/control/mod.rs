@@ -87,7 +87,6 @@ impl Control {
     /// returning it to `AudioMemory`. `record` does this first; call it when
     /// the app goes quiet, or before a load that needs the memory.
     pub fn collect(&self) {
-        self.requests.voices.take_in();
-        self.requests.recording.take_in();
+        self.requests.take_in();
     }
 }

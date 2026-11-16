@@ -32,6 +32,14 @@ impl Input {
     }
 }
 
+/// Stops an input still open, since nothing could stop it once the handle
+/// is gone.
+impl Drop for Input {
+    fn drop(&mut self) {
+        self.handle.cancel();
+    }
+}
+
 /// The renderer's answer to one status question about an input.
 #[derive(Debug)]
 pub struct PendingInputStatus(request::PendingStatus<InputRequest>);
