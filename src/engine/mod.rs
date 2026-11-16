@@ -28,14 +28,16 @@ const VOICE_STOP_HEADROOM: usize = 2;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
+/// `voice_queue` is how many plays and stops can be on their way beyond
+/// them: the room a new play has to take the oldest voice's place. Zero
+/// refuses a play while every voice is held.
 ///
 /// # Panics
-/// If `command_capacity` or `voices` is zero.
-pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
-    assert!(command_capacity > 0, "command_capacity must not be zero");
+/// If `voices` is zero.
+pub fn create(voice_queue: usize, voices: usize) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
-        voice_capacity(command_capacity, voices),
+        voice_capacity(voice_queue, voices),
         VOICE_STOP_HEADROOM,
     );
     let (recording_control, recording_realtime) =
@@ -55,10 +57,10 @@ pub fn create(command_capacity: usize, voices: usize) -> (Control, Renderer) {
     )
 }
 
-/// Every voice playing, plus `command_capacity` plays and stops on their
-/// way, plus the stops' headroom; each holds one until its reply is taken.
-fn voice_capacity(command_capacity: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + command_capacity + VOICE_STOP_HEADROOM
+/// Every voice playing, plus the queue, plus the stops' headroom; each
+/// holds one until its reply is taken.
+fn voice_capacity(voice_queue: usize, voices: NonZeroUsize) -> usize {
+    voices.get() + voice_queue + VOICE_STOP_HEADROOM
 }
 
 #[cfg(test)]
