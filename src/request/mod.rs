@@ -1,5 +1,7 @@
 //! Requests from control-side callers to a real-time side, each answered by
-//! exactly one reply. Knows nothing of audio.
+//! exactly one reply. One request type per channel, so neither end converts
+//! what it receives; a feature with several kinds of request makes them one
+//! enum. Knows nothing of audio.
 //!
 //! - On the real-time side every operation is wait-free and bounded: it
 //!   never allocates, frees, locks or blocks. The control side may.
@@ -53,9 +55,6 @@ pub enum TryRecvError {
 /// `capacity` is in requests: the most that can await their reply at once.
 /// The ring out holds twice that, for each one's cancel, so neither ring
 /// ever fills.
-///
-/// # Panics
-/// If `capacity` is zero: a channel with no room refuses every request.
-pub fn channel<C, R>(capacity: usize) -> (ControlEnd<C, R>, RealtimeEnd<C, R>) {
+pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     todo!()
 }
