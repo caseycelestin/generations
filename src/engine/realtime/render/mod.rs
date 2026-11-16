@@ -330,10 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn a_question_after_its_voice_ended_comes_back_closed() {
+    fn a_question_its_voice_closes_before_comes_back_closed() {
         let (ends, mut renderer) = renderer(1);
-        let mut voice = play(&ends, &[0.5; 2]);
+        let mut voice = play(&ends, &[0.5; 64]);
         renderer.render(&mut [0.0; 4 * 2]);
+        voice.cancel();
         let mut status = voice.request_status().unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(status.try_recv(), Err(TryRecvStatusError::Closed));

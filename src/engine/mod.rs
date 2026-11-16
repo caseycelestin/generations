@@ -158,8 +158,8 @@ mod tests {
         let (control, mut renderer) = create(4, 2);
         let audio = audio(&[0.5; 2]);
         let voice = control.play(&audio).unwrap();
-        renderer.render(&mut [0.0; 4 * 2]);
         drop(voice);
+        renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(
             Arc::strong_count(audio.shared()),
             2,
