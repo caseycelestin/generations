@@ -172,6 +172,13 @@ or rejected instead. The history of how a shape was reached is in git.
   on `Control`. A handle holds its request, never a `Control`, so the
   dependency runs one way. Audio carrying a handle and sending its
   removal from `Drop` was tried and rejected as the wrong coupling.
+- **`Control` does what can fail; a handle is made from a permit.**
+  `open_input` reserves, then `Input::open(permit)` cannot fail, so
+  every refusal shows in the public method and nothing is built for a
+  request that is refused. Handles that took the channel and reserved
+  themselves came first. Built for inputs; voices and recordings still
+  take the channel and switch over later, `record` checking its audio
+  before it reserves.
 - **`Control` is the door to one renderer.** It holds one request channel
   per actor in the renderer (`Requests`: voices, recording). Named for
   what it is to the caller; `RendererHandle`, `Link` and `Remote` were

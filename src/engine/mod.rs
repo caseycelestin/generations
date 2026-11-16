@@ -6,8 +6,8 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, PendingRecordingStatus, PendingVoiceStatus, PlayError, RecordError, Recording,
-    StatusError, StopError, TryRecvStatusError, TryWaitError, Voice,
+    Control, ControlError, Input, PendingRecordingStatus, PendingVoiceStatus, PlayError,
+    RecordError, Recording, StatusError, StopError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;

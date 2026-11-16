@@ -1,12 +1,14 @@
 //! The control side: runs on UI or event threads. May lock and allocate.
 
+mod input;
 mod recording;
 mod requests;
 mod voice;
 
+pub use input::Input;
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
-pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
+pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
 pub use voice::{PendingVoiceStatus, PlayError, Voice};
 
 use std::sync::Arc;
@@ -76,8 +78,9 @@ impl Control {
         Recording::record(&self.requests.recording, audio)
     }
 
-    pub fn input(&self) {
-        todo!()
+    pub fn open_input(&self) -> Result<Input, ControlError> {
+        let permit = self.requests.inputs.try_reserve()?;
+        Ok(Input::open(permit))
     }
 
     /// Frees the audio of voices and recordings whose handles are gone,
