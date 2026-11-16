@@ -31,7 +31,11 @@ impl<Q: Request> fmt::Debug for ControlEnd<Q> {
 /// `Clone`.
 impl<Q: Request> Clone for ControlEnd<Q> {
     fn clone(&self) -> Self {
-        todo!()
+        Self {
+            shared: Arc::clone(&self.shared),
+            capacity: self.capacity,
+            headroom: self.headroom,
+        }
     }
 }
 
