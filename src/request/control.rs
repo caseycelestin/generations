@@ -220,6 +220,14 @@ impl<Q: Request> PendingStatus<Q> {
     }
 }
 
+impl<Q: Request> Drop for PendingStatus<Q> {
+    fn drop(&mut self) {
+        if !self.taken {
+            lock(&self.shared).abandon_question(self.id);
+        }
+    }
+}
+
 /// Nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ReserveError {
@@ -379,6 +387,19 @@ impl<Q: Request> Shared<Q> {
             return Err(TryRecvStatusError::Disconnected);
         }
         Err(TryRecvStatusError::Empty)
+    }
+
+    /// Frees the question now if its answer has come or never will, or else
+    /// when the answer arrives. Nothing to free once the record is gone.
+    fn abandon_question(&mut self, id: RequestId) {
+        self.take_in();
+        let Some(request) = self.requests.iter_mut().find(|request| request.id == id) else {
+            return;
+        };
+        request.question = match request.question.take() {
+            Some(Question::Asked) if request.reply.is_none() => Some(Question::Abandoned),
+            _ => None,
+        };
     }
 
     /// Frees the record now if its reply has come, or else when it does.
