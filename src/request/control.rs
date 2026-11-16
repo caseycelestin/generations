@@ -43,6 +43,7 @@ impl<Q: Request> ControlEnd<Q> {
             capacity,
             headroom,
             requests: Vec::with_capacity(capacity),
+            reserved: 0,
         };
         Self {
             shared: Arc::new(Mutex::new(shared)),
@@ -53,7 +54,16 @@ impl<Q: Request> ControlEnd<Q> {
     /// answers to both, so neither `open` nor `cancel` can fail. `Full` once
     /// only the headroom is free.
     pub fn try_reserve(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
-        todo!()
+        let mut shared = lock(&self.shared);
+        if shared.to_realtime.is_abandoned() {
+            return Err(ReserveError::Disconnected);
+        }
+        let limit = shared.capacity.saturating_sub(shared.headroom);
+        if shared.requests.len() + shared.reserved >= limit {
+            return Err(ReserveError::Full);
+        }
+        shared.reserved += 1;
+        Ok(RequestPermit { end: self })
     }
 
     /// As `try_reserve`, but may use the headroom too.
@@ -68,11 +78,10 @@ impl<Q: Request> ControlEnd<Q> {
     }
 }
 
-/// Holds the end's lock until `open`; dropped unused, it sends nothing and
-/// gives its room back.
+/// Holds room for one request until `open`; dropped unused, it sends
+/// nothing and gives the room back.
 pub struct RequestPermit<'a, Q: Request> {
     end: &'a ControlEnd<Q>,
-    shared: MutexGuard<'a, Shared<Q>>,
 }
 
 /// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
@@ -85,6 +94,12 @@ impl<Q: Request> fmt::Debug for RequestPermit<'_, Q> {
 impl<Q: Request> RequestPermit<'_, Q> {
     pub fn open(self, request: Q) -> RequestHandle<Q> {
         todo!()
+    }
+}
+
+impl<Q: Request> Drop for RequestPermit<'_, Q> {
+    fn drop(&mut self) {
+        lock(&self.end.shared).reserved -= 1;
     }
 }
 
@@ -180,6 +195,9 @@ struct Shared<Q: Request> {
     /// One per request in flight, until its reply is taken. Reserving stops
     /// at `capacity`, so allocated to that here it never grows.
     requests: Vec<InFlight>,
+    /// Permits neither opened nor dropped; each holds a slot as a request in
+    /// flight does.
+    reserved: usize,
 }
 
 struct InFlight {
