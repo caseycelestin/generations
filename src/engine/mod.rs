@@ -59,7 +59,7 @@ pub fn create(voice_queue: usize, voices: usize) -> (Control, Renderer) {
 /// As [`create`], with the [`Feeder`] for the capture thread.
 ///
 /// # Panics
-/// If `voices` is zero.
+/// If `voices`, the capture's `channels` or its `backlog` is zero.
 pub fn create_with_capture(
     voice_queue: usize,
     voices: usize,
@@ -410,7 +410,7 @@ mod tests {
         let (control, _renderer) = create(4, 1);
         assert!(matches!(
             control.open_input(InputChannels::Mono(0)),
-            Err(ControlError::NoSuchChannel)
+            Err(ControlError::NoCapture)
         ));
     }
 

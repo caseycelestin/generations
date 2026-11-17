@@ -112,6 +112,9 @@ impl Control {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn open_input(&self, channels: InputChannels) -> Result<Input, ControlError> {
+        if self.capture_channels == 0 {
+            return Err(ControlError::NoCapture);
+        }
         let highest = match channels {
             InputChannels::Mono(channel) => channel,
             InputChannels::Stereo(left, right) => left.max(right),

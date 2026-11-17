@@ -85,7 +85,10 @@ pub enum ControlError {
     Full,
     #[error("the renderer is gone")]
     RendererGone,
-    /// Past the capture device's channels, or there is no capture device.
+    /// Made by `create`, not `create_with_capture`.
+    #[error("there is no capture device")]
+    NoCapture,
+    /// Past the capture device's channels.
     #[error("no such channel")]
     NoSuchChannel,
 }

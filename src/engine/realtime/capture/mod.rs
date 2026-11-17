@@ -8,6 +8,8 @@ use crate::config::Pcm;
 /// The ring is whole frames, allocated here on the control side; the
 /// reader goes to the renderer.
 pub(crate) fn ring(channels: usize, backlog: usize) -> (Feeder, Reader) {
+    assert!(channels > 0, "capture channels must not be zero");
+    assert!(backlog > 0, "capture backlog must not be zero");
     let (producer, consumer) = RingBuffer::new(backlog * channels);
     let feeder = Feeder {
         ring: producer,
