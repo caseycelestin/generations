@@ -81,24 +81,20 @@ impl Renderer {
             "capture and output are not the same frames"
         );
         self.apply_requests();
-        let (frames, _) = out.as_chunks_mut::<{ Self::OUTPUT_CHANNELS }>();
-        for (index, block) in frames.chunks_mut(Self::BLOCK_FRAMES).enumerate() {
-            block.fill([0.0; Self::OUTPUT_CHANNELS]);
-            let scratch = &mut self.scratch[..block.len()];
+        for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
+            out_block.fill([0.0; Self::OUTPUT_CHANNELS]);
+            let scratch = &mut self.scratch[..out_block.len()];
             for voice in self.voices.iter_mut() {
                 voice.render(scratch);
-                add(block, scratch);
+                add(out_block, scratch);
             }
-            let start = index * Self::BLOCK_FRAMES * self.capture_channels;
-            let end = start + block.len() * self.capture_channels;
-            let block_capture = &capture[start..end];
             // Nothing hears an input yet.
             for input in &self.inputs {
-                input.render(block_capture, scratch);
+                input.render(capture_block, scratch);
             }
-            hard_clip(block);
+            hard_clip(out_block);
             if let Some(recording) = &mut self.recording {
-                recording.write(block);
+                recording.write(out_block);
             }
         }
         self.clean_up();
@@ -206,6 +202,23 @@ impl Renderer {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
     }
+}
+
+/// A period cut into blocks, each output block with its capture.
+fn blocks<'a>(
+    out: &'a mut [Pcm],
+    capture: &'a [Pcm],
+    capture_channels: usize,
+) -> impl Iterator<Item = (&'a mut [Frame], &'a [Pcm])> {
+    let (frames, _) = out.as_chunks_mut::<{ Renderer::OUTPUT_CHANNELS }>();
+    frames
+        .chunks_mut(Renderer::BLOCK_FRAMES)
+        .enumerate()
+        .map(move |(index, out_block)| {
+            let start = index * Renderer::BLOCK_FRAMES * capture_channels;
+            let end = start + out_block.len() * capture_channels;
+            (out_block, &capture[start..end])
+        })
 }
 
 #[cfg(test)]
