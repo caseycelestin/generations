@@ -16,9 +16,8 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::audio::Audio;
+use crate::engine::protocol::inputs::InputChannels;
 use crate::engine::protocol::voice::VoiceRequest;
-use crate::engine::realtime::capture::Feeder;
-use crate::layout::ChannelLayout;
 use crate::request;
 
 /// Nothing was sent.
@@ -45,11 +44,16 @@ impl From<request::ReserveError> for StopError {
 #[derive(Debug, Clone)]
 pub struct Control {
     requests: Requests,
+    /// The capture device's, or zero without one.
+    capture_channels: usize,
 }
 
 impl Control {
-    pub(crate) fn new(requests: Requests) -> Self {
-        Self { requests }
+    pub(crate) fn new(requests: Requests, capture_channels: usize) -> Self {
+        Self {
+            requests,
+            capture_channels,
+        }
     }
 
     pub fn play(&self, audio: &Audio) -> Result<Voice, PlayError> {
@@ -80,20 +84,16 @@ impl Control {
         Recording::record(&self.requests.recording, audio)
     }
 
-    /// `backlog` is how many frames can wait for the renderer's next period
-    /// before any are dropped: at least the longest output period, with
-    /// room to spare when the capture period is longer.
-    ///
     /// ```no_run
     /// use std::thread;
     ///
-    /// use generations::ChannelLayout;
-    /// use generations::engine::{self, Capture};
+    /// use generations::engine::{self, Capture, InputChannels};
     ///
-    /// // 16 voices, room for 64 plays and stops, and one input.
+    /// // 16 voices, room for 64 plays and stops, and a mono device with one
+    /// // input.
     /// let capture = Capture { channels: 1, backlog: 2048, inputs: 1 };
-    /// let (control, mut renderer, _capture) = engine::create_with_capture(64, 16, capture);
-    /// let (mut input, mut feeder) = control.open_input(ChannelLayout::Mono, 2048)?;
+    /// let (control, mut renderer, mut feeder) = engine::create_with_capture(64, 16, capture);
+    /// let mut input = control.open_input(InputChannels::Mono(0))?;
     ///
     /// // A capture callback would own the feeder.
     /// let capture = thread::spawn(move || {
@@ -111,18 +111,16 @@ impl Control {
     /// println!("ended: {:?}", input.try_wait()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    ///
-    /// # Panics
-    /// If `backlog` is zero.
-    pub fn open_input(
-        &self,
-        layout: ChannelLayout,
-        backlog: usize,
-    ) -> Result<(Input, Feeder), ControlError> {
-        assert!(backlog > 0, "backlog must not be zero");
+    pub fn open_input(&self, channels: InputChannels) -> Result<Input, ControlError> {
+        let highest = match channels {
+            InputChannels::Mono(channel) => channel,
+            InputChannels::Stereo(left, right) => left.max(right),
+        };
+        if highest >= self.capture_channels {
+            return Err(ControlError::NoSuchChannel);
+        }
         let permit = self.requests.inputs.try_reserve()?;
-        let (feeder, reader) = Feeder::new(layout.count(), backlog);
-        Ok((Input::open(permit, reader, layout), feeder))
+        Ok(Input::open(permit, channels))
     }
 
     /// Frees the audio of voices and recordings whose handles are gone,

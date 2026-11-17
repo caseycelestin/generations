@@ -1,11 +1,7 @@
 //! An input: audio from the capture thread, held by the renderer.
 
-use rtrb::Consumer;
-
 use super::{StatusError, TryRecvStatusError, TryWaitError};
-use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
-use crate::layout::ChannelLayout;
+use crate::engine::protocol::inputs::{InputChannels, InputEnd, InputRequest, InputStatus};
 use crate::request::{self, RequestHandle, RequestPermit};
 
 #[derive(Debug)]
@@ -14,12 +10,8 @@ pub struct Input {
 }
 
 impl Input {
-    pub(crate) fn open(
-        permit: RequestPermit<'_, InputRequest>,
-        reader: Consumer<Pcm>,
-        layout: ChannelLayout,
-    ) -> Self {
-        let handle = permit.open(InputRequest { reader, layout });
+    pub(crate) fn open(permit: RequestPermit<'_, InputRequest>, channels: InputChannels) -> Self {
+        let handle = permit.open(InputRequest { channels });
         Self { handle }
     }
 
@@ -33,10 +25,9 @@ impl Input {
         Ok(PendingInputStatus(pending))
     }
 
-    /// Why it ended, once it has; its ring is freed here.
+    /// Why it ended, once it has.
     pub fn try_wait(&mut self) -> Result<InputEnd, TryWaitError> {
-        let (why, _reader) = self.handle.try_wait()?;
-        Ok(why)
+        Ok(self.handle.try_wait()?)
     }
 }
 

@@ -36,7 +36,8 @@ pub struct Capture {
     /// Per frame, as the device delivers them.
     pub channels: usize,
     /// Frames that can wait for the renderer's next period before any are
-    /// dropped.
+    /// dropped: at least the longest output period, with room to spare when
+    /// the capture period is longer.
     pub backlog: usize,
     /// How many can be open at once, and may be zero.
     pub inputs: usize,
@@ -75,6 +76,7 @@ fn create_sides(
 ) -> (Control, Renderer, Option<Feeder>) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let inputs = capture.map_or(0, |capture| capture.inputs);
+    let capture_channels = capture.map_or(0, |capture| capture.channels);
     let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
         voice_capacity(voice_queue, voices),
         VOICE_STOP_HEADROOM,
@@ -86,11 +88,14 @@ fn create_sides(
         .map(|capture| Feeder::new(capture.channels, capture.backlog))
         .unzip();
     (
-        Control::new(control::Requests {
-            voices: voices_control,
-            recording: recording_control,
-            inputs: inputs_control,
-        }),
+        Control::new(
+            control::Requests {
+                voices: voices_control,
+                recording: recording_control,
+                inputs: inputs_control,
+            },
+            capture_channels,
+        ),
         Renderer::new(
             realtime::render::Requests {
                 voices: voices_realtime,

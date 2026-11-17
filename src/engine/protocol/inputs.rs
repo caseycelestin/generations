@@ -1,21 +1,14 @@
 //! What crosses for inputs.
 
-use rtrb::Consumer;
-
-use crate::config::Pcm;
-use crate::layout::ChannelLayout;
 use crate::request::Request;
 
 #[derive(Debug)]
 pub(crate) struct InputRequest {
-    pub(crate) reader: Consumer<Pcm>,
-    pub(crate) layout: ChannelLayout,
+    pub(crate) channels: InputChannels,
 }
 
-/// The reader comes back with why it ended, so the ring is freed on the
-/// control side.
 impl Request for InputRequest {
-    type Reply = (InputEnd, Consumer<Pcm>);
+    type Reply = InputEnd;
     type Status = InputStatus;
 }
 
