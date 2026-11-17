@@ -231,7 +231,7 @@ mod tests {
             inputs: inputs_realtime,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, voices, 0, None))
+        (ends, Renderer::new(requests, voices, 0, 0))
     }
 
     /// Opens a mono voice of `samples`, as `Control::play` does.
@@ -281,7 +281,7 @@ mod tests {
         let _quiet = play(&ends, &[0.25; 8]);
         let _loud = play(&ends, &[0.5; 8]);
         let mut out = vec![0.0; 8 * 2];
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.75; 8 * 2]);
     }
 
@@ -291,7 +291,7 @@ mod tests {
         let _first = play(&ends, &[0.75; 4]);
         let _second = play(&ends, &[0.75; 4]);
         let mut out = vec![0.0; 4 * 2];
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         assert_eq!(out, vec![1.0; 4 * 2]);
     }
 
@@ -302,7 +302,7 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let _voice = play(&ends, &ramp);
         let mut out = vec![0.0; frames * 2];
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
         assert_eq!(heard, ramp);
     }
@@ -312,8 +312,8 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let _voice = play(&ends, &[0.1, 0.2, 0.3, 0.4]);
         let mut out = vec![0.0; 2 * 2];
-        renderer.render(&mut out);
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
+        renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.3, 0.3, 0.4, 0.4]);
     }
 
@@ -321,7 +321,7 @@ mod tests {
     fn a_voice_that_plays_out_ends() {
         let (ends, mut renderer) = renderer(1);
         let mut voice = play(&ends, &[0.5; 4]);
-        renderer.render(&mut [0.0; 8 * 2]);
+        renderer.render(&[], &mut [0.0; 8 * 2]);
         assert!(ended(&mut voice));
     }
 
@@ -330,9 +330,9 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let mut voice = play(&ends, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         voice.cancel();
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert!(ended(&mut voice));
     }
@@ -343,9 +343,9 @@ mod tests {
         let mut first = play(&ends, &[0.5; 64]);
         let mut second = play(&ends, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         stop(&ends, VoiceRequest::StopAll);
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert!(ended(&mut first));
         assert!(ended(&mut second));
@@ -359,9 +359,9 @@ mod tests {
         let mut second = play_audio(&ends, Arc::clone(&stopped));
         let mut kept = play(&ends, &[0.25; 64]);
         let mut out = vec![0.0; 4 * 2];
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         stop(&ends, VoiceRequest::StopAudio(Arc::clone(&stopped)));
-        renderer.render(&mut out);
+        renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.25; 4 * 2]);
         assert!(ended(&mut first));
         assert!(ended(&mut second));
@@ -373,7 +373,7 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let mut oldest = play(&ends, &[0.5; 64]);
         let mut newest = play(&ends, &[0.5; 64]);
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
         assert!(ended(&mut oldest));
         assert!(!ended(&mut newest));
     }
@@ -383,7 +383,7 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let mut voice = play(&ends, &[0.5; 64]);
         let mut status = voice.request_status().unwrap();
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(status.try_recv(), Ok(VoiceStatus::Playing));
     }
 
@@ -391,10 +391,10 @@ mod tests {
     fn a_question_its_voice_closes_before_comes_back_closed() {
         let (ends, mut renderer) = renderer(1);
         let mut voice = play(&ends, &[0.5; 64]);
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
         voice.cancel();
         let mut status = voice.request_status().unwrap();
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(status.try_recv(), Err(TryRecvStatusError::Closed));
     }
 
@@ -403,11 +403,11 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let _voice = play(&ends, &[0.25; 64]);
         let mut recording = start(&ends, 64);
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(recording.try_wait().err(), Some(TryWaitError::Empty));
 
         recording.cancel();
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
 
         let (why, audio) = recording.try_wait().unwrap();
         assert_eq!(why, RecordingEnd::Stopped);
@@ -418,7 +418,7 @@ mod tests {
     fn a_recording_ends_full_when_its_audio_has_no_room() {
         let (ends, mut renderer) = renderer(1);
         let mut recording = start(&ends, 3);
-        renderer.render(&mut [0.0; 8 * 2]);
+        renderer.render(&[], &mut [0.0; 8 * 2]);
         let (why, audio) = recording.try_wait().unwrap();
         assert_eq!(why, RecordingEnd::Full);
         assert_eq!(samples(&audio).len(), 3 * 2);
@@ -429,7 +429,7 @@ mod tests {
         let (ends, mut renderer) = renderer(1);
         let mut recording = start(&ends, 64);
         let mut status = recording.request_status().unwrap();
-        renderer.render(&mut [0.0; 4 * 2]);
+        renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(status.try_recv(), Ok(RecordingStatus::Recording));
     }
 }
