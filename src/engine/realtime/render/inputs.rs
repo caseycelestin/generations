@@ -1,4 +1,5 @@
-//! An input on the render side, while it is open.
+//! Inputs on the render side: each one while it is open, and the ring
+//! they read.
 
 use super::{Frame, Renderer};
 use crate::config::Pcm;

@@ -1,6 +1,6 @@
 //! The audio thread: turns requests and audio into periods of output.
 
-mod input;
+mod inputs;
 mod math;
 mod recording;
 mod voices;
@@ -13,7 +13,7 @@ use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, Recordi
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
 use crate::engine::realtime::capture::Reader;
 use crate::request::{self, Received};
-use input::{Input, Inputs};
+use inputs::{Input, Inputs};
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
