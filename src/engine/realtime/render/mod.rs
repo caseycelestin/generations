@@ -1,6 +1,6 @@
 //! The audio thread: turns requests and audio into periods of output.
 
-mod inputs;
+mod input;
 mod math;
 mod recording;
 mod voices;
@@ -11,9 +11,8 @@ use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
-use crate::engine::realtime::capture::Reader;
 use crate::request::{self, Received};
-use inputs::{Input, Inputs};
+use input::Input;
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
@@ -35,8 +34,8 @@ pub struct Renderer {
     recording: Option<Recording>,
     /// Per frame of `render`'s input; zero without an input device.
     capture_channels: usize,
-    /// None without a capture device.
-    inputs: Option<Inputs>,
+    /// Never past its capacity, so opening one never allocates.
+    inputs: Vec<Input>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -56,14 +55,13 @@ impl Renderer {
         voices: NonZeroUsize,
         capture_channels: usize,
         inputs: usize,
-        capture: Option<Reader>,
     ) -> Self {
         Self {
             requests,
             voices: Voices::new(voices),
             recording: None,
             capture_channels,
-            inputs: capture.map(|capture| Inputs::new(capture, inputs)),
+            inputs: Vec::with_capacity(inputs),
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -89,11 +87,6 @@ impl Renderer {
             for voice in self.voices.iter_mut() {
                 voice.render(scratch);
                 add(block, scratch);
-            }
-            // Read even when nothing hears it, so the ring keeps moving.
-            if let Some(inputs) = &mut self.inputs {
-                // Nothing hears an input yet.
-                inputs.read(scratch, |_input, _scratch| {});
             }
             hard_clip(block);
             if let Some(recording) = &mut self.recording {
@@ -171,22 +164,24 @@ impl Renderer {
     }
 
     fn apply_input_requests(&mut self) {
-        // Without a capture device every open is refused, so none arrive.
-        let Some(inputs) = &mut self.inputs else {
-            return;
-        };
         while let Some(received) = self.requests.inputs.try_recv() {
             match received {
                 Received::Request(permit, request) => {
-                    inputs.add(Input::open(permit, request.channels, self.capture_channels));
+                    let room = self.inputs.len() < self.inputs.capacity();
+                    debug_assert!(room, "one request per input");
+                    let input = Input::open(permit, request.channels, self.capture_channels);
+                    self.inputs.push(input);
                 }
                 Received::Cancel(id) => {
-                    if let Some(stopped) = inputs.remove(id) {
+                    let found = self.inputs.iter().position(|input| input.is(id));
+                    if let Some(at) = found {
+                        let stopped = self.inputs.swap_remove(at);
                         stopped.end(InputEnd::Stopped, &mut self.requests.inputs);
                     }
                 }
                 Received::Status(permit) => {
-                    if inputs.holds(permit.id()) {
+                    let held = self.inputs.iter().any(|input| input.is(permit.id()));
+                    if held {
                         self.requests.inputs.answer(permit, InputStatus::Open);
                     }
                     // Otherwise it is closed, and its reply has the last word.
@@ -201,13 +196,6 @@ impl Renderer {
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
-        }
-        if let Some(inputs) = &mut self.inputs
-            && inputs.feeder_gone()
-        {
-            for gone in inputs.drain() {
-                gone.end(InputEnd::FeederGone, &mut self.requests.inputs);
-            }
         }
     }
 }
