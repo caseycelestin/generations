@@ -87,29 +87,19 @@ impl Control {
     /// Inputs may read the same channels; each gets its own copy.
     ///
     /// ```no_run
-    /// use std::thread;
-    ///
-    /// use generations::engine::{self, Capture, InputChannels};
+    /// use generations::engine::{self, InputChannels};
     ///
     /// // 16 voices, room for 64 plays and stops, and a mono device with one
     /// // input.
-    /// let capture = Capture { channels: 1, backlog: 2048, inputs: 1 };
-    /// let (control, mut renderer, mut feeder) = engine::create_with_capture(64, 16, capture);
+    /// let (control, mut renderer) = engine::create(64, 16, 1, 1);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     ///
-    /// // A capture callback would own the feeder.
-    /// let capture = thread::spawn(move || {
-    ///     let period = [0.0; 512];
-    ///     let written = feeder.feed(&period);
-    ///     println!("{written} frames in");
-    /// });
-    /// capture.join().expect("capture thread");
-    ///
-    /// // An output callback would own the renderer.
-    /// renderer.render(&mut [0.0; 512 * 2]);
+    /// // A duplex callback would own the renderer: a period of capture in,
+    /// // the same frames out.
+    /// renderer.render(&[0.0; 512], &mut [0.0; 512 * 2]);
     ///
     /// input.stop();
-    /// renderer.render(&mut [0.0; 512 * 2]);
+    /// renderer.render(&[0.0; 512], &mut [0.0; 512 * 2]);
     /// println!("ended: {:?}", input.try_wait()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
