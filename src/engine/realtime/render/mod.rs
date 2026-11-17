@@ -81,12 +81,19 @@ impl Renderer {
         );
         self.apply_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::OUTPUT_CHANNELS }>();
-        for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
+        for (index, block) in frames.chunks_mut(Self::BLOCK_FRAMES).enumerate() {
             block.fill([0.0; Self::OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..block.len()];
             for voice in self.voices.iter_mut() {
                 voice.render(scratch);
                 add(block, scratch);
+            }
+            let start = index * Self::BLOCK_FRAMES * self.capture_channels;
+            let end = start + block.len() * self.capture_channels;
+            let capture = &input[start..end];
+            // Nothing hears an input yet.
+            for open in &self.inputs {
+                open.render(capture, scratch);
             }
             hard_clip(block);
             if let Some(recording) = &mut self.recording {
