@@ -13,7 +13,6 @@ pub use control::{
 pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;
-pub use realtime::capture::Feeder;
 pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
@@ -29,19 +28,6 @@ const RECORDERS: usize = 1;
 /// Headroom on the voice channel for `stop` and `stop_all`, so a burst of
 /// plays cannot leave them no room.
 const VOICE_STOP_HEADROOM: usize = 2;
-
-/// The capture device, as the renderer sees it for its life.
-#[derive(Debug, Clone, Copy)]
-pub struct Capture {
-    /// Per frame, as the device delivers them.
-    pub channels: usize,
-    /// Frames that can wait for the renderer's next period before any are
-    /// dropped: at least the longest output period, with room to spare when
-    /// the capture period is longer.
-    pub backlog: usize,
-    /// How many can be open at once, and may be zero.
-    pub inputs: usize,
-}
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
