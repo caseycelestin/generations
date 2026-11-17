@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let audio = project.load(SampleId(0), &memory)?;
 
     // 16 voices at once, and room for 64 plays and stops on their way.
-    let (control, renderer) = engine::create(64, 16);
+    let (control, renderer) = engine::create(64, 16, 0, 0);
 
     // Clones are the same engine.
     let _ui = control.clone();
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // for short audio to play out.
         let mut period = vec![0.0; 256 * 2];
         for _ in 0..188 {
-            renderer.render(&mut period);
+            renderer.render(&[], &mut period);
         }
     });
     audio_thread.join().expect("audio thread");

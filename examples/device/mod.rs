@@ -75,7 +75,7 @@ impl Device {
     /// Stereo. The period is the backend's default; a fixed size for the
     /// Pi would be set on the config here.
     pub fn default_output() -> Result<Self, DeviceError> {
-        let channels = Renderer::CHANNELS as u16;
+        let channels = Renderer::OUTPUT_CHANNELS as u16;
         let device = cpal::default_host()
             .default_output_device()
             .ok_or(DeviceError::NoOutputDevice)?;
@@ -99,7 +99,7 @@ impl Device {
             SampleFormat::I32 => build::<i32>(&self.device, &self.config, render, errors_in),
             _ => unreachable!("device format was chosen from the convertible set"),
         }?;
-        inner.play()?;
+        inner.start()?;
         Ok(Stream { inner, errors })
     }
 }
@@ -227,7 +227,7 @@ impl Capture {
             }
             _ => unreachable!("device format was chosen from the convertible set"),
         }?;
-        inner.play()?;
+        inner.start()?;
         Ok(Stream { inner, errors })
     }
 }

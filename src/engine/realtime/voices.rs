@@ -46,7 +46,7 @@ impl Voice {
                 sound.copy_from_slice(pairs);
             }
         }
-        silence.fill([0.0; Renderer::CHANNELS]);
+        silence.fill([0.0; Renderer::OUTPUT_CHANNELS]);
         self.position = end;
     }
 

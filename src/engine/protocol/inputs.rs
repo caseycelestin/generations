@@ -30,6 +30,4 @@ pub enum InputStatus {
 pub enum InputEnd {
     /// Its `stop` arrived, or its handle was dropped.
     Stopped,
-    /// Its feeder was dropped.
-    FeederGone,
 }
