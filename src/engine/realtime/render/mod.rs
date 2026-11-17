@@ -453,4 +453,31 @@ mod tests {
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(status.try_recv(), Ok(RecordingStatus::Recording));
     }
+
+    #[test]
+    fn blocks_cut_the_capture_at_the_same_frames_as_the_output() {
+        let frames = Renderer::BLOCK_FRAMES + 3;
+        let mut out = vec![0.0; frames * 2];
+        let capture: Vec<Pcm> = (0..frames * 3).map(|i| i as Pcm).collect();
+        let cut: Vec<(usize, Vec<Pcm>)> = blocks(&mut out, &capture, 3)
+            .map(|(out_block, capture_block)| (out_block.len(), capture_block.to_vec()))
+            .collect();
+        let split = Renderer::BLOCK_FRAMES * 3;
+        assert_eq!(
+            cut,
+            [
+                (Renderer::BLOCK_FRAMES, capture[..split].to_vec()),
+                (3, capture[split..].to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_capture_channels_every_block_has_an_empty_capture() {
+        let mut out = vec![0.0; (Renderer::BLOCK_FRAMES + 3) * 2];
+        let cut: Vec<(usize, usize)> = blocks(&mut out, &[], 0)
+            .map(|(out_block, capture_block)| (out_block.len(), capture_block.len()))
+            .collect();
+        assert_eq!(cut, [(Renderer::BLOCK_FRAMES, 0), (3, 0)]);
+    }
 }
