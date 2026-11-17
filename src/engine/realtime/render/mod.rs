@@ -18,7 +18,7 @@ use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
 
-type Frame = [Pcm; Renderer::CHANNELS];
+type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 
 /// One request channel per actor, at its real-time end.
 #[derive(Debug)]
@@ -33,6 +33,8 @@ pub struct Renderer {
     requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
+    /// Per frame of `render`'s input; zero without an input device.
+    input_channels: usize,
     /// None without a capture device.
     inputs: Option<Inputs>,
     /// One sound's frames for the block, before they join the mix.
@@ -41,7 +43,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// Always stereo.
-    pub const CHANNELS: usize = 2;
+    pub const OUTPUT_CHANNELS: usize = 2;
 
     /// A period of any length is mixed in blocks this long, so scratch
     /// never grows.
@@ -52,6 +54,7 @@ impl Renderer {
     pub(crate) fn new(
         requests: Requests,
         voices: NonZeroUsize,
+        input_channels: usize,
         inputs: usize,
         capture: Option<Reader>,
     ) -> Self {
@@ -59,19 +62,29 @@ impl Renderer {
             requests,
             voices: Voices::new(voices),
             recording: None,
+            input_channels,
             inputs: capture.map(|capture| Inputs::new(capture, inputs)),
-            scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
+            scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
 
     /// One period, interleaved stereo, replacing what `out` held: every
     /// playing voice, summed and clipped.
-    pub fn render(&mut self, out: &mut [Pcm]) {
-        debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
+    pub fn render(&mut self, input: &[Pcm], out: &mut [Pcm]) {
+        debug_assert_eq!(
+            out.len() % Self::OUTPUT_CHANNELS,
+            0,
+            "output is not whole frames"
+        );
+        debug_assert_eq!(
+            input.len(),
+            (out.len() / Self::OUTPUT_CHANNELS) * self.input_channels,
+            "input and output are not the same frames"
+        );
         self.apply_requests();
-        let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
+        let (frames, _) = out.as_chunks_mut::<{ Self::OUTPUT_CHANNELS }>();
         for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
-            block.fill([0.0; Self::CHANNELS]);
+            block.fill([0.0; Self::OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..block.len()];
             for voice in self.voices.iter_mut() {
                 voice.render(scratch);

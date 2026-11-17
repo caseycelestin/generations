@@ -25,12 +25,12 @@ impl Input {
         let mut read = 0;
         for (frame, device) in into.iter_mut().zip(frames) {
             *frame = match self.channels {
-                InputChannels::Mono(channel) => [device[channel]; Renderer::CHANNELS],
+                InputChannels::Mono(channel) => [device[channel]; Renderer::OUTPUT_CHANNELS],
                 InputChannels::Stereo(left, right) => [device[left], device[right]],
             };
             read += 1;
         }
-        into[read..].fill([0.0; Renderer::CHANNELS]);
+        into[read..].fill([0.0; Renderer::OUTPUT_CHANNELS]);
     }
 
     pub(crate) fn is(&self, id: RequestId) -> bool {
