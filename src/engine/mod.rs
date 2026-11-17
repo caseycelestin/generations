@@ -6,15 +6,19 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, PendingRecordingStatus, PendingVoiceStatus, PlayError, RecordError, Recording,
-    StatusError, StopError, TryRecvStatusError, TryWaitError, Voice,
+    Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, PendingVoiceStatus,
+    PlayError, RecordError, Recording, StatusError, StopError, TryRecvStatusError, TryWaitError,
+    Voice,
 };
+pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;
+pub use realtime::capture::Feeder;
 pub use realtime::render::Renderer;
 
 use std::num::NonZeroUsize;
 
+use protocol::inputs::InputRequest;
 use protocol::recording::RecordingRequest;
 use protocol::voice::VoiceRequest;
 
@@ -26,34 +30,83 @@ const RECORDERS: usize = 1;
 /// plays cannot leave them no room.
 const VOICE_STOP_HEADROOM: usize = 2;
 
+/// The capture device, as the renderer sees it for its life.
+#[derive(Debug, Clone, Copy)]
+pub struct Capture {
+    /// Per frame, as the device delivers them.
+    pub channels: usize,
+    /// Frames that can wait for the renderer's next period before any are
+    /// dropped: at least the longest output period, with room to spare when
+    /// the capture period is longer.
+    pub backlog: usize,
+    /// How many can be open at once, and may be zero.
+    pub inputs: usize,
+}
+
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
 /// `voice_queue` is how many plays and stops can be on their way beyond
 /// them: the room a new play has to take the oldest voice's place. Zero
-/// refuses a play while every voice is held.
+/// refuses a play while every voice is held. Every input is refused.
 ///
 /// # Panics
 /// If `voices` is zero.
 pub fn create(voice_queue: usize, voices: usize) -> (Control, Renderer) {
+    let (control, renderer, _) = create_sides(voice_queue, voices, None);
+    (control, renderer)
+}
+
+/// As [`create`], with the [`Feeder`] for the capture thread.
+///
+/// # Panics
+/// If `voices`, the capture's `channels` or its `backlog` is zero.
+pub fn create_with_capture(
+    voice_queue: usize,
+    voices: usize,
+    capture: Capture,
+) -> (Control, Renderer, Feeder) {
+    let (control, renderer, feeder) = create_sides(voice_queue, voices, Some(capture));
+    (control, renderer, feeder.expect("a capture makes a feeder"))
+}
+
+fn create_sides(
+    voice_queue: usize,
+    voices: usize,
+    capture: Option<Capture>,
+) -> (Control, Renderer, Option<Feeder>) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
+    let inputs = capture.map_or(0, |capture| capture.inputs);
+    let capture_channels = capture.map_or(0, |capture| capture.channels);
     let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
         voice_capacity(voice_queue, voices),
         VOICE_STOP_HEADROOM,
     );
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
+    let (inputs_control, inputs_realtime) = crate::request::channel::<InputRequest>(inputs);
+    let (feeder, reader) = capture
+        .map(|capture| realtime::capture::ring(capture.channels, capture.backlog))
+        .unzip();
     (
-        Control::new(control::Requests {
-            voices: voices_control,
-            recording: recording_control,
-        }),
+        Control::new(
+            control::Requests {
+                voices: voices_control,
+                recording: recording_control,
+                inputs: inputs_control,
+            },
+            capture_channels,
+        ),
         Renderer::new(
             realtime::render::Requests {
                 voices: voices_realtime,
                 recording: recording_realtime,
+                inputs: inputs_realtime,
             },
             voices,
+            inputs,
+            reader,
         ),
+        feeder,
     )
 }
 
@@ -74,6 +127,14 @@ mod tests {
 
     fn audio(samples: &[f32]) -> Audio {
         Audio::new(buffer(ChannelLayout::Mono, samples))
+    }
+
+    fn one_input() -> Capture {
+        Capture {
+            channels: 1,
+            backlog: 8,
+            inputs: 1,
+        }
     }
 
     /// Empty stereo audio with room for `frames`, as a take needs.
@@ -294,5 +355,128 @@ mod tests {
 
         let (_, taken) = recording.try_wait().unwrap();
         assert_eq!(taken.samples(), [0.0; 2 * 2]);
+    }
+
+    #[test]
+    fn an_input_is_read_every_period_whether_or_not_it_is_heard() {
+        let (control, mut renderer, mut feeder) = create_with_capture(4, 1, one_input());
+        let _input = control.open_input(InputChannels::Mono(0)).unwrap();
+        let mut out = vec![0.0; 4 * 2];
+        // Eight times its backlog: a ring nobody read would have filled.
+        for _ in 0..16 {
+            assert_eq!(feeder.feed(&[0.5; 4]), 4);
+            renderer.render(&mut out);
+            assert_eq!(out, vec![0.0; 4 * 2]);
+        }
+    }
+
+    #[test]
+    fn a_stopped_input_ends_stopped() {
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(input.try_wait(), Err(TryWaitError::NotEnded));
+
+        input.stop();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(input.try_wait(), Ok(InputEnd::Stopped));
+    }
+
+    #[test]
+    fn an_input_ends_when_the_feeder_is_dropped() {
+        let (control, mut renderer, feeder) = create_with_capture(4, 1, one_input());
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        drop(feeder);
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        assert_eq!(input.try_wait(), Ok(InputEnd::FeederGone));
+    }
+
+    #[test]
+    fn an_open_is_refused_while_every_input_is_open() {
+        let (control, _renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let _open = control.open_input(InputChannels::Mono(0)).unwrap();
+        assert!(matches!(
+            control.open_input(InputChannels::Mono(0)),
+            Err(ControlError::Full)
+        ));
+    }
+
+    #[test]
+    fn without_capture_every_open_is_refused() {
+        let (control, _renderer) = create(4, 1);
+        assert!(matches!(
+            control.open_input(InputChannels::Mono(0)),
+            Err(ControlError::NoCapture)
+        ));
+    }
+
+    #[test]
+    fn a_channel_past_the_device_is_refused() {
+        let capture = Capture {
+            channels: 2,
+            backlog: 8,
+            inputs: 2,
+        };
+        let (control, _renderer, _feeder) = create_with_capture(4, 1, capture);
+        assert!(matches!(
+            control.open_input(InputChannels::Mono(2)),
+            Err(ControlError::NoSuchChannel)
+        ));
+        assert!(matches!(
+            control.open_input(InputChannels::Stereo(0, 2)),
+            Err(ControlError::NoSuchChannel)
+        ));
+        assert!(control.open_input(InputChannels::Mono(1)).is_ok());
+    }
+
+    #[test]
+    fn inputs_switch_from_two_stereo_to_four_mono_on_one_feeder() {
+        let capture = Capture {
+            channels: 4,
+            backlog: 8,
+            inputs: 4,
+        };
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, capture);
+        let mut stereo = [
+            control.open_input(InputChannels::Stereo(0, 1)).unwrap(),
+            control.open_input(InputChannels::Stereo(2, 3)).unwrap(),
+        ];
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        for input in &mut stereo {
+            input.stop();
+        }
+        renderer.render(&mut [0.0; 4 * 2]);
+        // Taking the replies gives the places back.
+        for input in &mut stereo {
+            assert_eq!(input.try_wait(), Ok(InputEnd::Stopped));
+        }
+
+        let mono: Result<Vec<Input>, _> = (0..4)
+            .map(|channel| control.open_input(InputChannels::Mono(channel)))
+            .collect();
+        assert_eq!(mono.map(|held| held.len()), Ok(4));
+    }
+
+    #[test]
+    fn a_dropped_input_gives_its_place_back() {
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let open = control.open_input(InputChannels::Mono(0)).unwrap();
+        drop(open);
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert!(control.open_input(InputChannels::Mono(0)).is_ok());
+    }
+
+    #[test]
+    fn a_held_input_answers_its_status() {
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
+        let mut pending = input.request_status().unwrap();
+        renderer.render(&mut [0.0; 4 * 2]);
+        assert_eq!(pending.try_recv(), Ok(InputStatus::Open));
     }
 }

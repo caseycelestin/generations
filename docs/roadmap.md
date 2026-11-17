@@ -140,7 +140,7 @@ or rejected instead. The history of how a shape was reached is in git.
   signature is the permission and tests need their own budgets.
 - **Track what scales with audio; bound the rest.** Fixed overhead (the
   manifest, the request channels, the renderer's scratch and its voice
-  pool) is not counted; it is sized once by the caller. Counting the old
+  pool, the capture ring) is not counted; it is sized once by the caller. Counting the old
   input rings was tried and reverted as one mechanism too many.
 - **The OS backs the figure.** Audio is ordinary heap memory; the
   guarantee is a cgroup reservation, no swap, and a budget set below what
@@ -172,9 +172,16 @@ or rejected instead. The history of how a shape was reached is in git.
   on `Control`. A handle holds its request, never a `Control`, so the
   dependency runs one way. Audio carrying a handle and sending its
   removal from `Drop` was tried and rejected as the wrong coupling.
+- **`Control` does what can fail; a handle is made from a permit.**
+  `open_input` reserves, then `Input::open(permit)` cannot fail, so
+  every refusal shows in the public method and nothing is built for a
+  request that is refused. Handles that took the channel and reserved
+  themselves came first. Built for inputs; voices and recordings still
+  take the channel and switch over later, `record` checking its audio
+  before it reserves.
 - **`Control` is the door to one renderer.** It holds one request channel
-  per actor in the renderer (`Requests`: voices, recording). Named for
-  what it is to the caller; `RendererHandle`, `Link` and `Remote` were
+  per actor in the renderer (`Requests`: voices, recording, inputs). Named
+  for what it is to the caller; `RendererHandle`, `Link` and `Remote` were
   rejected.
 - **A handle's errors are in the engine's terms.** `PlayError`,
   `StopError`, `RecordError`, `TryWaitError`, `StatusError` and
@@ -196,9 +203,17 @@ or rejected instead. The history of how a shape was reached is in git.
   `NonZeroUsize` parameters made every caller wrap its constants.
   `voice_queue` may be zero: a play is then refused, not stolen, while
   every voice is held.
+- **Room for what waits on the renderer is a backlog.** `Capture` takes
+  `backlog`, the frames that can wait for its next period, sized by the
+  caller, who alone knows both devices' periods; a ring sized in capture
+  periods inside the crate overflowed when the output period was
+  longer. `queue` and `headroom` were weighed: headroom is a level in
+  audio and names the stop slots here. Not yet aligned: `voice_queue`
+  becomes `voice_backlog`.
 - **`control/` and `realtime/` never import each other;** both import
   `protocol/`. The source tree is the architecture, drawn in the crate
-  docs.
+  docs. The capture ring's two ends are made at the engine's root, by
+  `create_with_capture`, as the renderer is.
 
 ### Requests
 
@@ -229,7 +244,8 @@ crate root that knows nothing of audio.
 - **One channel per actor, typed by its request.** Both ends deal in the
   request type's own reply and status, so nothing converts and nothing
   can be sent the wrong reply. Each is sized by its actor: voices by
-  `voices + voice_queue + VOICE_STOP_HEADROOM`, recording by `RECORDERS`.
+  `voices + voice_queue + VOICE_STOP_HEADROOM`, recording by `RECORDERS`,
+  inputs by `inputs`.
   One shared channel with umbrella `Command` and `Event` enums came
   first. Order across channels is lost, which does no harm: the renderer
   takes in every channel at the start of a period.
@@ -248,7 +264,7 @@ crate root that knows nothing of audio.
   Counting until read keeps one number for room and for the table of
   replies, so memory stays fixed at creation. A dropped handle's reply is
   dropped on the control side when taken in; reserving takes in first,
-  and `Control::collect` takes in both channels.
+  and `Control::collect` takes in every channel.
 - **Plain handles over a shared state.** Every handle reaches one
   `Arc<Mutex<...>>`, as `std` and tokio's channels do, so dropping one
   means something. Handles as plain ids routed through the end were
@@ -302,10 +318,45 @@ crate root that knows nothing of audio.
 
 ### Input and monitoring
 
-Not built; the old engine's version is in the history before 42231f2.
-Inputs bring the capture thread, whose place is `realtime/capture/`.
-cpal has no duplex stream, so the capture and audio clocks drift, and an
-input's ring must be freed on the control side like any other return.
+Inputs are built; monitoring is not. cpal has no duplex stream, so the
+capture and audio clocks drift; what to do about it comes with monitoring.
+
+- **The feeder follows the capture device, as the renderer follows the
+  output.** `create_with_capture` makes one ring per capture stream, of
+  whole device frames, `channels` wide; the `Feeder` goes to the capture
+  callback and the renderer holds the reader for its life. The ring is
+  freed when both ends are gone, after the streams stop, so ending an
+  input never frees anything on the capture thread. A ring per input was
+  built first: its reader came back when the input ended, and the
+  feeder, still in the callback, freed the ring there. Holding returned
+  readers on the control side until their feeder went, and a pool of
+  rings checked in and out, were weighed against it.
+- **An input names device channels; it owns none.** `open_input` takes
+  `InputChannels::Mono(c)` or `Stereo(left, right)`, counted from zero,
+  and refuses one past the device at once (`NoSuchChannel`). Inputs may
+  read the same channel; `inputs` is how many can be open at once, not
+  the channel count. Splitting on the capture thread into a ring per
+  input was rejected: the feeder would need requests, its switch would
+  land on another frame than the renderer's, and a reused ring would
+  hold the last input's frames.
+- **Every block reads the ring, whether or not anything hears it.**
+  `Inputs` holds the reader and the open inputs, as `Voices` holds
+  voices; each block it takes whole frames off the ring once, every open
+  input renders its channels into scratch, and a closure gets each
+  input's frames, so the renderer decides per input what to do with them.
+- **Opening an input is always on `Control`.** Without a capture device
+  it answers `NoCapture`, as Apple's `inputNode` has no channels rather
+  than not existing. A handle that only `create_with_capture` returns,
+  so an input could not be asked for without a device, was weighed: the
+  device can go at any time anyway, which ends every input `FeederGone`.
+- **A device change rebuilds the engine**, as a DAW stops its engine to
+  switch interfaces. Attaching a capture to a running renderer by request
+  was rejected for it. Keeping the engine across a switch is the
+  caller's (Deferred).
+- **Changing an open input is not decided.** Monitoring needs "monitor
+  this input"; requests carry only an open, a cancel and a question. An
+  update message on the request channel, which voices would reuse for
+  level and pan, is the likely shape.
 
 ### Devices and examples
 
@@ -324,10 +375,13 @@ input's ring must be freed on the control side like any other return.
   be freed on the control side.
 - **The examples are `first_sound`, `record` and `engine`**, plain
   demonstration code: no hardening or shared abstractions there.
-  `first_sound` and `record` run on a device; `engine` shows every engine
-  feature and compiles, and each new
-  feature is added to it in the same step. When the device exists, they
-  move into a binary crate.
+  `first_sound` and `record` run on a device; `engine` shows the voice and
+  recording features and compiles. When the device exists, they move into
+  a binary crate.
+- **A new feature is shown in a doc example on its API**, `no_run`, as
+  inputs are on `open_input`: `cargo test` compiles it as surely as an
+  example, and `cargo doc` shows it beside what it uses. Not yet aligned:
+  `engine`'s features move to doc examples in their own PR.
 
 ### Recording
 
@@ -389,7 +443,7 @@ over the request channels (see Requests, above).
 
 What is left:
 - **Recording inputs** (see Recording, above).
-- **Inputs and monitoring** (see above), with the capture thread.
+- **Monitoring** (see Input and monitoring, above).
 - **Sequencing**, decided but not built: it runs on the audio thread,
   reading a fixed-size pattern that requests edit in place, so an edit is
   heard on the next pass whatever the control side is doing. Its voices
@@ -424,6 +478,14 @@ The project does not know about tiers.
 - **Taps and busses** on the hard-coded path.
 - **Master gain and bus limiter** before the clip.
 - **Stream errors** reported to a front panel.
+- **Keeping the engine across a device switch.** cpal drops a callback
+  with its stream, so the caller would have the callback hand the
+  renderer (or feeder) back first, through a one-slot ring, and start
+  the new stream with it. The engine needs nothing for it; a helper only
+  if callers get it wrong.
+- **Input frames dropped by skipping ahead** counted, in `InputStatus`,
+  if a period or ring size needs diagnosing; `feed` already returns what
+  a full ring let in.
 - **Content-hash dedup** on add, and on import if it returns, also
   matching a renamed WAV back to its sample.
 - **Removing a whole lineage** as one operation.
@@ -437,7 +499,7 @@ The project does not know about tiers.
 - **Projects in another stored format** than the engine's, converted on
   load and saved in the engine's.
 - **Warming the small rings.** A return ring's slots are first written
-  by the renderer (and an input ring's will be by the capture thread), so
+  by the renderer (and the capture ring's by the capture thread), so
   each faults a few pages on its first pushes. rtrb has no hook to
   prefault; pushing and popping a value through every slot at creation
   would do it.

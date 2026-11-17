@@ -1,5 +1,6 @@
 //! The audio thread: turns requests and audio into periods of output.
 
+mod inputs;
 mod math;
 mod recording;
 mod voices;
@@ -7,9 +8,12 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
+use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
+use crate::engine::realtime::capture::Reader;
 use crate::request::{self, Received};
+use inputs::{Input, Inputs};
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::{Voice, Voices};
@@ -21,6 +25,7 @@ type Frame = [Pcm; Renderer::CHANNELS];
 pub(crate) struct Requests {
     pub(crate) voices: request::RealtimeEnd<VoiceRequest>,
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
+    pub(crate) inputs: request::RealtimeEnd<InputRequest>,
 }
 
 #[derive(Debug)]
@@ -28,6 +33,8 @@ pub struct Renderer {
     requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
+    /// None without a capture device.
+    inputs: Option<Inputs>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -42,11 +49,17 @@ impl Renderer {
 
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
-    pub(crate) fn new(requests: Requests, voices: NonZeroUsize) -> Self {
+    pub(crate) fn new(
+        requests: Requests,
+        voices: NonZeroUsize,
+        inputs: usize,
+        capture: Option<Reader>,
+    ) -> Self {
         Self {
             requests,
             voices: Voices::new(voices),
             recording: None,
+            inputs: capture.map(|capture| Inputs::new(capture, inputs)),
             scratch: vec![[0.0; Self::CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -55,8 +68,7 @@ impl Renderer {
     /// playing voice, summed and clipped.
     pub fn render(&mut self, out: &mut [Pcm]) {
         debug_assert_eq!(out.len() % Self::CHANNELS, 0, "output is not whole frames");
-        self.apply_voice_requests();
-        self.apply_recording_requests();
+        self.apply_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::CHANNELS }>();
         for block in frames.chunks_mut(Self::BLOCK_FRAMES) {
             block.fill([0.0; Self::CHANNELS]);
@@ -65,12 +77,23 @@ impl Renderer {
                 voice.render(scratch);
                 add(block, scratch);
             }
+            // Read even when nothing hears it, so the ring keeps moving.
+            if let Some(inputs) = &mut self.inputs {
+                // Nothing hears an input yet.
+                inputs.read(scratch, |_input, _scratch| {});
+            }
             hard_clip(block);
             if let Some(recording) = &mut self.recording {
                 recording.write(block);
             }
         }
         self.clean_up();
+    }
+
+    fn apply_requests(&mut self) {
+        self.apply_voice_requests();
+        self.apply_recording_requests();
+        self.apply_input_requests();
     }
 
     fn apply_voice_requests(&mut self) {
@@ -134,12 +157,44 @@ impl Renderer {
         }
     }
 
+    fn apply_input_requests(&mut self) {
+        // Without a capture device every open is refused, so none arrive.
+        let Some(inputs) = &mut self.inputs else {
+            return;
+        };
+        while let Some(received) = self.requests.inputs.try_recv() {
+            match received {
+                Received::Request(permit, request) => {
+                    inputs.add(Input::open(permit, request.channels));
+                }
+                Received::Cancel(id) => {
+                    if let Some(stopped) = inputs.remove(id) {
+                        stopped.end(InputEnd::Stopped, &mut self.requests.inputs);
+                    }
+                }
+                Received::Status(permit) => {
+                    if inputs.holds(permit.id()) {
+                        self.requests.inputs.answer(permit, InputStatus::Open);
+                    }
+                    // Otherwise it is closed, and its reply has the last word.
+                }
+            }
+        }
+    }
+
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
             voice.end(&mut self.requests.voices);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
+        }
+        if let Some(inputs) = &mut self.inputs
+            && inputs.feeder_gone()
+        {
+            for gone in inputs.drain() {
+                gone.end(InputEnd::FeederGone, &mut self.requests.inputs);
+            }
         }
     }
 }
@@ -164,6 +219,7 @@ mod tests {
     fn renderer(voices: usize) -> (Ends, Renderer) {
         let (voices_control, voices_realtime) = request::channel_with_headroom(voices + 16, 2);
         let (recording_control, recording_realtime) = request::channel(1);
+        let (_, inputs_realtime) = request::channel(0);
         let ends = Ends {
             voices: voices_control,
             recording: recording_control,
@@ -171,9 +227,10 @@ mod tests {
         let requests = Requests {
             voices: voices_realtime,
             recording: recording_realtime,
+            inputs: inputs_realtime,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, voices))
+        (ends, Renderer::new(requests, voices, 0, None))
     }
 
     /// Opens a mono voice of `samples`, as `Control::play` does.

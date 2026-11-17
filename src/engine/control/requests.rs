@@ -3,6 +3,7 @@
 
 use thiserror::Error;
 
+use crate::engine::protocol::inputs::InputRequest;
 use crate::engine::protocol::recording::RecordingRequest;
 use crate::engine::protocol::voice::VoiceRequest;
 use crate::request;
@@ -76,9 +77,43 @@ impl From<request::TryRecvStatusError> for TryRecvStatusError {
     }
 }
 
+/// Nothing was sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ControlError {
+    /// Stop or drop one, then try again.
+    #[error("every place is held")]
+    Full,
+    #[error("the renderer is gone")]
+    RendererGone,
+    /// Made by `create`, not `create_with_capture`.
+    #[error("there is no capture device")]
+    NoCapture,
+    /// Past the capture device's channels.
+    #[error("no such channel")]
+    NoSuchChannel,
+}
+
+impl From<request::ReserveError> for ControlError {
+    fn from(error: request::ReserveError) -> Self {
+        match error {
+            request::ReserveError::Full => Self::Full,
+            request::ReserveError::Disconnected => Self::RendererGone,
+        }
+    }
+}
+
 /// One request channel per actor in the renderer.
 #[derive(Debug, Clone)]
 pub(crate) struct Requests {
     pub(crate) voices: request::ControlEnd<VoiceRequest>,
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
+    pub(crate) inputs: request::ControlEnd<InputRequest>,
+}
+
+impl Requests {
+    pub(crate) fn take_in(&self) {
+        self.voices.take_in();
+        self.recording.take_in();
+        self.inputs.take_in();
+    }
 }

@@ -5,5 +5,6 @@
 //! crosses: audio and values. Each feature has its own file and its own
 //! request channel.
 
+pub(crate) mod inputs;
 pub(crate) mod recording;
 pub(crate) mod voice;
