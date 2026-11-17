@@ -5,6 +5,21 @@ use rtrb::{Consumer, Producer, RingBuffer};
 
 use crate::config::Pcm;
 
+/// The ring is whole frames, allocated here on the control side; the
+/// reader goes to the renderer.
+pub(crate) fn ring(channels: usize, backlog: usize) -> (Feeder, Reader) {
+    let (producer, consumer) = RingBuffer::new(backlog * channels);
+    let feeder = Feeder {
+        ring: producer,
+        channels,
+    };
+    let reader = Reader {
+        ring: consumer,
+        channels,
+    };
+    (feeder, reader)
+}
+
 #[derive(Debug)]
 pub struct Feeder {
     ring: Producer<Pcm>,
@@ -14,17 +29,6 @@ pub struct Feeder {
 }
 
 impl Feeder {
-    /// The ring is whole frames, allocated here on the control side; the
-    /// reading end goes to the renderer.
-    pub(crate) fn new(channels: usize, backlog: usize) -> (Self, CaptureReader) {
-        let (ring, reader) = RingBuffer::new(backlog * channels);
-        let reader = CaptureReader {
-            ring: reader,
-            channels,
-        };
-        (Self { ring, channels }, reader)
-    }
-
     /// Interleaved frames, `channels` wide. What does not fit is dropped,
     /// whole frames from the end; returns the frames written.
     pub fn feed(&mut self, frames: &[Pcm]) -> usize {
@@ -41,7 +45,7 @@ impl Feeder {
 
 /// The renderer's end of the ring, with the width both ends share.
 #[derive(Debug)]
-pub(crate) struct CaptureReader {
+pub(crate) struct Reader {
     pub(crate) ring: Consumer<Pcm>,
     pub(crate) channels: usize,
 }
@@ -52,7 +56,7 @@ mod tests {
 
     #[test]
     fn frames_that_do_not_fit_are_dropped_whole() {
-        let (mut feeder, mut reader) = Feeder::new(2, 2);
+        let (mut feeder, mut reader) = ring(2, 2);
         assert_eq!(feeder.feed(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]), 2);
         assert_eq!(feeder.feed(&[0.7, 0.8]), 0);
         let chunk = reader.ring.read_chunk(4).unwrap();

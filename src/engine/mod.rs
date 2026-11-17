@@ -85,7 +85,7 @@ fn create_sides(
         crate::request::channel::<RecordingRequest>(RECORDERS);
     let (inputs_control, inputs_realtime) = crate::request::channel::<InputRequest>(inputs);
     let (feeder, reader) = capture
-        .map(|capture| Feeder::new(capture.channels, capture.backlog))
+        .map(|capture| realtime::capture::ring(capture.channels, capture.backlog))
         .unzip();
     (
         Control::new(

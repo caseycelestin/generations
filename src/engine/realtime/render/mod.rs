@@ -11,7 +11,7 @@ use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
-use crate::engine::realtime::capture::CaptureReader;
+use crate::engine::realtime::capture::Reader;
 use crate::request::{self, Received};
 use input::Input;
 use math::{add, hard_clip};
@@ -37,7 +37,7 @@ pub struct Renderer {
     inputs: Vec<Input>,
     /// The capture device's whole frames; every input reads its channels
     /// from them.
-    capture: Option<CaptureReader>,
+    capture: Option<Reader>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -56,7 +56,7 @@ impl Renderer {
         requests: Requests,
         voices: NonZeroUsize,
         inputs: usize,
-        capture: Option<CaptureReader>,
+        capture: Option<Reader>,
     ) -> Self {
         Self {
             requests,
