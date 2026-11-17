@@ -51,32 +51,13 @@ pub struct Capture {
 ///
 /// # Panics
 /// If `voices` is zero.
-pub fn create(voice_queue: usize, voices: usize) -> (Control, Renderer) {
-    let (control, renderer, _) = create_sides(voice_queue, voices, None);
-    (control, renderer)
-}
-
-/// As [`create`], with the [`Feeder`] for the capture thread.
-///
-/// # Panics
-/// If `voices`, the capture's `channels` or its `backlog` is zero.
-pub fn create_with_capture(
+pub fn create(
     voice_queue: usize,
     voices: usize,
-    capture: Capture,
-) -> (Control, Renderer, Feeder) {
-    let (control, renderer, feeder) = create_sides(voice_queue, voices, Some(capture));
-    (control, renderer, feeder.expect("a capture makes a feeder"))
-}
-
-fn create_sides(
-    voice_queue: usize,
-    voices: usize,
-    capture: Option<Capture>,
-) -> (Control, Renderer, Option<Feeder>) {
+    capture_channels: usize,
+    inputs: usize,
+) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    let inputs = capture.map_or(0, |capture| capture.inputs);
-    let capture_channels = capture.map_or(0, |capture| capture.channels);
     let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
         voice_capacity(voice_queue, voices),
         VOICE_STOP_HEADROOM,
@@ -84,9 +65,6 @@ fn create_sides(
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
     let (inputs_control, inputs_realtime) = crate::request::channel::<InputRequest>(inputs);
-    let (feeder, reader) = capture
-        .map(|capture| realtime::capture::ring(capture.channels, capture.backlog))
-        .unzip();
     (
         Control::new(
             control::Requests {
@@ -103,10 +81,9 @@ fn create_sides(
                 inputs: inputs_realtime,
             },
             voices,
+            capture_channels,
             inputs,
-            reader,
         ),
-        feeder,
     )
 }
 
