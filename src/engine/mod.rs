@@ -415,6 +415,54 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_past_the_device_is_refused() {
+        let capture = Capture {
+            channels: 2,
+            backlog: 8,
+            inputs: 2,
+        };
+        let (control, _renderer, _feeder) = create_with_capture(4, 1, capture);
+        assert!(matches!(
+            control.open_input(InputChannels::Mono(2)),
+            Err(ControlError::NoSuchChannel)
+        ));
+        assert!(matches!(
+            control.open_input(InputChannels::Stereo(0, 2)),
+            Err(ControlError::NoSuchChannel)
+        ));
+        assert!(control.open_input(InputChannels::Mono(1)).is_ok());
+    }
+
+    #[test]
+    fn inputs_switch_from_two_stereo_to_four_mono_on_one_feeder() {
+        let capture = Capture {
+            channels: 4,
+            backlog: 8,
+            inputs: 4,
+        };
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, capture);
+        let mut stereo = [
+            control.open_input(InputChannels::Stereo(0, 1)).unwrap(),
+            control.open_input(InputChannels::Stereo(2, 3)).unwrap(),
+        ];
+        renderer.render(&mut [0.0; 4 * 2]);
+
+        for input in &mut stereo {
+            input.stop();
+        }
+        renderer.render(&mut [0.0; 4 * 2]);
+        // Taking the replies gives the places back.
+        for input in &mut stereo {
+            assert_eq!(input.try_wait(), Ok(InputEnd::Stopped));
+        }
+
+        let mono: Result<Vec<Input>, _> = (0..4)
+            .map(|channel| control.open_input(InputChannels::Mono(channel)))
+            .collect();
+        assert_eq!(mono.map(|held| held.len()), Ok(4));
+    }
+
+    #[test]
     fn a_dropped_input_gives_its_place_back() {
         let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
         let open = control.open_input(InputChannels::Mono(0)).unwrap();
