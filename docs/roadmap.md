@@ -274,13 +274,14 @@ crate root that knows nothing of audio.
 - **Real-time safe, not real-time only.** Frame counts, never a clock, so
   the same `render` drives a device callback live or a loop offline (the
   bounce).
-- **Mix in blocks.** `render(&mut [Pcm])` takes the device's flat
-  interleaved period, of any length. It mixes it in blocks of
-  `BLOCK_FRAMES` (64): each block starts silent, each voice renders into
-  one shared scratch and is added in, and the period is hard-clipped
-  once. Blocks keep the scratch fixed and are what Pd, SuperCollider and
-  Max do; the latency is the device's period, not the block. The mix is
-  always stereo (`Renderer::CHANNELS`): mono audio plays at full level on
+- **Mix in blocks.** `render(capture, out)` takes the device's flat
+  interleaved period, of any length, capture and output the same frames.
+  It mixes in blocks of `BLOCK_FRAMES` (64), the capture cut at the same
+  frames: each block starts silent, each voice renders into one shared
+  scratch and is added in, and the period is hard-clipped once. Blocks
+  keep the scratch fixed and are what Pd, SuperCollider and Max do; the
+  latency is the device's period, not the block. The mix is always
+  stereo (`Renderer::OUTPUT_CHANNELS`): mono audio plays at full level on
   both sides. A `Source` trait, boxed `Processor` chains and a generic
   `Mixer` were each built and dropped.
 - **Voices are a fixed pool.** `voices` is given to `create` and the pool

@@ -10,7 +10,7 @@ use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 pub(crate) struct Input {
     permit: ReplyPermit,
     channels: InputChannels,
-    /// Samples per device frame.
+    /// Samples per capture frame.
     capture_channels: usize,
 }
 
