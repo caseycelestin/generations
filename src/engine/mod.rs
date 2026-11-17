@@ -13,7 +13,7 @@ pub use control::{
 pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use protocol::voice::VoiceStatus;
-pub use realtime::render::Renderer;
+pub use realtime::Renderer;
 
 use std::num::NonZeroUsize;
 
@@ -63,7 +63,7 @@ pub fn create(
             capture_channels,
         ),
         Renderer::new(
-            realtime::render::Requests {
+            realtime::Requests {
                 voices: voices_realtime,
                 recording: recording_realtime,
                 inputs: inputs_realtime,
