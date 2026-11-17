@@ -12,7 +12,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
 | 6 | Recording: audio input as a new root | main out done on `src/engine/`, `take` included; inputs to come |
-| 7 | Input monitoring: hear the input through the output | to be rebuilt on `src/engine/` |
+| 7 | Input monitoring: hear the input through the output | inputs built on `src/engine/`, on a duplex `render`; hearing them to come |
 | 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
 | 9 | Arrangement and more effects | |
 
@@ -140,7 +140,7 @@ or rejected instead. The history of how a shape was reached is in git.
   signature is the permission and tests need their own budgets.
 - **Track what scales with audio; bound the rest.** Fixed overhead (the
   manifest, the request channels, the renderer's scratch and its voice
-  pool, the capture ring) is not counted; it is sized once by the caller. Counting the old
+  pool) is not counted; it is sized once by the caller. Counting the old
   input rings was tried and reverted as one mechanism too many.
 - **The OS backs the figure.** Audio is ordinary heap memory; the
   guarantee is a cgroup reservation, no swap, and a budget set below what
@@ -202,18 +202,11 @@ or rejected instead. The history of how a shape was reached is in git.
   `slice::chunks` does: a zero is a typo, not something to recover from.
   `NonZeroUsize` parameters made every caller wrap its constants.
   `voice_queue` may be zero: a play is then refused, not stolen, while
-  every voice is held.
-- **Room for what waits on the renderer is a backlog.** `Capture` takes
-  `backlog`, the frames that can wait for its next period, sized by the
-  caller, who alone knows both devices' periods; a ring sized in capture
-  periods inside the crate overflowed when the output period was
-  longer. `queue` and `headroom` were weighed: headroom is a level in
-  audio and names the stop slots here. Not yet aligned: `voice_queue`
-  becomes `voice_backlog`.
+  every voice is held. `capture_channels` may be zero, with no input
+  device, and so may `inputs`.
 - **`control/` and `realtime/` never import each other;** both import
   `protocol/`. The source tree is the architecture, drawn in the crate
-  docs. The capture ring's two ends are made at the engine's root, by
-  `create_with_capture`, as the renderer is.
+  docs.
 
 ### Requests
 
@@ -318,37 +311,31 @@ crate root that knows nothing of audio.
 
 ### Input and monitoring
 
-Inputs are built; monitoring is not. cpal has no duplex stream, so the
-capture and audio clocks drift; what to do about it comes with monitoring.
+Inputs are built; monitoring is not.
 
-- **The feeder follows the capture device, as the renderer follows the
-  output.** `create_with_capture` makes one ring per capture stream, of
-  whole device frames, `channels` wide; the `Feeder` goes to the capture
-  callback and the renderer holds the reader for its life. The ring is
-  freed when both ends are gone, after the streams stop, so ending an
-  input never frees anything on the capture thread. A ring per input was
-  built first: its reader came back when the input ended, and the
-  feeder, still in the callback, freed the ring there. Holding returned
-  readers on the control side until their feeder went, and a pool of
-  rings checked in and out, were weighed against it.
-- **An input names device channels; it owns none.** `open_input` takes
+- **The renderer is duplex.** `render(capture, out)` takes the input
+  device's frames for the same period it fills, interleaved,
+  `capture_channels` wide. One callback is one clock, as the target is one
+  interface on ALSA, and it is how JUCE, PortAudio and JACK hand audio
+  over; a caller with two clocks bridges them before `render`, since only
+  it knows its devices. A capture ring per device, filled by a `Feeder` on
+  the capture thread, was built first and removed: it put a cushion, clock
+  drift and a feeder that could go away inside the engine.
+- **An input names capture channels; it owns none.** `open_input` takes
   `InputChannels::Mono(c)` or `Stereo(left, right)`, counted from zero,
   and refuses one past the device at once (`NoSuchChannel`). Inputs may
   read the same channel; `inputs` is how many can be open at once, not
-  the channel count. Splitting on the capture thread into a ring per
-  input was rejected: the feeder would need requests, its switch would
-  land on another frame than the renderer's, and a reused ring would
-  hold the last input's frames.
-- **Every block reads the ring, whether or not anything hears it.**
-  `Inputs` holds the reader and the open inputs, as `Voices` holds
-  voices; each block it takes whole frames off the ring once, every open
-  input renders its channels into scratch, and a closure gets each
-  input's frames, so the renderer decides per input what to do with them.
-- **Opening an input is always on `Control`.** Without a capture device
-  it answers `NoCapture`, as Apple's `inputNode` has no channels rather
-  than not existing. A handle that only `create_with_capture` returns,
-  so an input could not be asked for without a device, was weighed: the
-  device can go at any time anyway, which ends every input `FeederGone`.
+  the channel count. Each input keeps the capture width to cut a block
+  into frames.
+- **Every open input renders each block, whether or not anything hears
+  it.** The renderer holds them in a `Vec`, and monitoring adds what one
+  renders. Until then the copy is what keeps `Input::render` in use, chosen
+  over marking it `expect(dead_code)`.
+- **Opening an input is always on `Control`.** With zero capture channels
+  every channel is past the device, so it answers `NoSuchChannel`, as
+  Apple's `inputNode` has no channels rather than not existing. A
+  `NoCapture` error and a second constructor, `create_with_capture`, were
+  removed with the ring: a device's width is one number at `create`.
 - **A device change rebuilds the engine**, as a DAW stops its engine to
   switch interfaces. Attaching a capture to a running renderer by request
   was rejected for it. Keeping the engine across a switch is the
@@ -373,6 +360,10 @@ capture and audio clocks drift; what to do about it comes with monitoring.
   milliseconds, so it renders silence when idle. Audio can be dropped in
   any order: the last `Arc`, held by a voice, comes back in its reply to
   be freed on the control side.
+- **cpal is pinned to master for its duplex streams** (ALSA and JACK),
+  which 0.18.2 lacks, and goes back to a release when 0.19 ships. The
+  examples play and record the main out with no capture; a duplex
+  `Device` comes with the first example that hears an input.
 - **The examples are `first_sound`, `record` and `engine`**, plain
   demonstration code: no hardening or shared abstractions there.
   `first_sound` and `record` run on a device; `engine` shows the voice and
@@ -480,12 +471,9 @@ The project does not know about tiers.
 - **Stream errors** reported to a front panel.
 - **Keeping the engine across a device switch.** cpal drops a callback
   with its stream, so the caller would have the callback hand the
-  renderer (or feeder) back first, through a one-slot ring, and start
-  the new stream with it. The engine needs nothing for it; a helper only
+  renderer back first, through a one-slot ring, and start the new stream
+  with it. The engine needs nothing for it; a helper only
   if callers get it wrong.
-- **Input frames dropped by skipping ahead** counted, in `InputStatus`,
-  if a period or ring size needs diagnosing; `feed` already returns what
-  a full ring let in.
 - **Content-hash dedup** on add, and on import if it returns, also
   matching a renamed WAV back to its sample.
 - **Removing a whole lineage** as one operation.
@@ -499,10 +487,9 @@ The project does not know about tiers.
 - **Projects in another stored format** than the engine's, converted on
   load and saved in the engine's.
 - **Warming the small rings.** A return ring's slots are first written
-  by the renderer (and the capture ring's by the capture thread), so
-  each faults a few pages on its first pushes. rtrb has no hook to
-  prefault; pushing and popping a value through every slot at creation
-  would do it.
+  by the renderer, so each faults a few pages on its first pushes. rtrb
+  has no hook to prefault; pushing and popping a value through every slot
+  at creation would do it.
 - **`mlockall` on the device.** `mlockall(MCL_CURRENT | MCL_FUTURE)`
   backs and locks every page the process has or will have, the blanket
   form of prefaulting, and guarantees nothing is paged out later. It
