@@ -30,7 +30,14 @@ impl Input {
 
     /// Mono goes to both sides at full level.
     pub(crate) fn render(&self, input: &[Pcm], scratch: &mut [Frame]) {
-        todo!()
+        // Never zero: no input opens on a device without channels.
+        let frames = input.chunks_exact(self.capture_channels);
+        for (into, frame) in scratch.iter_mut().zip(frames) {
+            *into = match self.channels {
+                InputChannels::Mono(channel) => [frame[channel]; Renderer::OUTPUT_CHANNELS],
+                InputChannels::Stereo(left, right) => [frame[left], frame[right]],
+            };
+        }
     }
 
     pub(crate) fn is(&self, id: RequestId) -> bool {
