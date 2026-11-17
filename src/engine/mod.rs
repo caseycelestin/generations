@@ -359,8 +359,8 @@ mod tests {
 
     #[test]
     fn an_input_is_read_every_period_whether_or_not_it_is_heard() {
-        let (control, mut renderer, _) = create_with_capture(4, 1, one_input());
-        let (_input, mut feeder) = control.open_input(ChannelLayout::Mono, 8).unwrap();
+        let (control, mut renderer, mut feeder) = create_with_capture(4, 1, one_input());
+        let _input = control.open_input(InputChannels::Mono(0)).unwrap();
         let mut out = vec![0.0; 4 * 2];
         // Eight times its backlog: a ring nobody read would have filled.
         for _ in 0..16 {
@@ -372,8 +372,8 @@ mod tests {
 
     #[test]
     fn a_stopped_input_ends_stopped() {
-        let (control, mut renderer, _) = create_with_capture(4, 1, one_input());
-        let (mut input, _feeder) = control.open_input(ChannelLayout::Mono, 8).unwrap();
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(input.try_wait(), Err(TryWaitError::NotEnded));
 
@@ -384,9 +384,9 @@ mod tests {
     }
 
     #[test]
-    fn an_input_ends_when_its_feeder_is_dropped() {
-        let (control, mut renderer, _) = create_with_capture(4, 1, one_input());
-        let (mut input, feeder) = control.open_input(ChannelLayout::Mono, 8).unwrap();
+    fn an_input_ends_when_the_feeder_is_dropped() {
+        let (control, mut renderer, feeder) = create_with_capture(4, 1, one_input());
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
 
         drop(feeder);
@@ -397,36 +397,36 @@ mod tests {
 
     #[test]
     fn an_open_is_refused_while_every_input_is_open() {
-        let (control, _renderer, _) = create_with_capture(4, 1, one_input());
-        let _open = control.open_input(ChannelLayout::Mono, 8).unwrap();
+        let (control, _renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let _open = control.open_input(InputChannels::Mono(0)).unwrap();
         assert!(matches!(
-            control.open_input(ChannelLayout::Mono, 8),
+            control.open_input(InputChannels::Mono(0)),
             Err(ControlError::Full)
         ));
     }
 
     #[test]
-    fn with_no_inputs_every_open_is_refused() {
+    fn without_capture_every_open_is_refused() {
         let (control, _renderer) = create(4, 1);
         assert!(matches!(
-            control.open_input(ChannelLayout::Mono, 8),
-            Err(ControlError::Full)
+            control.open_input(InputChannels::Mono(0)),
+            Err(ControlError::NoSuchChannel)
         ));
     }
 
     #[test]
     fn a_dropped_input_gives_its_place_back() {
-        let (control, mut renderer, _) = create_with_capture(4, 1, one_input());
-        let open = control.open_input(ChannelLayout::Mono, 8).unwrap();
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let open = control.open_input(InputChannels::Mono(0)).unwrap();
         drop(open);
         renderer.render(&mut [0.0; 4 * 2]);
-        assert!(control.open_input(ChannelLayout::Mono, 8).is_ok());
+        assert!(control.open_input(InputChannels::Mono(0)).is_ok());
     }
 
     #[test]
     fn a_held_input_answers_its_status() {
-        let (control, mut renderer, _) = create_with_capture(4, 1, one_input());
-        let (mut input, _feeder) = control.open_input(ChannelLayout::Mono, 8).unwrap();
+        let (control, mut renderer, _feeder) = create_with_capture(4, 1, one_input());
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
         let mut pending = input.request_status().unwrap();
         renderer.render(&mut [0.0; 4 * 2]);
         assert_eq!(pending.try_recv(), Ok(InputStatus::Open));
