@@ -99,7 +99,7 @@ impl Device {
             SampleFormat::I32 => build::<i32>(&self.device, &self.config, render, errors_in),
             _ => unreachable!("device format was chosen from the convertible set"),
         }?;
-        inner.play()?;
+        inner.start()?;
         Ok(Stream { inner, errors })
     }
 }
@@ -227,7 +227,7 @@ impl Capture {
             }
             _ => unreachable!("device format was chosen from the convertible set"),
         }?;
-        inner.play()?;
+        inner.start()?;
         Ok(Stream { inner, errors })
     }
 }
