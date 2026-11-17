@@ -1,4 +1,4 @@
-//! An input: audio from the capture thread, held by the renderer.
+//! An input: capture channels the renderer routes to stereo.
 
 use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::engine::protocol::inputs::{InputChannels, InputEnd, InputRequest, InputStatus};

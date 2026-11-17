@@ -33,7 +33,9 @@ const VOICE_STOP_HEADROOM: usize = 2;
 /// `voices` is how many play at once, sized by the caller for its hardware.
 /// `voice_queue` is how many plays and stops can be on their way beyond
 /// them: the room a new play has to take the oldest voice's place. Zero
-/// refuses a play while every voice is held. Every input is refused.
+/// refuses a play while every voice is held. `capture_channels` is the
+/// width of the capture `render` is handed each period, zero without an
+/// input device; `inputs` is how many can be open at once.
 ///
 /// # Panics
 /// If `voices` is zero.

@@ -32,7 +32,7 @@ pub struct Renderer {
     requests: Requests,
     voices: Voices,
     recording: Option<Recording>,
-    /// Per frame of `render`'s input; zero without an input device.
+    /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     /// Never past its capacity, so opening one never allocates.
     inputs: Vec<Input>,
@@ -67,17 +67,18 @@ impl Renderer {
     }
 
     /// One period, interleaved stereo, replacing what `out` held: every
-    /// playing voice, summed and clipped.
-    pub fn render(&mut self, input: &[Pcm], out: &mut [Pcm]) {
+    /// playing voice, summed and clipped. `capture` is the input device's
+    /// frames for the same period, interleaved.
+    pub fn render(&mut self, capture: &[Pcm], out: &mut [Pcm]) {
         debug_assert_eq!(
             out.len() % Self::OUTPUT_CHANNELS,
             0,
             "output is not whole frames"
         );
         debug_assert_eq!(
-            input.len(),
+            capture.len(),
             (out.len() / Self::OUTPUT_CHANNELS) * self.capture_channels,
-            "input and output are not the same frames"
+            "capture and output are not the same frames"
         );
         self.apply_requests();
         let (frames, _) = out.as_chunks_mut::<{ Self::OUTPUT_CHANNELS }>();
@@ -90,10 +91,10 @@ impl Renderer {
             }
             let start = index * Self::BLOCK_FRAMES * self.capture_channels;
             let end = start + block.len() * self.capture_channels;
-            let capture = &input[start..end];
+            let block_capture = &capture[start..end];
             // Nothing hears an input yet.
-            for open in &self.inputs {
-                open.render(capture, scratch);
+            for input in &self.inputs {
+                input.render(block_capture, scratch);
             }
             hard_clip(block);
             if let Some(recording) = &mut self.recording {
