@@ -22,8 +22,8 @@ const AUDIO_RAM_BUDGET: usize = 1024 * 1024 * 1024;
 fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
     // 16 voices at once, and room for 64 plays and stops on their way.
-    let (control, mut renderer) = engine::create(64, 16);
-    let mut stream = Device::default_output()?.start(move |out| renderer.render(out))?;
+    let (control, mut renderer) = engine::create(64, 16, 0, 0);
+    let mut stream = Device::default_output()?.start(move |out| renderer.render(&[], out))?;
 
     // Half a second of each note, decaying from half scale.
     let frames = SAMPLE_RATE as usize / 2;
