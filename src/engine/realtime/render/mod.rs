@@ -7,12 +7,11 @@ mod voices;
 
 use std::num::NonZeroUsize;
 
-use rtrb::Consumer;
-
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
+use crate::engine::realtime::capture::CaptureReader;
 use crate::request::{self, Received};
 use input::Input;
 use math::{add, hard_clip};
@@ -38,7 +37,7 @@ pub struct Renderer {
     inputs: Vec<Input>,
     /// The capture device's whole frames; every input reads its channels
     /// from them.
-    capture: Option<Consumer<Pcm>>,
+    capture: Option<CaptureReader>,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -57,7 +56,7 @@ impl Renderer {
         requests: Requests,
         voices: NonZeroUsize,
         inputs: usize,
-        capture: Option<Consumer<Pcm>>,
+        capture: Option<CaptureReader>,
     ) -> Self {
         Self {
             requests,
@@ -167,8 +166,7 @@ impl Renderer {
                 Received::Request(permit, request) => {
                     let room = self.inputs.len() < self.inputs.capacity();
                     debug_assert!(room, "one request per input");
-                    self.inputs
-                        .push(Input::open(permit, request.reader, request.layout));
+                    self.inputs.push(Input::open(permit, request.channels));
                 }
                 Received::Cancel(id) => {
                     if let Some(at) = self.inputs.iter().position(|input| input.is(id)) {
@@ -193,8 +191,14 @@ impl Renderer {
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
-        for gone in self.inputs.extract_if(.., |input| input.feeder_gone()) {
-            gone.end(InputEnd::FeederGone, &mut self.requests.inputs);
+        let feeder_gone = self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.ring.is_abandoned());
+        if feeder_gone {
+            for gone in self.inputs.drain(..) {
+                gone.end(InputEnd::FeederGone, &mut self.requests.inputs);
+            }
         }
     }
 }
