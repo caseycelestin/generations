@@ -20,7 +20,7 @@ impl Input {
     /// One item per device frame, up to `into`'s length; silence after
     /// them, which is a gap when the capture side runs late. Mono goes to
     /// both sides at full level.
-    pub(crate) fn read<'a>(&self, frames: impl Iterator<Item = &'a [Pcm]>, into: &mut [Frame]) {
+    pub(crate) fn render<'a>(&self, frames: impl Iterator<Item = &'a [Pcm]>, into: &mut [Frame]) {
         let mut read = 0;
         for (frame, device) in into.iter_mut().zip(frames) {
             *frame = match self.channels {
@@ -73,7 +73,7 @@ impl Inputs {
         };
         for input in &self.open {
             let device = first.chunks_exact(width).chain(second.chunks_exact(width));
-            input.read(device, into);
+            input.render(device, into);
             each(input, into);
         }
         if let Ok(chunk) = chunk {
