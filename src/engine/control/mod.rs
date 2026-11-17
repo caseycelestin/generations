@@ -84,6 +84,8 @@ impl Control {
         Recording::record(&self.requests.recording, audio)
     }
 
+    /// Inputs may read the same channels; each gets its own copy.
+    ///
     /// ```no_run
     /// use std::thread;
     ///
