@@ -11,26 +11,26 @@ use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 pub(crate) struct Input {
     permit: ReplyPermit,
     channels: InputChannels,
+    /// Samples per device frame.
+    capture_channels: usize,
 }
 
 impl Input {
-    pub(crate) fn open(permit: ReplyPermit, channels: InputChannels) -> Self {
-        Self { permit, channels }
+    pub(crate) fn open(
+        permit: ReplyPermit,
+        channels: InputChannels,
+        capture_channels: usize,
+    ) -> Self {
+        Self {
+            permit,
+            channels,
+            capture_channels,
+        }
     }
 
-    /// One item per device frame, up to `into`'s length; silence after
-    /// them, which is a gap when the capture side runs late. Mono goes to
-    /// both sides at full level.
-    pub(crate) fn render<'a>(&self, frames: impl Iterator<Item = &'a [Pcm]>, into: &mut [Frame]) {
-        let mut read = 0;
-        for (frame, device) in into.iter_mut().zip(frames) {
-            *frame = match self.channels {
-                InputChannels::Mono(channel) => [device[channel]; Renderer::OUTPUT_CHANNELS],
-                InputChannels::Stereo(left, right) => [device[left], device[right]],
-            };
-            read += 1;
-        }
-        into[read..].fill([0.0; Renderer::OUTPUT_CHANNELS]);
+    /// Mono goes to both sides at full level.
+    pub(crate) fn render(&self, input: &[Pcm], scratch: &mut [Frame]) {
+        todo!()
     }
 
     pub(crate) fn is(&self, id: RequestId) -> bool {

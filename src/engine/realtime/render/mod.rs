@@ -34,7 +34,7 @@ pub struct Renderer {
     voices: Voices,
     recording: Option<Recording>,
     /// Per frame of `render`'s input; zero without an input device.
-    input_channels: usize,
+    capture_channels: usize,
     /// None without a capture device.
     inputs: Option<Inputs>,
     /// One sound's frames for the block, before they join the mix.
@@ -54,7 +54,7 @@ impl Renderer {
     pub(crate) fn new(
         requests: Requests,
         voices: NonZeroUsize,
-        input_channels: usize,
+        capture_channels: usize,
         inputs: usize,
         capture: Option<Reader>,
     ) -> Self {
@@ -62,7 +62,7 @@ impl Renderer {
             requests,
             voices: Voices::new(voices),
             recording: None,
-            input_channels,
+            capture_channels,
             inputs: capture.map(|capture| Inputs::new(capture, inputs)),
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
@@ -78,7 +78,7 @@ impl Renderer {
         );
         debug_assert_eq!(
             input.len(),
-            (out.len() / Self::OUTPUT_CHANNELS) * self.input_channels,
+            (out.len() / Self::OUTPUT_CHANNELS) * self.capture_channels,
             "input and output are not the same frames"
         );
         self.apply_requests();
@@ -178,7 +178,7 @@ impl Renderer {
         while let Some(received) = self.requests.inputs.try_recv() {
             match received {
                 Received::Request(permit, request) => {
-                    inputs.add(Input::open(permit, request.channels));
+                    inputs.add(Input::open(permit, request.channels, self.capture_channels));
                 }
                 Received::Cancel(id) => {
                     if let Some(stopped) = inputs.remove(id) {
