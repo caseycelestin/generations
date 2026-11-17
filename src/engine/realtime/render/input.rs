@@ -3,6 +3,7 @@
 use super::{Frame, Renderer};
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputChannels, InputEnd, InputRequest};
+use crate::engine::realtime::capture::Reader;
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 
 #[derive(Debug)]
@@ -38,6 +39,69 @@ impl Input {
     /// The one way an input leaves.
     pub(crate) fn end(self, why: InputEnd, requests: &mut RealtimeEnd<InputRequest>) {
         requests.close(self.permit, why);
+    }
+}
+
+/// One capture device's ring, and the inputs reading it.
+#[derive(Debug)]
+pub(crate) struct Inputs {
+    capture: Reader,
+    /// Never past its capacity, so adding one never allocates.
+    open: Vec<Input>,
+}
+
+impl Inputs {
+    pub(crate) fn new(capture: Reader, count: usize) -> Self {
+        Self {
+            capture,
+            open: Vec::with_capacity(count),
+        }
+    }
+
+    /// Up to `into`'s length in whole frames off the ring; each open input
+    /// copies its channels into `into` in turn, then `each` uses them.
+    pub(crate) fn read(&mut self, into: &mut [Frame], mut each: impl FnMut(&Input, &mut [Frame])) {
+        let width = self.capture.channels;
+        let frames = into.len().min(self.capture.ring.slots() / width);
+        let chunk = self.capture.ring.read_chunk(frames * width);
+        // A chunk that cannot be read is no frames, so every input still
+        // reads, as silence. The ring holds whole frames, so its two slices
+        // split between frames, never inside one.
+        let (first, second) = match &chunk {
+            Ok(chunk) => chunk.as_slices(),
+            Err(_) => (&[][..], &[][..]),
+        };
+        for input in &self.open {
+            let device = first.chunks_exact(width).chain(second.chunks_exact(width));
+            input.read(device, into);
+            each(input, into);
+        }
+        if let Ok(chunk) = chunk {
+            chunk.commit_all();
+        }
+    }
+
+    pub(crate) fn add(&mut self, input: Input) {
+        let room = self.open.len() < self.open.capacity();
+        debug_assert!(room, "one request per input");
+        self.open.push(input);
+    }
+
+    pub(crate) fn holds(&self, id: RequestId) -> bool {
+        self.open.iter().any(|input| input.is(id))
+    }
+
+    pub(crate) fn remove(&mut self, id: RequestId) -> Option<Input> {
+        let at = self.open.iter().position(|input| input.is(id))?;
+        Some(self.open.swap_remove(at))
+    }
+
+    pub(crate) fn feeder_gone(&self) -> bool {
+        self.capture.ring.is_abandoned()
+    }
+
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = Input> + '_ {
+        self.open.drain(..)
     }
 }
 
