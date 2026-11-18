@@ -171,11 +171,17 @@ or rejected instead. The history of how a shape was reached is in git.
   since no method needed both sides, and a joint constructor was rejected
   as the same thing again.
 - **A verb lives on the thing it acts on.** `voice.stop()`,
-  `voice.request_status()` and `voice.try_wait()` act on one playing;
-  `control.stop(&audio)` and `stop_all()` act across voices, so they live
-  on `Control`. A handle holds its request, never a `Control`, so the
-  dependency runs one way. Audio carrying a handle and sending its
-  removal from `Drop` was tried and rejected as the wrong coupling.
+  `voice.request_status()` and `voice.try_wait()` act on one playing. A
+  handle holds its request, never a `Control`, so the dependency runs one
+  way. Audio carrying a handle and sending its removal from `Drop` was
+  tried and rejected as the wrong coupling.
+- **A voice is stopped by its handle.** A caller keeps the handle of
+  anything it may stop, and stopping them all is a loop over them; each
+  stop is a cancel, which cannot fail. `control.stop(&audio)` and
+  `stop_all()` were removed: they reached only voices whose handles were
+  dropped, and cost two more requests on the voice channel, a shared
+  reply and headroom kept for them. A list of voices in `Control` was
+  rejected: it would trail the renderer, which decides when a voice ends.
 - **`Control` does what can fail; a handle is made from a permit.**
   `open_input` reserves, then `Input::open(permit)` cannot fail, so
   every refusal shows in the public method and nothing is built for a
@@ -188,13 +194,13 @@ or rejected instead. The history of how a shape was reached is in git.
   for what it is to the caller; `RendererHandle`, `Link` and `Remote` were
   rejected.
 - **A handle's errors are in the engine's terms.** `PlayError`,
-  `StopError`, `RecordError`, `TryWaitError`, `StatusError` and
-  `TryRecvStatusError` translate `request`'s, so a caller reads "the
+  `RecordError`, `TryWaitError`, `StatusError` and `TryRecvStatusError`
+  translate `request`'s, so a caller reads "the
   renderer is gone, and the audio with it", not a channel's
   `Disconnected`.
 - **Loaded audio is plain data.** Hold `Audio` and it is in RAM; drop it
   and its voices play out, its memory repaid once the last voice's reply
-  is taken in. `control.stop(&audio)` cuts them first. Each load is its
+  is taken in. Stopping their handles cuts them first. Each load is its
   own copy; no dedup. What to load at open is the caller's to remember: a
   persisted `loaded` flag was built and removed (it recorded a preference
   before any panel had one).
@@ -224,8 +230,7 @@ crate root that knows nothing of audio.
   could not be sized.
 - **A long task replies when it ends, with what it was given.** A play
   replies when its voice ends, carrying the audio; a recording's start,
-  how it ended and its take; a stop-audio, the clone of the audio it
-  named. The control side frees all of it, so nothing is freed on the
+  how it ended and its take. The control side frees all of it, so nothing is freed on the
   audio thread. A collector channel for freeing was built and removed
   once every return rode in a reply.
 - **Status is asked, not pushed, and is advisory.** `request_status`
@@ -241,8 +246,7 @@ crate root that knows nothing of audio.
 - **One channel per actor, typed by its request.** Both ends deal in the
   request type's own reply and status, so nothing converts and nothing
   can be sent the wrong reply. Each is sized by its actor: voices by
-  `voices + voice_queue + VOICE_STOP_HEADROOM`, recording by `RECORDERS`,
-  inputs by `inputs`.
+  `voices + voice_queue`, recording by `RECORDERS`, inputs by `inputs`.
   One shared channel with umbrella `Command` and `Event` enums came
   first. Order across channels is lost, which does no harm: the renderer
   takes in every channel at the start of a period.
@@ -252,11 +256,6 @@ crate root that knows nothing of audio.
   not a held lock: a permit that held the lock until `open` hung any
   caller that touched the same channel in between. The count is tokio's
   `Permit` shape.
-- **Headroom keeps room for stops.** The voice channel's last
-  `VOICE_STOP_HEADROOM` slots take only `try_reserve_including_headroom`,
-  so a burst of plays cannot refuse `stop` or `stop_all`, as Postgres
-  keeps connections for superusers. A channel of their own was rejected:
-  stops would lose their order against plays.
 - **A slot is held until its reply is taken or its handle dropped.**
   Counting until read keeps one number for room and for the table of
   replies, so memory stays fixed at creation. A dropped handle's reply is
@@ -299,15 +298,10 @@ crate root that knows nothing of audio.
   `Finished`, `Stopped` and `Cut` were reported before.
 - **A status has no `Pending` and no `Ended`.** The renderer answers only
   while it holds the voice or recording, and the end comes in the reply.
-- **Requests are tasks.** `VoiceRequest` is `Play | StopAudio | StopAll`
-  and `RecordingRequest` is `Start`, each answered when done; meaning
+- **Requests are tasks.** A `VoiceRequest` is a play and a
+  `RecordingRequest` a `Start`, each answered when done; meaning
   stays plain, the handles carry the verbs. Operations on what the
   renderer held (`Add`, `Remove`) came while replies were events.
-- **Stop by the audio itself.** Stopping every voice of some audio sends a
-  clone of its `Arc`; the renderer compares by pointer and closes the
-  stop with the clone, so it is dropped on the control side. A buffer
-  address came before, sound only by an argument about ring order; a
-  sample id would name every load and collide across projects.
 - **One concept, one name; the module says the side.** `Voice` is both
   the control-side handle and the render side's playing, as `io::Error`
   and `fmt::Error`. The old engine said `Sound` and `SoundId`.

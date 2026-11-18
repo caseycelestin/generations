@@ -48,8 +48,7 @@ impl Control {
     /// ```no_run
     /// use generations::engine::{self, InputChannels};
     ///
-    /// // 16 voices, room for 64 plays and stops, and a mono device with one
-    /// // input.
+    /// // 16 voices, room for 64 plays, and a mono device with one input.
     /// let (control, mut renderer) = engine::create(64, 16, 1, 1);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     ///

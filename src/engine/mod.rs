@@ -26,11 +26,11 @@ const RECORDERS: usize = 1;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
-/// `voice_queue` is how many plays and stops can be on their way beyond
-/// them: the room a new play has to take the oldest voice's place. Zero
-/// refuses a play while every voice is held. `capture_channels` is the
-/// width of the capture `render` is handed each period, zero without an
-/// input device; `inputs` is how many can be open at once.
+/// `voice_queue` is how many plays can be on their way beyond them: the
+/// room a new play has to take the oldest voice's place. Zero refuses a
+/// play while every voice is held. `capture_channels` is the width of the
+/// capture `render` is handed each period, zero without an input device;
+/// `inputs` is how many can be open at once.
 ///
 /// # Panics
 /// If `voices` is zero.

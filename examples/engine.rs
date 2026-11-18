@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut project = Project::open(Path::new("project"))?;
     let audio = project.load(SampleId(0), &memory)?;
 
-    // 16 voices at once, and room for 64 plays and stops on their way.
+    // 16 voices at once, and room for 64 plays on their way.
     let (control, renderer) = engine::create(64, 16, 0, 0);
 
     // Clones are the same engine.
