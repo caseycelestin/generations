@@ -8,6 +8,7 @@ use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::audio::Audio;
 use crate::engine::protocol::voice::{VoiceRequest, VoiceState, VoiceStatus};
 use crate::request::{self, ControlEnd, RequestHandle, ReserveError};
+use crate::transfer::Transfer;
 
 /// Nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -32,7 +33,7 @@ impl From<ReserveError> for PlayError {
 /// one kept after its voice ends must be waited on to give the slot back.
 #[derive(Debug)]
 pub struct Voice {
-    handle: RequestHandle<VoiceRequest>,
+    handle: Transfer<VoiceRequest>,
 }
 
 impl Voice {
