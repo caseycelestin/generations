@@ -28,8 +28,8 @@ impl From<transfer::StartError<VoiceData>> for VoiceError {
     }
 }
 
-/// Its voice holds a slot until it ends, whether the handle is kept, waited
-/// on or dropped.
+/// Its voice holds a slot until it ends, whether the handle is kept or
+/// dropped.
 #[derive(Debug)]
 pub struct Voice {
     state: Arc<VoiceState>,
