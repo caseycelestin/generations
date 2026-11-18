@@ -185,7 +185,7 @@ impl Renderer {
 
     fn clean_up(&mut self) {
         for voice in self.voices.extract_if(|voice| voice.finished()) {
-            voice.end(&mut self.requests.voices);
+            voice.end(&mut self.transfers.voices);
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
