@@ -29,6 +29,11 @@ pub(crate) struct Requests {
     pub(crate) inputs: request::RealtimeEnd<InputRequest>,
 }
 
+/// Dropping it ends the engine: [`Control`](crate::engine::Control) and
+/// every handle from the same [`create`](crate::engine::create) report the
+/// renderer gone, though a recording still ends with its audio. A stream
+/// drops the callback that owns it, so to survive a stream restart the
+/// callback must hand it back when dropped.
 #[derive(Debug)]
 pub struct Renderer {
     requests: Requests,
@@ -202,6 +207,17 @@ impl Renderer {
         }
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
+        }
+    }
+}
+
+/// Nothing else holds a recording's audio, so a take, or the room for one
+/// still on its way, would be freed with the renderer.
+impl Drop for Renderer {
+    fn drop(&mut self) {
+        self.apply_recording_requests();
+        if let Some(recording) = self.recording.take() {
+            recording.end(RecordingEnd::RendererGone, &mut self.requests.recording);
         }
     }
 }
