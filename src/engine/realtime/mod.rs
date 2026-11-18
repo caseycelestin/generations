@@ -224,6 +224,7 @@ fn blocks<'a>(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
@@ -231,16 +232,17 @@ mod tests {
     use crate::layout::ChannelLayout;
     use crate::request::{ControlEnd, RequestHandle, TryWaitError};
     use crate::testing::buffer;
+    use crate::transfer::Transfer;
 
     /// The control ends of the renderer's channels.
     struct Ends {
-        voices: ControlEnd<VoiceData>,
+        voices: transfer::ControlEnd<VoiceData>,
         recording: ControlEnd<RecordingRequest>,
     }
 
     /// A renderer with `voices` places, and the control ends of its channels.
     fn renderer(voices: usize) -> (Ends, Renderer) {
-        let (voices_control, voices_realtime) = request::channel(voices + 16);
+        let (voices_control, voices_realtime) = transfer::channel(voices + 16);
         let (recording_control, recording_realtime) = request::channel(1);
         let (_, inputs_realtime) = request::channel(0);
         let ends = Ends {
@@ -248,27 +250,30 @@ mod tests {
             recording: recording_control,
         };
         let requests = Requests {
-            voices: voices_realtime,
             recording: recording_realtime,
             inputs: inputs_realtime,
         };
+        let transfers = Transfers {
+            voices: voices_realtime,
+        };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, voices, 0, 0))
+        (ends, Renderer::new(requests, transfers, voices, 0, 0))
     }
 
-    /// Opens a mono voice of `samples`, as `Control::play` does.
-    fn play(ends: &Ends, samples: &[Pcm]) -> RequestHandle<VoiceData> {
-        play_audio(ends, Arc::new(buffer(ChannelLayout::Mono, samples)))
-    }
-
-    /// Opens a voice of `audio`, for voices that share it.
-    fn play_audio(ends: &Ends, audio: Arc<AudioBuffer>) -> RequestHandle<VoiceData> {
+    /// Starts a mono voice of `samples`, as `Control::play` does, keeping
+    /// the state its handle stops it through.
+    fn play(ends: &mut Ends, samples: &[Pcm]) -> (Transfer<VoiceData>, Arc<VoiceState>) {
+        let audio = Arc::new(buffer(ChannelLayout::Mono, samples));
         let state = Arc::new(VoiceState::default());
-        let data = VoiceData { audio, state };
-        ends.voices.try_reserve().unwrap().open(data)
+        let data = VoiceData {
+            audio,
+            state: Arc::clone(&state),
+        };
+        let voice = ends.voices.try_start(data).unwrap();
+        (voice, state)
     }
 
-    fn ended(voice: &mut RequestHandle<VoiceData>) -> bool {
+    fn ended(voice: &mut Transfer<VoiceData>) -> bool {
         voice.try_wait().is_ok()
     }
 
@@ -290,9 +295,9 @@ mod tests {
 
     #[test]
     fn voices_are_summed() {
-        let (ends, mut renderer) = renderer(2);
-        let _quiet = play(&ends, &[0.25; 8]);
-        let _loud = play(&ends, &[0.5; 8]);
+        let (mut ends, mut renderer) = renderer(2);
+        let _quiet = play(&mut ends, &[0.25; 8]);
+        let _loud = play(&mut ends, &[0.5; 8]);
         let mut out = vec![0.0; 8 * 2];
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.75; 8 * 2]);
@@ -300,9 +305,9 @@ mod tests {
 
     #[test]
     fn the_sum_is_clipped() {
-        let (ends, mut renderer) = renderer(2);
-        let _first = play(&ends, &[0.75; 4]);
-        let _second = play(&ends, &[0.75; 4]);
+        let (mut ends, mut renderer) = renderer(2);
+        let _first = play(&mut ends, &[0.75; 4]);
+        let _second = play(&mut ends, &[0.75; 4]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![1.0; 4 * 2]);
@@ -312,8 +317,8 @@ mod tests {
     fn a_period_longer_than_a_block_plays_on_without_a_gap() {
         let frames = Renderer::BLOCK_FRAMES * 2 + 10;
         let ramp: Vec<Pcm> = (0..frames).map(|i| i as Pcm / 1000.0).collect();
-        let (ends, mut renderer) = renderer(1);
-        let _voice = play(&ends, &ramp);
+        let (mut ends, mut renderer) = renderer(1);
+        let _voice = play(&mut ends, &ramp);
         let mut out = vec![0.0; frames * 2];
         renderer.render(&[], &mut out);
         let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
@@ -322,8 +327,8 @@ mod tests {
 
     #[test]
     fn periods_shorter_than_a_block_play_on_without_a_gap() {
-        let (ends, mut renderer) = renderer(1);
-        let _voice = play(&ends, &[0.1, 0.2, 0.3, 0.4]);
+        let (mut ends, mut renderer) = renderer(1);
+        let _voice = play(&mut ends, &[0.1, 0.2, 0.3, 0.4]);
         let mut out = vec![0.0; 2 * 2];
         renderer.render(&[], &mut out);
         renderer.render(&[], &mut out);
@@ -332,19 +337,19 @@ mod tests {
 
     #[test]
     fn a_voice_that_plays_out_ends() {
-        let (ends, mut renderer) = renderer(1);
-        let mut voice = play(&ends, &[0.5; 4]);
+        let (mut ends, mut renderer) = renderer(1);
+        let (mut voice, _) = play(&mut ends, &[0.5; 4]);
         renderer.render(&[], &mut [0.0; 8 * 2]);
         assert!(ended(&mut voice));
     }
 
     #[test]
-    fn a_cancelled_voice_ends_and_falls_silent() {
-        let (ends, mut renderer) = renderer(1);
-        let mut voice = play(&ends, &[0.5; 64]);
+    fn a_stopped_voice_ends_and_falls_silent() {
+        let (mut ends, mut renderer) = renderer(1);
+        let (mut voice, state) = play(&mut ends, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&[], &mut out);
-        voice.cancel();
+        state.stop.store(true, Ordering::Relaxed);
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert!(ended(&mut voice));
@@ -352,9 +357,9 @@ mod tests {
 
     #[test]
     fn a_new_voice_in_a_full_pool_cuts_the_oldest() {
-        let (ends, mut renderer) = renderer(1);
-        let mut oldest = play(&ends, &[0.5; 64]);
-        let mut newest = play(&ends, &[0.5; 64]);
+        let (mut ends, mut renderer) = renderer(1);
+        let (mut oldest, _) = play(&mut ends, &[0.5; 64]);
+        let (mut newest, _) = play(&mut ends, &[0.5; 64]);
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert!(ended(&mut oldest));
         assert!(!ended(&mut newest));
@@ -362,8 +367,8 @@ mod tests {
 
     #[test]
     fn a_recording_writes_what_is_heard_until_stopped() {
-        let (ends, mut renderer) = renderer(1);
-        let _voice = play(&ends, &[0.25; 64]);
+        let (mut ends, mut renderer) = renderer(1);
+        let _voice = play(&mut ends, &[0.25; 64]);
         let mut recording = start(&ends, 64);
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(recording.try_wait().err(), Some(TryWaitError::Empty));
