@@ -5,6 +5,7 @@
 //! replied, so it is freed on the control side. Knows nothing of audio.
 
 use rtrb::{Consumer, Producer, RingBuffer};
+use thiserror::Error;
 
 /// Pairs a request type with its reply.
 pub trait Request {
@@ -22,13 +23,37 @@ pub struct ReplySender<R> {
 /// safe: the real-time side's end comes back, and the ring is freed here.
 pub struct ReplyReceiver<R> {
     reply: Consumer<R>,
+    /// Its one reply was taken, so an empty ring no longer means not yet.
+    taken: bool,
+}
+
+impl<R> ReplyReceiver<R> {
+    /// `None` until the reply arrives, and again once it is taken.
+    pub fn try_wait(&mut self) -> Option<R> {
+        self.reply.pop().ok()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum TryWaitError {
+    #[error("no reply yet")]
+    Empty,
+    #[error("the reply was already taken")]
+    Taken,
+    /// Its sender was dropped without replying, as when the real-time side
+    /// is gone.
+    #[error("no reply will come")]
+    Disconnected,
 }
 
 /// One request's reply ring, one deep: a request has one reply.
 fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
     let (producer, consumer) = RingBuffer::new(1);
     let sender = ReplySender { reply: producer };
-    let receiver = ReplyReceiver { reply: consumer };
+    let receiver = ReplyReceiver {
+        reply: consumer,
+        taken: false,
+    };
     (sender, receiver)
 }
 
