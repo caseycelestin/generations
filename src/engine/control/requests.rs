@@ -83,9 +83,6 @@ pub enum ControlError {
     Full,
     #[error("the renderer is gone")]
     RendererGone,
-    /// Past the capture device's channels.
-    #[error("no such channel")]
-    NoSuchChannel,
 }
 
 impl From<request::ReserveError> for ControlError {

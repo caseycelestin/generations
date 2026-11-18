@@ -6,7 +6,7 @@ mod requests;
 mod transfers;
 mod voice;
 
-pub use input::{Input, PendingInputStatus};
+pub use input::{Input, InputError};
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
 pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
@@ -65,16 +65,8 @@ impl Control {
     /// println!("ended: {:?}", input.try_wait()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn open_input(&self, channels: InputChannels) -> Result<Input, ControlError> {
-        let highest = match channels {
-            InputChannels::Mono(channel) => channel,
-            InputChannels::Stereo(left, right) => left.max(right),
-        };
-        if highest >= self.capture_channels {
-            return Err(ControlError::NoSuchChannel);
-        }
-        let permit = self.requests.inputs.try_reserve()?;
-        Ok(Input::open(permit, channels))
+    pub fn open_input(&mut self, channels: InputChannels) -> Result<Input, InputError> {
+        Input::open(&mut self.transfers.inputs, channels, self.capture_channels)
     }
 
     /// Frees the audio of voices and recordings whose handles are gone,

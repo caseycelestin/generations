@@ -6,7 +6,7 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, RecordError,
+    Control, ControlError, Input, InputError, PendingInputStatus, PendingRecordingStatus, RecordError,
     Recording, StatusError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
