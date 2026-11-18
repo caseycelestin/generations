@@ -14,6 +14,7 @@ use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::VoiceData;
 use crate::request::{self, Received};
+use crate::transfer;
 use input::Input;
 use math::{add, hard_clip};
 use recording::Recording;
@@ -24,9 +25,15 @@ type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 /// One request channel per actor, at its real-time end.
 #[derive(Debug)]
 pub(crate) struct Requests {
-    pub(crate) voices: request::RealtimeEnd<VoiceData>,
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
     pub(crate) inputs: request::RealtimeEnd<InputRequest>,
+}
+
+/// One transfer channel per actor, at its real-time end, as each moves off
+/// its request channel.
+#[derive(Debug)]
+pub(crate) struct Transfers {
+    pub(crate) voices: transfer::RealtimeEnd<VoiceData>,
 }
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
@@ -37,6 +44,7 @@ pub(crate) struct Requests {
 #[derive(Debug)]
 pub struct Renderer {
     requests: Requests,
+    transfers: Transfers,
     voices: Voices,
     recording: Option<Recording>,
     /// Per frame of `render`'s capture; zero without an input device.
@@ -59,12 +67,14 @@ impl Renderer {
     /// control side.
     pub(crate) fn new(
         requests: Requests,
+        transfers: Transfers,
         voices: NonZeroUsize,
         capture_channels: usize,
         inputs: usize,
     ) -> Self {
         Self {
             requests,
+            transfers,
             voices: Voices::new(voices),
             recording: None,
             capture_channels,
