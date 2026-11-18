@@ -17,7 +17,7 @@ pub(crate) struct Voice {
 }
 
 impl Voice {
-    pub(crate) fn new(data: Completion<VoiceData>) -> Self {
+    fn new(data: Completion<VoiceData>) -> Self {
         Self { data, position: 0 }
     }
 
@@ -44,18 +44,18 @@ impl Voice {
     }
 
     /// Its handle asked it to stop.
-    pub(crate) fn stopped(&self) -> bool {
+    fn stopped(&self) -> bool {
         self.data.state.stop.load(Ordering::Relaxed)
     }
 
     /// Its last frame has been rendered.
-    pub(crate) fn finished(&self) -> bool {
+    fn finished(&self) -> bool {
         self.position == self.data.audio.frames()
     }
 
     /// The one way a voice leaves: its data goes back whole, to be freed
     /// on the control side.
-    pub(crate) fn end(self, transfers: &mut RealtimeEnd<VoiceData>) {
+    fn end(self, transfers: &mut RealtimeEnd<VoiceData>) {
         transfers.complete(self.data);
     }
 }
