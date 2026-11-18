@@ -1,29 +1,25 @@
 //! An input on the render side, while it is open: which capture channels
 //! make its stereo frames. It holds no audio.
 
+use std::sync::atomic::Ordering;
+
 use super::{Frame, Renderer};
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputChannels, InputData, InputEnd};
-use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
-use crate::transfer;
+use crate::engine::protocol::inputs::{InputChannels, InputData};
+use crate::request::ReplyPermit;
+use crate::transfer::{self, Completion};
 
 #[derive(Debug)]
 pub(crate) struct Input {
-    permit: ReplyPermit,
-    channels: InputChannels,
+    data: Completion<InputData>,
     /// Samples per capture frame.
     capture_channels: usize,
 }
 
 impl Input {
-    pub(crate) fn open(
-        permit: ReplyPermit,
-        channels: InputChannels,
-        capture_channels: usize,
-    ) -> Self {
+    fn open(data: Completion<InputData>, capture_channels: usize) -> Self {
         Self {
-            permit,
-            channels,
+            data,
             capture_channels,
         }
     }
@@ -33,20 +29,21 @@ impl Input {
         // Never zero: no input opens on a device without channels.
         let frames = input.chunks_exact(self.capture_channels);
         for (into, frame) in scratch.iter_mut().zip(frames) {
-            *into = match self.channels {
+            *into = match self.data.channels {
                 InputChannels::Mono(channel) => [frame[channel]; Renderer::OUTPUT_CHANNELS],
                 InputChannels::Stereo(left, right) => [frame[left], frame[right]],
             };
         }
     }
 
-    pub(crate) fn is(&self, id: RequestId) -> bool {
-        self.permit.id() == id
+    /// Its handle asked it to stop.
+    fn stopped(&self) -> bool {
+        self.data.state.stop.load(Ordering::Relaxed)
     }
 
     /// The one way an input leaves.
-    pub(crate) fn end(self, why: InputEnd, requests: &mut RealtimeEnd<InputData>) {
-        requests.close(self.permit, why);
+    fn end(self, transfers: &mut transfer::RealtimeEnd<InputData>) {
+        transfers.complete(self.data);
     }
 }
 
