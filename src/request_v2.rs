@@ -18,6 +18,12 @@ pub struct ReplySender<R> {
     reply: Producer<R>,
 }
 
+/// The caller's end of one request's reply ring. Dropping it early is
+/// safe: the real-time side's end comes back, and the ring is freed here.
+pub struct ReplyReceiver<R> {
+    reply: Consumer<R>,
+}
+
 pub struct ControlEnd<Q: Request> {
     /// Each request with the end its reply goes into.
     requests: Producer<(Q, ReplySender<Q::Reply>)>,
