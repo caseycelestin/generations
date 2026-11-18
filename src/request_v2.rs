@@ -24,12 +24,16 @@ pub struct ControlEnd<Q: Request> {
     /// Slots not open, each with its reply ring. Shared so a handle can give
     /// its slot back from anywhere; holds every slot, so it never fills.
     available: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
+    /// Slots whose handle was dropped before its reply came. Each goes back
+    /// to `available` once its reply is here, to be dropped on this side.
+    draining: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
 }
 
 impl<Q: Request> ControlEnd<Q> {
     /// `replies` are by slot.
     fn new(to_realtime: Producer<(Slot, Q)>, replies: Vec<Consumer<Q::Reply>>) -> Self {
         let available = ArrayQueue::new(replies.len());
+        let draining = ArrayQueue::new(replies.len());
         for (index, reply) in replies.into_iter().enumerate() {
             let pushed = available.push((Slot(index), reply));
             assert!(pushed.is_ok(), "the queue holds every slot");
@@ -37,6 +41,7 @@ impl<Q: Request> ControlEnd<Q> {
         Self {
             to_realtime,
             available: Arc::new(available),
+            draining: Arc::new(draining),
         }
     }
 
@@ -48,10 +53,12 @@ impl<Q: Request> ControlEnd<Q> {
         let pushed = self.to_realtime.push((slot, request));
         assert!(pushed.is_ok(), "the ring holds a request per slot");
         let available = Arc::clone(&self.available);
+        let draining = Arc::clone(&self.draining);
         Ok(RequestHandle {
             slot,
             reply,
             available,
+            draining,
         })
     }
 }
@@ -60,8 +67,10 @@ impl<Q: Request> ControlEnd<Q> {
 pub struct RequestHandle<Q: Request> {
     slot: Slot,
     reply: Consumer<Q::Reply>,
-    /// Where its slot goes back.
+    /// Where its slot goes back once its reply is done with.
     available: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
+    /// Where its slot goes back while its request still runs.
+    draining: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
 }
 
 impl<Q: Request> RequestHandle<Q> {
