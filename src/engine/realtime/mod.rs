@@ -95,6 +95,7 @@ impl Renderer {
             (out.len() / Self::OUTPUT_CHANNELS) * self.capture_channels,
             "capture and output are not the same frames"
         );
+        self.voices.receive();
         self.apply_requests();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; Self::OUTPUT_CHANNELS]);
@@ -112,11 +113,11 @@ impl Renderer {
                 recording.write(out_block);
             }
         }
+        self.voices.end_finished();
         self.clean_up();
     }
 
     fn apply_requests(&mut self) {
-        self.voices.receive();
         self.apply_recording_requests();
         self.apply_input_requests();
     }
@@ -174,7 +175,6 @@ impl Renderer {
     }
 
     fn clean_up(&mut self) {
-        self.voices.end_finished();
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
         }
