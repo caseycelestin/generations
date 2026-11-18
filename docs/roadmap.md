@@ -87,8 +87,12 @@ or rejected instead. The history of how a shape was reached is in git.
 
 ### Audio
 
-- **Target:** Raspberry Pi Compute Module 4; reference device Roland
-  SP-404 MK2.
+- **Target: desktop first, then perhaps a tablet, then perhaps
+  hardware** on a Raspberry Pi Compute Module 4; reference device Roland
+  SP-404 MK2. The concept is proven and tuned where iterating is cheap,
+  rather than on the hardware first. Desktop devices change under a
+  running app, run at other rates and clock input and output apart, so
+  the engine treats those as normal, not as edge cases.
 - **One fixed format: 48 kHz, `f32`, on disk, in RAM and on the render
   path.** Channel count (1 or 2) is per buffer. Not `i16` storage with
   `f32` processing: the CM4 has hardware float, `i16` throws away 24-bit
@@ -316,10 +320,9 @@ Inputs are built; monitoring is not.
 
 - **The renderer is duplex.** `render(capture, out)` takes the input
   device's frames for the same period it fills, interleaved,
-  `capture_channels` wide. One callback is one clock, as the target is one
-  interface on ALSA, and it is how JUCE, PortAudio and JACK hand audio
-  over; a caller with two clocks bridges them before `render`, since only
-  it knows its devices. A capture ring per device, filled by a `Feeder` on
+  `capture_channels` wide. One callback is one clock, and it is how JUCE,
+  PortAudio and JACK hand audio over; a caller with two clocks, common on
+  desktop, bridges them before `render`, since only it knows its devices. A capture ring per device, filled by a `Feeder` on
   the capture thread, was built first and removed: it put a cushion, clock
   drift and a feeder that could go away inside the engine.
 - **An input names capture channels; it owns none.** `open_input` takes
