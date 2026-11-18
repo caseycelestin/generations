@@ -29,6 +29,8 @@ pub struct ControlEnd<Q: Request> {
     requests: Producer<(Q, ReplySender<Q::Reply>)>,
     /// Reply ends the real-time side is done with, to drop here.
     returned: Consumer<ReplySender<Q::Reply>>,
+    /// Opened and not yet back on `returned`; `open` refuses at capacity.
+    in_flight: usize,
 }
 
 pub struct RealtimeEnd<Q: Request> {
@@ -45,6 +47,7 @@ pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     let control = ControlEnd {
         requests: requests_producer,
         returned: returned_consumer,
+        in_flight: 0,
     };
     let realtime = RealtimeEnd {
         requests: requests_consumer,
