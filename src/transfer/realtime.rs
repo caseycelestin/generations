@@ -6,6 +6,7 @@ use rtrb::{Consumer, Producer};
 
 /// Never dropped on the real-time side, as it may be the last end of its
 /// ring: `complete` sends it back.
+#[derive(Debug)]
 pub struct Completion<T> {
     pub(super) ring: Producer<T>,
 }

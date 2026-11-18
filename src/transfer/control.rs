@@ -8,6 +8,7 @@ use super::Completion;
 
 /// The caller's claim on one value while it is away. Dropping it early is
 /// safe: the completion still comes back, and the value is freed here.
+#[derive(Debug)]
 pub struct Transfer<T> {
     pub(super) ring: Consumer<T>,
     /// Its value was taken back, so an empty ring no longer means not yet.
