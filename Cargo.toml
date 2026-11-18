@@ -6,7 +6,6 @@ edition = "2024"
 rust-version = "1.95"
 
 [dependencies]
-crossbeam-queue = "0.3.14"
 hound = "3.5.1"
 rtrb = "0.4.1"
 serde = { version = "1.0.229", features = ["derive"] }
