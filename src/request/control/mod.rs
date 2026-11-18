@@ -17,9 +17,6 @@ pub struct ControlEnd<Q: Request> {
     shared: Arc<Mutex<Shared<Q>>>,
     /// In requests; the rings are sized from it.
     capacity: usize,
-    /// The last slots of `capacity`, kept for
-    /// `try_reserve_including_headroom`.
-    headroom: usize,
 }
 
 /// Written out, as a derive would demand `Q`'s reply and status be `Debug`.
@@ -36,7 +33,6 @@ impl<Q: Request> Clone for ControlEnd<Q> {
         Self {
             shared: Arc::clone(&self.shared),
             capacity: self.capacity,
-            headroom: self.headroom,
         }
     }
 }
@@ -46,46 +42,34 @@ impl<Q: Request> ControlEnd<Q> {
         to_realtime: Producer<ToRealtime<Q>>,
         from_realtime: Consumer<FromRealtime<Q>>,
         capacity: usize,
-        headroom: usize,
     ) -> Self {
         let shared = Shared::new(to_realtime, from_realtime, capacity);
         Self {
             shared: Arc::new(Mutex::new(shared)),
             capacity,
-            headroom,
         }
     }
 
     /// Reserves slots for a request, its cancel, one status question and the
     /// answers to both, so neither `open` nor `cancel` can fail. `Full` once
-    /// only the headroom is free.
+    /// every slot is held.
     pub fn try_reserve(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
-        self.reserve(self.capacity.saturating_sub(self.headroom))
-    }
-
-    /// As `try_reserve`, but may use the headroom too.
-    pub fn try_reserve_including_headroom(&self) -> Result<RequestPermit<'_, Q>, ReserveError> {
-        self.reserve(self.capacity)
+        let mut shared = lock(&self.shared);
+        shared.take_in();
+        if shared.to_realtime.is_abandoned() {
+            return Err(ReserveError::Disconnected);
+        }
+        if shared.held() >= self.capacity {
+            return Err(ReserveError::Full);
+        }
+        shared.reserved += 1;
+        Ok(RequestPermit { end: self })
     }
 
     /// Takes in the replies that have arrived, dropping those whose handle
     /// is gone, so what they hold is freed here. Reserving does this first.
     pub fn take_in(&self) {
         lock(&self.shared).take_in();
-    }
-
-    /// `Full` once `limit` slots are held.
-    fn reserve(&self, limit: usize) -> Result<RequestPermit<'_, Q>, ReserveError> {
-        let mut shared = lock(&self.shared);
-        shared.take_in();
-        if shared.to_realtime.is_abandoned() {
-            return Err(ReserveError::Disconnected);
-        }
-        if shared.held() >= limit {
-            return Err(ReserveError::Full);
-        }
-        shared.reserved += 1;
-        Ok(RequestPermit { end: self })
     }
 }
 

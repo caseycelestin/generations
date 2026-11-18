@@ -7,8 +7,7 @@ mod realtime;
 
 pub use control::{
     Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, PendingVoiceStatus,
-    PlayError, RecordError, Recording, StatusError, StopError, TryRecvStatusError, TryWaitError,
-    Voice,
+    PlayError, RecordError, Recording, StatusError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
@@ -25,17 +24,13 @@ use protocol::voice::VoiceRequest;
 /// channel needs: each holds one until its reply is taken.
 const RECORDERS: usize = 1;
 
-/// Headroom on the voice channel for `stop` and `stop_all`, so a burst of
-/// plays cannot leave them no room.
-const VOICE_STOP_HEADROOM: usize = 2;
-
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
-/// `voice_queue` is how many plays and stops can be on their way beyond
-/// them: the room a new play has to take the oldest voice's place. Zero
-/// refuses a play while every voice is held. `capture_channels` is the
-/// width of the capture `render` is handed each period, zero without an
-/// input device; `inputs` is how many can be open at once.
+/// `voice_queue` is how many plays can be on their way beyond them: the
+/// room a new play has to take the oldest voice's place. Zero refuses a
+/// play while every voice is held. `capture_channels` is the width of the
+/// capture `render` is handed each period, zero without an input device;
+/// `inputs` is how many can be open at once.
 ///
 /// # Panics
 /// If `voices` is zero.
@@ -46,10 +41,8 @@ pub fn create(
     inputs: usize,
 ) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    let (voices_control, voices_realtime) = crate::request::channel_with_headroom::<VoiceRequest>(
-        voice_capacity(voice_queue, voices),
-        VOICE_STOP_HEADROOM,
-    );
+    let (voices_control, voices_realtime) =
+        crate::request::channel::<VoiceRequest>(voice_capacity(voice_queue, voices));
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
     let (inputs_control, inputs_realtime) = crate::request::channel::<InputRequest>(inputs);
@@ -75,10 +68,10 @@ pub fn create(
     )
 }
 
-/// Every voice playing, plus the queue, plus the stops' headroom; each
-/// holds one until its reply is taken.
+/// Every voice playing, plus the queue; each holds one until its reply is
+/// taken.
 fn voice_capacity(voice_queue: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + voice_queue + VOICE_STOP_HEADROOM
+    voices.get() + voice_queue
 }
 
 #[cfg(test)]
@@ -136,42 +129,6 @@ mod tests {
     }
 
     #[test]
-    fn stop_ends_only_the_voices_playing_the_audio() {
-        let (control, mut renderer) = create(4, 3, 0, 0);
-        let stopped = audio(&[0.5; 64]);
-        let other = audio(&[0.5; 64]);
-        let mut first = control.play(&stopped).unwrap();
-        let mut second = control.play(&stopped).unwrap();
-        let mut kept = control.play(&other).unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-
-        control.stop(&stopped).unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-        control.collect();
-
-        assert_eq!(first.try_wait(), Ok(()));
-        assert_eq!(second.try_wait(), Ok(()));
-        assert_eq!(kept.try_wait(), Err(TryWaitError::NotEnded));
-        assert_eq!(Arc::strong_count(stopped.shared()), 1);
-    }
-
-    #[test]
-    fn stop_all_ends_every_voice() {
-        let (control, mut renderer) = create(4, 2, 0, 0);
-        let audio = audio(&[0.5; 64]);
-        let mut first = control.play(&audio).unwrap();
-        let mut second = control.play(&audio).unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-
-        control.stop_all().unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-
-        assert_eq!(first.try_wait(), Ok(()));
-        assert_eq!(second.try_wait(), Ok(()));
-        assert_eq!(Arc::strong_count(audio.shared()), 1);
-    }
-
-    #[test]
     fn collect_frees_the_audio_of_a_dropped_voice() {
         let (control, mut renderer) = create(4, 2, 0, 0);
         let audio = audio(&[0.5; 2]);
@@ -195,15 +152,6 @@ mod tests {
         let audio = audio(&[0.5; 2]);
         let _voice = control.play(&audio).unwrap();
         assert!(matches!(control.play(&audio), Err(PlayError::Full)));
-    }
-
-    #[test]
-    fn stops_get_through_when_plays_fill_the_queue() {
-        let (control, _renderer) = create(0, 1, 0, 0);
-        let audio = audio(&[0.5; 2]);
-        let _voice = control.play(&audio).unwrap();
-        assert!(control.stop(&audio).is_ok());
-        assert!(control.stop_all().is_ok());
     }
 
     #[test]

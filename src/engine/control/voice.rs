@@ -42,7 +42,7 @@ impl Voice {
     ) -> Result<Self, PlayError> {
         let permit = requests.try_reserve()?;
         let audio_clone = Arc::clone(audio.shared());
-        let handle = permit.open(VoiceRequest::Play(audio_clone));
+        let handle = permit.open(VoiceRequest { audio: audio_clone });
         Ok(Self { handle })
     }
 
