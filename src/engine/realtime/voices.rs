@@ -1,7 +1,6 @@
 //! Voices on the render side: each one while it plays, and the places
 //! they live.
 
-use std::mem;
 use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 
@@ -63,23 +62,20 @@ impl Voice {
 
 #[derive(Debug)]
 pub(crate) struct Voices {
-    /// `None` is free; a taken place holds its voice's number in the order
-    /// voices were added, lower being older. Boxed so it cannot grow on the
-    /// audio thread.
-    places: Box<[Option<(u64, Voice)>]>,
-    /// How many voices have been added, so the next one's number. A `u64`
-    /// cannot run out: a million a second lasts half a million years.
-    added: u64,
+    /// Oldest first. Never past `places`, so adding never allocates.
+    playing: Vec<Voice>,
+    places: usize,
     /// The only way voices arrive or leave.
     transfers: RealtimeEnd<VoiceData>,
 }
 
 impl Voices {
-    /// At least one, so `add` always has a place or an oldest to cut.
-    pub(crate) fn new(count: NonZeroUsize, transfers: RealtimeEnd<VoiceData>) -> Self {
+    /// At least one place, so a new voice always has one or an oldest to
+    /// cut.
+    pub(crate) fn new(places: NonZeroUsize, transfers: RealtimeEnd<VoiceData>) -> Self {
         Self {
-            places: (0..count.get()).map(|_| None).collect(),
-            added: 0,
+            playing: Vec::with_capacity(places.get()),
+            places: places.get(),
             transfers,
         }
     }
@@ -88,60 +84,29 @@ impl Voices {
     /// stopped ones end.
     pub(crate) fn receive(&mut self) {
         while let Some(data) = self.transfers.try_recv() {
-            if let Some(cut) = self.add(Voice::new(data)) {
-                cut.end(&mut self.transfers);
+            if self.playing.len() == self.places {
+                let oldest = self.playing.remove(0);
+                oldest.end(&mut self.transfers);
             }
+            self.playing.push(Voice::new(data));
         }
-        for stopped in take_if(&mut self.places, |voice| voice.stopped()) {
-            stopped.end(&mut self.transfers);
-        }
+        self.end_if(Voice::stopped);
     }
 
     /// Voices whose audio has run out end.
     pub(crate) fn end_finished(&mut self) {
-        for finished in take_if(&mut self.places, |voice| voice.finished()) {
-            finished.end(&mut self.transfers);
-        }
-    }
-
-    /// Takes a free place, or the oldest voice's place, returning the
-    /// voice replaced.
-    pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
-        let numbered = (self.added, voice);
-        self.added += 1;
-        match self.places.iter_mut().find(|place| place.is_none()) {
-            Some(free) => {
-                *free = Some(numbered);
-                None
-            }
-            None => {
-                let oldest = self
-                    .places
-                    .iter_mut()
-                    .flatten()
-                    .min_by_key(|(number, _)| *number)
-                    .expect("every place is taken, and there is at least one");
-                let (_, replaced) = mem::replace(oldest, numbered);
-                Some(replaced)
-            }
-        }
+        self.end_if(Voice::finished);
     }
 
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
-        self.places.iter_mut().flatten().map(|(_, voice)| voice)
+        self.playing.iter_mut()
     }
-}
 
-/// Takes out every voice `test` picks, as `Vec::extract_if`: stopped early,
-/// the rest stay. On the places alone, so the end can be borrowed beside it.
-fn take_if(
-    places: &mut [Option<(u64, Voice)>],
-    mut test: impl FnMut(&mut Voice) -> bool,
-) -> impl Iterator<Item = Voice> {
-    places
-        .iter_mut()
-        .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
-        .map(|(_, voice)| voice)
+    fn end_if(&mut self, test: impl Fn(&Voice) -> bool) {
+        for voice in self.playing.extract_if(.., |voice| test(voice)) {
+            voice.end(&mut self.transfers);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -151,7 +116,7 @@ mod tests {
     use super::*;
     use crate::engine::protocol::voice::VoiceState;
     use crate::testing::buffer;
-    use crate::transfer;
+    use crate::transfer::{self, Transfer};
 
     /// Received as the renderer receives it. Tests tell voices apart by
     /// their length.
@@ -167,9 +132,33 @@ mod tests {
         voice.data.audio.frames()
     }
 
-    fn voices(count: usize) -> Voices {
-        let (_, realtime) = transfer::channel(0);
-        Voices::new(NonZeroUsize::new(count).unwrap(), realtime)
+    /// `places` voices, and the control end that starts theirs.
+    fn voices(places: usize) -> (transfer::ControlEnd<VoiceData>, Voices) {
+        let (control, realtime) = transfer::channel(places + 4);
+        let voices = Voices::new(NonZeroUsize::new(places).unwrap(), realtime);
+        (control, voices)
+    }
+
+    /// A mono voice of `frames` of silence, started as `Control::play` does.
+    fn start(
+        control: &mut transfer::ControlEnd<VoiceData>,
+        frames: usize,
+    ) -> (Transfer<VoiceData>, Arc<VoiceState>) {
+        let audio = Arc::new(buffer(ChannelLayout::Mono, &vec![0.0; frames]));
+        let state = Arc::new(VoiceState::default());
+        let data = VoiceData {
+            audio,
+            state: Arc::clone(&state),
+        };
+        (control.try_start(data).unwrap(), state)
+    }
+
+    fn playing(voices: &mut Voices) -> Vec<usize> {
+        voices.iter_mut().map(|voice| frames(voice)).collect()
+    }
+
+    fn ended(transfer: &mut Transfer<VoiceData>) -> bool {
+        transfer.try_wait().is_ok()
     }
 
     #[test]
@@ -216,37 +205,51 @@ mod tests {
     }
 
     #[test]
-    fn add_takes_a_free_place() {
-        let mut voices = voices(2);
-        assert!(voices.add(voice(ChannelLayout::Mono, &[0.0])).is_none());
-        assert!(voices.add(voice(ChannelLayout::Mono, &[0.0])).is_none());
-        assert_eq!(voices.iter_mut().count(), 2);
+    fn received_voices_take_free_places_oldest_first() {
+        let (mut control, mut voices) = voices(2);
+        let (mut first, _) = start(&mut control, 1);
+        let (mut second, _) = start(&mut control, 2);
+        voices.receive();
+        assert_eq!(playing(&mut voices), [1, 2]);
+        assert!(!ended(&mut first));
+        assert!(!ended(&mut second));
     }
 
     #[test]
-    fn add_when_full_replaces_the_first_added() {
-        let mut voices = voices(2);
-        voices.add(voice(ChannelLayout::Mono, &[0.0; 1]));
-        voices.add(voice(ChannelLayout::Mono, &[0.0; 2]));
-        let newest = voice(ChannelLayout::Mono, &[0.0; 3]);
-        let replaced = voices.add(newest);
-        assert!(replaced.is_some_and(|voice| frames(&voice) == 1));
-        assert_eq!(voices.iter_mut().count(), 2);
+    fn a_voice_received_when_full_cuts_the_oldest() {
+        let (mut control, mut voices) = voices(2);
+        let (mut oldest, _) = start(&mut control, 1);
+        let _middle = start(&mut control, 2);
+        let _newest = start(&mut control, 3);
+        voices.receive();
+        assert_eq!(playing(&mut voices), [2, 3]);
+        assert!(ended(&mut oldest));
     }
 
     #[test]
-    fn take_if_takes_only_the_voices_picked() {
-        let mut voices = voices(2);
-        voices.add(voice(ChannelLayout::Mono, &[0.0]));
-        voices.add(voice(ChannelLayout::Mono, &[0.0; 4]));
+    fn a_stopped_voice_ends_on_the_next_receive() {
+        let (mut control, mut voices) = voices(1);
+        let (mut voice, state) = start(&mut control, 4);
+        voices.receive();
+        state.stop.store(true, Ordering::Relaxed);
+        voices.receive();
+        assert!(playing(&mut voices).is_empty());
+        assert!(ended(&mut voice));
+    }
+
+    #[test]
+    fn end_finished_ends_only_the_voices_run_out() {
+        let (mut control, mut voices) = voices(2);
+        let (mut short, _) = start(&mut control, 1);
+        let (mut long, _) = start(&mut control, 4);
+        voices.receive();
         let mut scratch = [[0.0; 2]; 2];
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let taken: Vec<usize> = take_if(&mut voices.places, |voice| voice.finished())
-            .map(|voice| frames(&voice))
-            .collect();
-        assert_eq!(taken, [1]);
-        assert_eq!(voices.iter_mut().count(), 1);
+        voices.end_finished();
+        assert_eq!(playing(&mut voices), [4]);
+        assert!(ended(&mut short));
+        assert!(!ended(&mut long));
     }
 }
