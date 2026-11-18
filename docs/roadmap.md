@@ -123,8 +123,8 @@ or rejected instead. The history of how a shape was reached is in git.
   `Arc<AudioBuffer>` with no `Clone`. `extend` goes through
   `Arc::get_mut`: refused while the engine holds the audio, which is what
   `Audio` protects; a read by the project is protected by an ordinary
-  borrow. A voice that has ended still holds it until its reply is taken
-  or its handle dropped. Recording cannot share it this way, so `record` takes the
+  borrow. A voice holds it until it ends and `collect` takes its data in,
+  whether or not its handle is kept. Recording cannot share it this way, so `record` takes the
   audio by value (see Recording).
 
 ### Memory
@@ -170,9 +170,9 @@ or rejected instead. The history of how a shape was reached is in git.
   carries `Audio` between them. An `Engine` type over both was dissolved,
   since no method needed both sides, and a joint constructor was rejected
   as the same thing again.
-- **A verb lives on the thing it acts on.** `voice.stop()` and
-  `voice.try_wait()` act on one playing. A handle holds its transfer or
-  request, never a `Control`, so the dependency runs one way. Audio carrying a
+- **A verb lives on the thing it acts on.** `voice.stop()` acts on one
+  playing. A handle holds its state or request, never a `Control`, so the
+  dependency runs one way. Audio carrying a
   handle and sending its removal from `Drop` was tried and rejected as
   the wrong coupling.
 - **A voice is stopped by its handle.** A caller keeps the handle of
@@ -182,22 +182,34 @@ or rejected instead. The history of how a shape was reached is in git.
   requests on the voice channel, a shared reply and headroom kept for
   them. A list of voices in `Control` was rejected: it would trail the
   renderer, which decides when a voice ends.
-- **`Control` does what can fail.** `open_input` reserves, then
-  `Input::open(permit)` cannot fail, so every refusal shows in the public
-  method. A voice is started by `Voice::play` with `try_start`, which
-  hands the value back on refusal: the only work lost is building it, so
-  a permit for transfers was weighed and not added. `record` checks its
-  audio before it reserves.
+- **`stop` takes the handle.** A stopped voice or input has nothing left
+  to do, so `stop(self)` consumes it; on an input it is dropping by name,
+  kept so a caller finds the verb. Drop-only, as `MutexGuard` has no
+  `unlock`, was the purer Rust; `&self` left a dead handle.
+- **Nothing waits on a voice or an input.** Each drops its `Transfer` at
+  start and keeps only its state: an ended voice's audio is freed at the
+  next `take_in` whether its handle is kept, and an input ends only when
+  stopped. `try_wait` on them told only "ended", a period late; a status
+  field in the state is the way once a caller needs it.
+- **A handle's constructor does its checks.** `Voice::play`,
+  `Input::open` and `Recording::record` check first, then start or
+  reserve; `Control`'s methods only pass through, so each feature's
+  refusals sit beside the data it builds. `try_start` hands the value back
+  on refusal: the only work lost is building it, so a permit for transfers
+  was weighed and not added. `open_input` checking channels itself, before
+  a reserve that could not fail, came before.
 - **`Control` is the door to one renderer.** It holds one channel per
-  actor in the renderer: voices in `Transfers`, recording and inputs in
-  `Requests` until they move onto `transfer`. Named
+  actor in the renderer: voices and inputs in `Transfers`, recording in
+  `Requests` until it moves onto `transfer`. Named
   for what it is to the caller; `RendererHandle`, `Link` and `Remote` were
   rejected.
-- **A handle's errors are in the engine's terms.** `ControlError`,
-  `RecordError` and `TryWaitError` translate the channels', so a caller
-  reads "the renderer is gone, and the audio with it", not a channel's
-  `Disconnected`. A play fails as `ControlError::Full` or `RendererGone`;
-  a `PlayError` of its own was the same enum again.
+- **Each handle has its own error, in the engine's terms.** `VoiceError`,
+  `InputError` and `RecordError` list only what can happen to theirs, flat,
+  and translate the channels', so a caller reads "the renderer is gone",
+  not a channel's `Disconnected`. A shared `ControlError` was removed:
+  `play` returned an input's `NoSuchChannel` it could never get. Nesting
+  the shared refusals in each was weighed: deeper matches, and
+  `RecordError` must carry its audio anyway.
 - **Loaded audio is plain data.** Hold `Audio` and it is in RAM; drop it
   and its voices play out, its memory repaid once the last voice's data
   comes home and is taken in. Stopping their handles cuts them first. Each load is its
@@ -221,8 +233,8 @@ or rejected instead. The history of how a shape was reached is in git.
 ### Transfers
 
 The two sides speak through `transfer`, a generic channel at the crate
-root that knows nothing of audio. Voices are on it; recording and inputs
-are still on `request`, which it replaces once they move.
+root that knows nothing of audio. Voices and inputs are on it; recording
+is still on `request`, which it replaces once it moves.
 
 - **A value goes over and comes home whole; nothing else crosses back.**
   The reply is the value itself, with whatever the renderer wrote into
@@ -236,11 +248,11 @@ are still on `request`, which it replaces once they move.
   the buffer while the hardware works and `wait` hands it back; io_uring
   runtimes call it ownership passing. `request` stopped fitting once
   nothing was asked for; "loan" was weighed and collides with Rust's
-  lending iterators. Payloads are named for what they hold: `VoiceData`,
-  as Kira plays a `StaticSoundData`.
-- **What changes while running is state beside the value.** A voice's
-  `VoiceState` (`stop`) rides in its `VoiceData` behind an `Arc` and the
-  handle keeps a clone: the handle writes, the renderer reads once a
+  lending iterators. Payloads are named for what they hold: `VoiceData`
+  and `InputData`, as Kira plays a `StaticSoundData`.
+- **What changes while running is state beside the value.** A
+  `VoiceState` or `InputState` (`stop`) rides in its data behind an `Arc`
+  and the handle keeps a clone: the handle writes, the renderer reads once a
   period. Lock-free atomics of 64 bits or less, each read alone; a
   snapshot type waits for fields that must agree. The engine defines the
   state, not `transfer`, which stays only sent and handed back. Status is
@@ -278,7 +290,8 @@ are still on `request`, which it replaces once they move.
   control end lives. It frees then, at teardown, when no deadline is
   left.
 - **`Control` is not `Clone`.** An app holds one, in its own state, and
-  shares it its own way: `play`, `record` and `collect` take `&mut self`,
+  shares it its own way: `play`, `open_input`, `record` and `collect` take
+  `&mut self`,
   as Kira's `AudioManager::play` does, so the single-producer rings stay
   owned. Handles as ids routed through the end were weighed: a drop could
   do nothing.
@@ -313,9 +326,9 @@ are still on `request`, which it replaces once they move.
   the voices' end of their channel, so every way a voice arrives or
   leaves is in `voices.rs`: received, cut, stopped at the start of a
   period, finished at its end.
-- **A voice comes home with no reason.** Nothing on the control side acts
-  on why a voice ended, so its handle learns only that it did.
-  `Finished`, `Stopped` and `Cut` were reported before.
+- **A voice or an input comes home with no reason.** Nothing on the
+  control side acts on why one ended. A voice's `Finished`, `Stopped` and
+  `Cut`, and an input's `InputEnd::Stopped`, were reported before.
 - **What crosses is a task.** A `VoiceData` is a play and a
   `RecordingRequest` a `Start`, each handed back when done; meaning
   stays plain, the handles carry the verbs. Operations on what the
@@ -344,8 +357,10 @@ Inputs are built; monitoring is not.
   the channel count. Each input keeps the capture width to cut a block
   into frames.
 - **Every open input renders each block, whether or not anything hears
-  it.** The renderer holds them in a `Vec`, and monitoring adds what one
-  renders. Until then the copy is what keeps `Input::render` in use, chosen
+  it.** `Inputs` holds them with the inputs' end of their channel, as
+  `Voices` does, and monitoring adds what one renders. Each period new
+  inputs open before stopped ones end, so one stopped before it arrived
+  still gives its place back that period. Until then the copy is what keeps `Input::render` in use, chosen
   over marking it `expect(dead_code)`.
 - **Opening an input is always on `Control`.** With zero capture channels
   every channel is past the device, so it answers `NoSuchChannel`, as
