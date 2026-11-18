@@ -1,9 +1,16 @@
 //! What crosses for voices: playings of audio.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::audio::AudioBuffer;
 use crate::request::Request;
+
+/// Shared by both sides while the voice plays.
+#[derive(Debug, Default)]
+pub(crate) struct VoiceState {
+    pub(crate) stop: AtomicBool,
+}
 
 #[derive(Debug)]
 pub(crate) struct VoiceRequest {
