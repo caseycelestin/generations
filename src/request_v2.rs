@@ -11,16 +11,23 @@ pub trait Request {
     type Reply;
 }
 
+/// Held by the real-time side while it runs one request. Goes back on
+/// `returned` once used, never dropped there: it may be the last end of its
+/// ring.
+pub struct ReplySender<R> {
+    reply: Producer<R>,
+}
+
 pub struct ControlEnd<Q: Request> {
     /// Each request with the end its reply goes into.
-    requests: Producer<(Q, Producer<Q::Reply>)>,
+    requests: Producer<(Q, ReplySender<Q::Reply>)>,
     /// Reply ends the real-time side is done with, to drop here.
-    returned: Consumer<Producer<Q::Reply>>,
+    returned: Consumer<ReplySender<Q::Reply>>,
 }
 
 pub struct RealtimeEnd<Q: Request> {
-    requests: Consumer<(Q, Producer<Q::Reply>)>,
-    returned: Producer<Producer<Q::Reply>>,
+    requests: Consumer<(Q, ReplySender<Q::Reply>)>,
+    returned: Producer<ReplySender<Q::Reply>>,
 }
 
 /// `capacity` is in requests: the most that can be in flight at once,
