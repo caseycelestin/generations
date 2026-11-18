@@ -38,3 +38,25 @@ pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     };
     (control, realtime)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request carrying a number, answered with a number.
+    #[derive(Debug)]
+    struct Ask(u32);
+
+    impl Request for Ask {
+        type Reply = u32;
+    }
+
+    #[test]
+    fn a_reply_reaches_the_receiver_of_its_request() {
+        let (mut control, mut realtime) = channel::<Ask>(1);
+        let mut receiver = control.try_send(Ask(7)).unwrap();
+        let (Ask(number), sender) = realtime.try_recv().unwrap();
+        realtime.reply(sender, number * 2);
+        assert_eq!(receiver.try_wait(), Ok(14));
+    }
+}
