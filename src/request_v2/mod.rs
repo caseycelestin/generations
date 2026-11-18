@@ -1,6 +1,6 @@
-//! Requests from control-side callers to a real-time side that only open
-//! and return: each is answered by exactly one reply, and nothing else
-//! crosses. Each request brings its own reply ring, made on the control
+//! Requests from control-side callers to a real-time side that are only
+//! sent and answered: each is answered by exactly one reply, and nothing
+//! else crosses. Each request brings its own reply ring, made on the control
 //! side; the real-time side sends that ring's end back once it has
 //! replied, so it is freed on the control side. Knows nothing of audio.
 //!
@@ -21,8 +21,9 @@ pub trait Request {
 }
 
 /// `capacity` is in requests: the most that can be in flight at once,
-/// from open until their reply end is back. Both rings hold that, as each
-/// request sends one open and returns one end, so neither ever fills.
+/// from sent until their `ReplySender` is back. Both rings hold that, as
+/// each request goes out once and its sender comes back once, so neither
+/// ever fills.
 pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     let (requests_producer, requests_consumer) = RingBuffer::new(capacity);
     let (returned_producer, returned_consumer) = RingBuffer::new(capacity);
