@@ -7,7 +7,7 @@ mod transfers;
 mod voice;
 
 pub use input::{Input, InputError};
-pub use recording::{PendingRecordingStatus, RecordError, Recording};
+pub use recording::{RecordError, Recording, TryTakeError};
 pub(crate) use requests::Requests;
 pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
 pub(crate) use transfers::Transfers;
@@ -58,7 +58,7 @@ impl Control {
     /// recording runs, or while a voice holds `audio`.
     pub fn record(&mut self, audio: Audio) -> Result<Recording, RecordError> {
         self.collect();
-        Recording::record(&self.requests.recording, audio)
+        Recording::record(&mut self.transfers.recordings, audio)
     }
 
     /// Inputs may read the same channels; each gets its own copy.

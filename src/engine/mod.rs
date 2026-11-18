@@ -6,17 +6,16 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, Input, InputError, PendingRecordingStatus, RecordError, Recording, StatusError,
-    TryRecvStatusError, TryWaitError, Voice, VoiceError,
+    Control, Input, InputError, RecordError, Recording, StatusError, TryRecvStatusError,
+    TryTakeError, TryWaitError, Voice, VoiceError,
 };
 pub use protocol::inputs::InputChannels;
-pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use realtime::Renderer;
 
 use std::num::NonZeroUsize;
 
 use protocol::inputs::InputData;
-use protocol::recording::RecordingRequest;
+use protocol::recording::RecordingData;
 use protocol::voice::VoiceData;
 
 /// Recordings the renderer holds at once, so the requests its recording
