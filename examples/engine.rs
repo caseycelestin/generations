@@ -1,8 +1,7 @@
 //! The engine as a user sees it: load a sample from a project,
 //! make an engine, keep the control, play its audio as voices, and give the
 //! renderer to the audio thread to render periods. One voice plays out, one
-//! is stopped, and each reports once it has ended. The main out is recorded
-//! while they play. Nothing is heard: the periods go to a buffer, not a
+//! is stopped. The main out is recorded while they play. Nothing is heard: the periods go to a buffer, not a
 //! device.
 //!
 //! A demonstration of the shape, not a program to run: it expects a
@@ -26,8 +25,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // 16 voices at once, and room for 64 plays on their way.
     let (mut control, renderer) = engine::create(64, 16, 0, 0);
 
-    let mut played = control.play(&audio)?;
-    let mut stopped = control.play(&audio)?;
+    control.play(&audio)?;
+    let stopped = control.play(&audio)?;
     stopped.stop();
 
     // Room for a second of the main out, paid for now.
@@ -56,14 +55,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             project.add_sample(&recorded)?;
         }
         Err(error) => println!("no result: {error}"),
-    }
-
-    // Whether each voice has ended; its slot was freed when it did.
-    for voice in [&mut played, &mut stopped] {
-        match voice.try_wait() {
-            Ok(()) => println!("ended"),
-            Err(error) => println!("not ended: {error}"),
-        }
     }
 
     // Sends collect on their own; call it when the app goes quiet.

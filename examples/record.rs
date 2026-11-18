@@ -58,9 +58,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("recording ended: {why:?}");
 
     println!("playing back {} frames", recorded.frames());
-    let mut playback = control.play(&recorded)?;
+    control.play(&recorded)?;
     sleep(Duration::from_millis(2200));
-    println!("playback ended: {}", playback.try_wait().is_ok());
 
     // The audio thread queues its complaints; this is where they are read.
     while let Some(e) = stream.error() {
