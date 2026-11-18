@@ -24,6 +24,14 @@ pub struct ReplyReceiver<R> {
     reply: Consumer<R>,
 }
 
+/// One request's reply ring, one deep: a request has one reply.
+fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
+    let (producer, consumer) = RingBuffer::new(1);
+    let sender = ReplySender { reply: producer };
+    let receiver = ReplyReceiver { reply: consumer };
+    (sender, receiver)
+}
+
 pub struct ControlEnd<Q: Request> {
     /// Each request with the end its reply goes into.
     requests: Producer<(Q, ReplySender<Q::Reply>)>,
@@ -31,6 +39,20 @@ pub struct ControlEnd<Q: Request> {
     returned: Consumer<ReplySender<Q::Reply>>,
     /// Opened and not yet back on `returned`; `open` refuses at capacity.
     in_flight: usize,
+}
+
+impl<Q: Request> ControlEnd<Q> {
+    /// Hands the request back when `capacity` requests are in flight.
+    pub fn try_send(&mut self, request: Q) -> Result<ReplyReceiver<Q::Reply>, Q> {
+        if self.in_flight == self.requests.buffer().capacity() {
+            return Err(request);
+        }
+        let (sender, receiver) = reply_ring();
+        let pushed = self.requests.push((request, sender));
+        assert!(pushed.is_ok(), "the ring holds every request in flight");
+        self.in_flight += 1;
+        Ok(receiver)
+    }
 }
 
 pub struct RealtimeEnd<Q: Request> {
