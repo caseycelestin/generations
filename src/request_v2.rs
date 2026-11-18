@@ -3,6 +3,9 @@
 //! crosses. Anything said to a request while it is open, or about it, is
 //! for shared cells the caller keeps by slot. Knows nothing of audio.
 
+use std::sync::Arc;
+
+use crossbeam_queue::ArrayQueue;
 use rtrb::{Consumer, Producer, RingBuffer};
 
 /// Pairs a request type with its reply.
@@ -18,14 +21,28 @@ pub struct Slot(usize);
 
 pub struct ControlEnd<Q: Request> {
     to_realtime: Producer<(Slot, Q)>,
-    /// Each slot's reply ring.
-    replies: Vec<(Slot, Consumer<Q::Reply>)>,
+    /// Slots not open, each with its reply ring. Shared so a handle can give
+    /// its slot back from anywhere; holds every slot, so it never fills.
+    free: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
 }
 
 impl<Q: Request> ControlEnd<Q> {
+    /// `replies` are by slot.
+    fn new(to_realtime: Producer<(Slot, Q)>, replies: Vec<Consumer<Q::Reply>>) -> Self {
+        let free = ArrayQueue::new(replies.len());
+        for (index, reply) in replies.into_iter().enumerate() {
+            let pushed = free.push((Slot(index), reply));
+            assert!(pushed.is_ok(), "the queue holds every slot");
+        }
+        Self {
+            to_realtime,
+            free: Arc::new(free),
+        }
+    }
+
     /// Hands the request back when every slot is open.
     pub fn open(&mut self, request: Q) -> Result<RequestHandle<Q>, Q> {
-        let Some((slot, reply)) = self.replies.pop() else {
+        let Some((slot, reply)) = self.free.pop() else {
             return Err(request);
         };
         let pushed = self.to_realtime.push((slot, request));
@@ -60,14 +77,7 @@ pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     let (to_realtime, from_control) = RingBuffer::new(capacity);
     let (to_control, from_realtime): (Vec<_>, Vec<_>) =
         (0..capacity).map(|_| RingBuffer::new(1)).unzip();
-    let control = ControlEnd {
-        to_realtime,
-        replies: from_realtime
-            .into_iter()
-            .enumerate()
-            .map(|(index, reply)| (Slot(index), reply))
-            .collect(),
-    };
+    let control = ControlEnd::new(to_realtime, from_realtime);
     let realtime = RealtimeEnd {
         from_control,
         replies: to_control.into_boxed_slice(),
