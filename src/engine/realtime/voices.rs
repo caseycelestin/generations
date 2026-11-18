@@ -3,33 +3,26 @@
 
 use std::mem;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 use super::{Frame, Renderer};
-use crate::audio::AudioBuffer;
-use crate::engine::protocol::voice::{VoiceData, VoiceState};
+use crate::engine::protocol::voice::VoiceData;
 use crate::layout::ChannelLayout;
-use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
+use crate::request::RequestId;
+use crate::transfer::{Completion, RealtimeEnd};
 
 #[derive(Debug)]
 pub(crate) struct Voice {
-    permit: ReplyPermit,
-    audio: Arc<AudioBuffer>,
-    state: Arc<VoiceState>,
+    data: VoiceData,
+    completion: Completion<VoiceData>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(
-        permit: ReplyPermit,
-        audio: Arc<AudioBuffer>,
-        state: Arc<VoiceState>,
-    ) -> Self {
+    pub(crate) fn new(data: VoiceData, completion: Completion<VoiceData>) -> Self {
         Self {
-            permit,
-            audio,
-            state,
+            data,
+            completion,
             position: 0,
         }
     }
@@ -37,7 +30,7 @@ impl Voice {
     /// Silence once the audio runs out. Mono goes to both sides at full
     /// level.
     pub(crate) fn render(&mut self, scratch: &mut [Frame]) {
-        let audio = &self.audio;
+        let audio = &self.data.audio;
         let end = (self.position + scratch.len()).min(audio.frames());
         let samples = audio.frames_in(self.position..end);
         let (sound, silence) = scratch.split_at_mut(end - self.position);
@@ -56,18 +49,15 @@ impl Voice {
         self.position = end;
     }
 
-    pub(crate) fn is(&self, id: RequestId) -> bool {
-        self.permit.id() == id
-    }
-
     /// Its last frame has been rendered.
     pub(crate) fn finished(&self) -> bool {
-        self.position == self.audio.frames()
+        self.position == self.data.audio.frames()
     }
 
-    /// The one way a voice leaves: its audio goes back in the reply.
-    pub(crate) fn end(self, requests: &mut RealtimeEnd<VoiceData>) {
-        requests.close(self.permit, self.audio);
+    /// The one way a voice leaves: its data goes back whole, to be freed
+    /// on the control side.
+    pub(crate) fn end(self, transfers: &mut RealtimeEnd<VoiceData>) {
+        transfers.complete(self.completion, self.data);
     }
 }
 
