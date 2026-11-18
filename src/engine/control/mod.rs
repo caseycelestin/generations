@@ -16,8 +16,8 @@ pub use voice::{Voice, VoiceError};
 use crate::audio::Audio;
 use crate::engine::protocol::inputs::InputChannels;
 
-/// One per renderer; an app shares it its own way. Every request, from
-/// here or from a handle, takes effect at the renderer's next period.
+/// One per renderer; an app shares it its own way. Everything done here or
+/// on a handle takes effect at the renderer's next period.
 #[derive(Debug)]
 pub struct Control {
     requests: Requests,
@@ -83,8 +83,8 @@ impl Control {
         Input::open(&mut self.transfers.inputs, channels, self.capture_channels)
     }
 
-    /// Frees the audio of voices and recordings whose handles are gone,
-    /// returning it to `AudioMemory`. `record` does this first; call it when
+    /// Frees the audio of voices that have ended and of recordings whose
+    /// handles are gone, returning it to `AudioMemory`. `record` does this first; call it when
     /// the app goes quiet, or before a load that needs the memory.
     pub fn collect(&mut self) {
         self.requests.take_in();

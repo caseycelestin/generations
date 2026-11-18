@@ -61,8 +61,8 @@ impl Input {
     pub fn stop(self) {}
 }
 
-/// Stops an input still open, since nothing could stop it once the handle
-/// is gone.
+/// Unlike a voice, an input never ends by itself, so it ends with its
+/// handle.
 impl Drop for Input {
     fn drop(&mut self) {
         self.state.stop.store(true, Ordering::Relaxed);

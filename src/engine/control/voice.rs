@@ -28,7 +28,7 @@ impl From<transfer::StartError<VoiceData>> for VoiceError {
     }
 }
 
-/// Its voice holds a slot until it ends, whether the handle is kept or
+/// Its voice holds a place until it ends, whether the handle is kept or
 /// dropped.
 #[derive(Debug)]
 pub struct Voice {

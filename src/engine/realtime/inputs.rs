@@ -1,5 +1,5 @@
-//! An input on the render side, while it is open: which capture channels
-//! make its stereo frames. It holds no audio.
+//! Inputs on the render side: which capture channels make each one's
+//! stereo frames, and the places they live. They hold no audio.
 
 use std::sync::atomic::Ordering;
 
@@ -35,7 +35,7 @@ impl Input {
         }
     }
 
-    /// Its handle asked it to stop.
+    /// Its handle is gone.
     fn stopped(&self) -> bool {
         self.data.state.stop.load(Ordering::Relaxed)
     }
@@ -69,7 +69,8 @@ impl Inputs {
         }
     }
 
-    /// New inputs open; stopped ones end.
+    /// New inputs open, then stopped ones end, including any stopped before
+    /// they arrived.
     pub(crate) fn receive(&mut self) {
         while let Some(data) = self.transfers.try_recv() {
             let room = self.open.len() < self.open.capacity();
