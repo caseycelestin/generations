@@ -23,31 +23,36 @@ pub struct ControlEnd<Q: Request> {
     to_realtime: Producer<(Slot, Q)>,
     /// Slots not open, each with its reply ring. Shared so a handle can give
     /// its slot back from anywhere; holds every slot, so it never fills.
-    free: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
+    available: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
 }
 
 impl<Q: Request> ControlEnd<Q> {
     /// `replies` are by slot.
     fn new(to_realtime: Producer<(Slot, Q)>, replies: Vec<Consumer<Q::Reply>>) -> Self {
-        let free = ArrayQueue::new(replies.len());
+        let available = ArrayQueue::new(replies.len());
         for (index, reply) in replies.into_iter().enumerate() {
-            let pushed = free.push((Slot(index), reply));
+            let pushed = available.push((Slot(index), reply));
             assert!(pushed.is_ok(), "the queue holds every slot");
         }
         Self {
             to_realtime,
-            free: Arc::new(free),
+            available: Arc::new(available),
         }
     }
 
     /// Hands the request back when every slot is open.
     pub fn open(&mut self, request: Q) -> Result<RequestHandle<Q>, Q> {
-        let Some((slot, reply)) = self.free.pop() else {
+        let Some((slot, reply)) = self.available.pop() else {
             return Err(request);
         };
         let pushed = self.to_realtime.push((slot, request));
         assert!(pushed.is_ok(), "the ring holds a request per slot");
-        Ok(RequestHandle { slot, reply })
+        let available = Arc::clone(&self.available);
+        Ok(RequestHandle {
+            slot,
+            reply,
+            available,
+        })
     }
 }
 
@@ -55,6 +60,8 @@ impl<Q: Request> ControlEnd<Q> {
 pub struct RequestHandle<Q: Request> {
     slot: Slot,
     reply: Consumer<Q::Reply>,
+    /// Where its slot goes back.
+    available: Arc<ArrayQueue<(Slot, Consumer<Q::Reply>)>>,
 }
 
 impl<Q: Request> RequestHandle<Q> {
