@@ -124,24 +124,9 @@ impl Renderer {
     }
 
     fn apply_voice_requests(&mut self) {
-        while let Some(received) = self.requests.voices.try_recv() {
-            match received {
-                Received::Request(permit, VoiceData { audio, state }) => {
-                    if let Some(cut) = self.voices.add(Voice::new(permit, audio, state)) {
-                        cut.end(&mut self.requests.voices);
-                    }
-                }
-                Received::Cancel(id) => {
-                    if let Some(stopped) = self.voices.remove(id) {
-                        stopped.end(&mut self.requests.voices);
-                    }
-                }
-                Received::Status(permit) => {
-                    if self.voices.holds(permit.id()) {
-                        self.requests.voices.answer(permit, ());
-                    }
-                    // Otherwise it is closed, and its reply has the last word.
-                }
+        while let Some(data) = self.transfers.voices.try_recv() {
+            if let Some(cut) = self.voices.add(Voice::new(data)) {
+                cut.end(&mut self.transfers.voices);
             }
         }
     }
