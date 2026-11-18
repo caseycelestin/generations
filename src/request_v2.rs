@@ -40,6 +40,13 @@ pub struct RequestHandle<Q: Request> {
     reply: Consumer<Q::Reply>,
 }
 
+impl<Q: Request> RequestHandle<Q> {
+    /// `None` until the reply arrives, and again once it is taken.
+    pub fn try_wait(&mut self) -> Option<Q::Reply> {
+        self.reply.pop().ok()
+    }
+}
+
 pub struct RealtimeEnd<Q: Request> {
     from_control: Consumer<(Slot, Q)>,
     /// By slot.
