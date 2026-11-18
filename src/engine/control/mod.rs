@@ -10,36 +10,39 @@ pub use input::{Input, PendingInputStatus};
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
 pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
+pub(crate) use transfers::Transfers;
 pub use voice::Voice;
 
 use crate::audio::Audio;
 use crate::engine::protocol::inputs::InputChannels;
 
-/// Clones act on the same renderer. Every request, from here or from a
-/// handle, takes effect at the renderer's next period.
-#[derive(Debug, Clone)]
+/// One per renderer; an app shares it its own way. Every request, from
+/// here or from a handle, takes effect at the renderer's next period.
+#[derive(Debug)]
 pub struct Control {
     requests: Requests,
+    transfers: Transfers,
     /// The capture device's, or zero without one.
     capture_channels: usize,
 }
 
 impl Control {
-    pub(crate) fn new(requests: Requests, capture_channels: usize) -> Self {
+    pub(crate) fn new(requests: Requests, transfers: Transfers, capture_channels: usize) -> Self {
         Self {
             requests,
+            transfers,
             capture_channels,
         }
     }
 
-    pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
-        Voice::play(&self.requests.voices, audio)
+    pub fn play(&mut self, audio: &Audio) -> Result<Voice, ControlError> {
+        Voice::play(&mut self.transfers.voices, audio)
     }
 
     /// Records the main out into `audio`, from empty. By value: the
     /// renderer writes it until it comes back. Refused while another
     /// recording runs, or while a voice holds `audio`.
-    pub fn record(&self, audio: Audio) -> Result<Recording, RecordError> {
+    pub fn record(&mut self, audio: Audio) -> Result<Recording, RecordError> {
         self.collect();
         Recording::record(&self.requests.recording, audio)
     }
@@ -77,7 +80,8 @@ impl Control {
     /// Frees the audio of voices and recordings whose handles are gone,
     /// returning it to `AudioMemory`. `record` does this first; call it when
     /// the app goes quiet, or before a load that needs the memory.
-    pub fn collect(&self) {
+    pub fn collect(&mut self) {
         self.requests.take_in();
+        self.transfers.take_in();
     }
 }
