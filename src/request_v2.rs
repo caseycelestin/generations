@@ -44,6 +44,7 @@ pub struct ControlEnd<Q: Request> {
 impl<Q: Request> ControlEnd<Q> {
     /// Hands the request back when `capacity` requests are in flight.
     pub fn try_send(&mut self, request: Q) -> Result<ReplyReceiver<Q::Reply>, Q> {
+        self.take_in();
         if self.in_flight == self.requests.buffer().capacity() {
             return Err(request);
         }
@@ -52,6 +53,15 @@ impl<Q: Request> ControlEnd<Q> {
         assert!(pushed.is_ok(), "the ring holds every request in flight");
         self.in_flight += 1;
         Ok(receiver)
+    }
+
+    /// Drops every `ReplySender` the real-time side has sent back, freeing
+    /// rings whose receiver is gone, and counts each out of flight.
+    pub fn take_in(&mut self) {
+        while let Ok(sender) = self.returned.pop() {
+            drop(sender);
+            self.in_flight -= 1;
+        }
     }
 }
 
