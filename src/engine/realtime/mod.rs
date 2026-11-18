@@ -3,7 +3,7 @@
 //! Code here has a deadline: no allocating, locking, blocking or system
 //! calls. An offline bounce runs the same code with no deadline.
 
-mod input;
+mod inputs;
 mod math;
 mod recording;
 mod voices;
@@ -16,7 +16,7 @@ use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, Recordi
 use crate::engine::protocol::voice::VoiceData;
 use crate::request::{self, Received};
 use crate::transfer;
-use input::{Input, Inputs};
+use inputs::{Input, Inputs};
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::Voices;
