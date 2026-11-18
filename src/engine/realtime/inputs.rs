@@ -152,7 +152,10 @@ mod tests {
         let (mut left, _) = start(&mut control, InputChannels::Mono(0));
         let (mut right, _) = start(&mut control, InputChannels::Mono(1));
         inputs.receive();
-        assert_eq!(open(&inputs), [InputChannels::Mono(0), InputChannels::Mono(1)]);
+        assert_eq!(
+            open(&inputs),
+            [InputChannels::Mono(0), InputChannels::Mono(1)]
+        );
         assert!(!ended(&mut left));
         assert!(!ended(&mut right));
     }

@@ -6,10 +6,10 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, Input, InputError, PendingInputStatus, PendingRecordingStatus, RecordError,
-    Recording, StatusError, TryRecvStatusError, TryWaitError, Voice, VoiceError,
+    Control, Input, InputError, PendingRecordingStatus, RecordError, Recording, StatusError,
+    TryRecvStatusError, TryWaitError, Voice, VoiceError,
 };
-pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
+pub use protocol::inputs::InputChannels;
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use realtime::Renderer;
 
@@ -44,26 +44,26 @@ pub fn create(
         crate::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
-    let (inputs_control, inputs_realtime) = crate::request::channel::<InputData>(inputs);
+    let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
     (
         Control::new(
             control::Requests {
                 recording: recording_control,
-                inputs: inputs_control,
             },
             control::Transfers {
                 voices: voices_control,
+                inputs: inputs_control,
             },
             capture_channels,
         ),
         Renderer::new(
             realtime::Requests {
                 recording: recording_realtime,
-                inputs: inputs_realtime,
             },
             voices_realtime,
             voices,
             capture_channels,
+            inputs_realtime,
             inputs,
         ),
     )
