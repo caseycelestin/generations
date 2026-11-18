@@ -8,15 +8,15 @@ use super::ReplySender;
 
 /// The caller's end of one request's reply ring. Dropping it early is
 /// safe: the real-time side's end comes back, and the ring is freed here.
-pub struct ReplyReceiver<R> {
-    pub(super) reply: Consumer<R>,
+pub struct ReplyReceiver<Q> {
+    pub(super) reply: Consumer<Q>,
     /// Its request was taken back, so an empty ring no longer means not yet.
     pub(super) taken: bool,
 }
 
-impl<R> ReplyReceiver<R> {
+impl<Q> ReplyReceiver<Q> {
     /// A request that came back before its sender was dropped is still taken.
-    pub fn try_wait(&mut self) -> Result<R, TryWaitError> {
+    pub fn try_wait(&mut self) -> Result<Q, TryWaitError> {
         if self.taken {
             return Err(TryWaitError::Taken);
         }
@@ -47,7 +47,7 @@ pub enum TryWaitError {
 }
 
 /// One deep: a request comes back once.
-fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
+fn reply_ring<Q>() -> (ReplySender<Q>, ReplyReceiver<Q>) {
     let (producer, consumer) = RingBuffer::new(1);
     let sender = ReplySender { reply: producer };
     let receiver = ReplyReceiver {

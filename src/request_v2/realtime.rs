@@ -6,8 +6,8 @@ use rtrb::{Consumer, Producer};
 
 /// Never dropped on the real-time side, as it may be the last end of its
 /// ring: `reply` sends it back.
-pub struct ReplySender<R> {
-    pub(super) reply: Producer<R>,
+pub struct ReplySender<Q> {
+    pub(super) reply: Producer<Q>,
 }
 
 pub struct RealtimeEnd<Q> {
