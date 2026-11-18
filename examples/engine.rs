@@ -37,9 +37,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let take = memory.alloc(ChannelLayout::Stereo, 48_000)?;
     let mut recording = control.record(take)?;
 
-    // Asked now, answered at the renderer's next period.
-    let mut status = played.request_status()?;
-
     // A device callback would own the renderer.
     let audio_thread = thread::spawn(move || {
         let mut renderer = renderer;
@@ -51,11 +48,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
     audio_thread.join().expect("audio thread");
-
-    match status.try_recv() {
-        Ok(status) => println!("the renderer said: {status:?}"),
-        Err(error) => println!("no answer: {error}"),
-    }
 
     recording.stop();
 

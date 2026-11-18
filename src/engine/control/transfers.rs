@@ -1,7 +1,7 @@
 //! The engine's face on the transfer channels, in the engine's terms.
 
 use super::TryWaitError;
-use crate::engine::protocol::voice::VoiceRequest;
+use crate::engine::protocol::voice::VoiceData;
 use crate::transfer;
 
 impl From<transfer::TryWaitError> for TryWaitError {
@@ -18,7 +18,7 @@ impl From<transfer::TryWaitError> for TryWaitError {
 /// request channel.
 #[derive(Debug)]
 pub(crate) struct Transfers {
-    pub(crate) voices: transfer::ControlEnd<VoiceRequest>,
+    pub(crate) voices: transfer::ControlEnd<VoiceData>,
 }
 
 impl Transfers {

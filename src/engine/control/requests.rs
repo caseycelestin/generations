@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::engine::protocol::inputs::InputRequest;
 use crate::engine::protocol::recording::RecordingRequest;
-use crate::engine::protocol::voice::VoiceRequest;
+use crate::engine::protocol::voice::VoiceData;
 use crate::request;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -102,7 +102,7 @@ impl From<request::ReserveError> for ControlError {
 /// One request channel per actor in the renderer.
 #[derive(Debug, Clone)]
 pub(crate) struct Requests {
-    pub(crate) voices: request::ControlEnd<VoiceRequest>,
+    pub(crate) voices: request::ControlEnd<VoiceData>,
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
     pub(crate) inputs: request::ControlEnd<InputRequest>,
 }

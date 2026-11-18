@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
-use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
+use crate::engine::protocol::voice::VoiceData;
 use crate::request::{self, Received};
 use input::Input;
 use math::{add, hard_clip};
@@ -24,7 +24,7 @@ type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 /// One request channel per actor, at its real-time end.
 #[derive(Debug)]
 pub(crate) struct Requests {
-    pub(crate) voices: request::RealtimeEnd<VoiceRequest>,
+    pub(crate) voices: request::RealtimeEnd<VoiceData>,
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
     pub(crate) inputs: request::RealtimeEnd<InputRequest>,
 }
@@ -116,7 +116,7 @@ impl Renderer {
     fn apply_voice_requests(&mut self) {
         while let Some(received) = self.requests.voices.try_recv() {
             match received {
-                Received::Request(permit, VoiceRequest { audio, state }) => {
+                Received::Request(permit, VoiceData { audio, state }) => {
                     if let Some(cut) = self.voices.add(Voice::new(permit, audio, state)) {
                         cut.end(&mut self.requests.voices);
                     }
@@ -128,7 +128,7 @@ impl Renderer {
                 }
                 Received::Status(permit) => {
                     if self.voices.holds(permit.id()) {
-                        self.requests.voices.answer(permit, VoiceStatus::Playing);
+                        self.requests.voices.answer(permit, ());
                     }
                     // Otherwise it is closed, and its reply has the last word.
                 }
@@ -234,12 +234,12 @@ mod tests {
     use crate::audio::{AudioBuffer, AudioMemory};
     use crate::engine::protocol::voice::VoiceState;
     use crate::layout::ChannelLayout;
-    use crate::request::{ControlEnd, RequestHandle, TryRecvStatusError, TryWaitError};
+    use crate::request::{ControlEnd, RequestHandle, TryWaitError};
     use crate::testing::buffer;
 
     /// The control ends of the renderer's channels.
     struct Ends {
-        voices: ControlEnd<VoiceRequest>,
+        voices: ControlEnd<VoiceData>,
         recording: ControlEnd<RecordingRequest>,
     }
 
@@ -262,18 +262,18 @@ mod tests {
     }
 
     /// Opens a mono voice of `samples`, as `Control::play` does.
-    fn play(ends: &Ends, samples: &[Pcm]) -> RequestHandle<VoiceRequest> {
+    fn play(ends: &Ends, samples: &[Pcm]) -> RequestHandle<VoiceData> {
         play_audio(ends, Arc::new(buffer(ChannelLayout::Mono, samples)))
     }
 
     /// Opens a voice of `audio`, for voices that share it.
-    fn play_audio(ends: &Ends, audio: Arc<AudioBuffer>) -> RequestHandle<VoiceRequest> {
+    fn play_audio(ends: &Ends, audio: Arc<AudioBuffer>) -> RequestHandle<VoiceData> {
         let state = Arc::new(VoiceState::default());
-        let request = VoiceRequest { audio, state };
-        ends.voices.try_reserve().unwrap().open(request)
+        let data = VoiceData { audio, state };
+        ends.voices.try_reserve().unwrap().open(data)
     }
 
-    fn ended(voice: &mut RequestHandle<VoiceRequest>) -> bool {
+    fn ended(voice: &mut RequestHandle<VoiceData>) -> bool {
         voice.try_wait().is_ok()
     }
 
@@ -363,26 +363,6 @@ mod tests {
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert!(ended(&mut oldest));
         assert!(!ended(&mut newest));
-    }
-
-    #[test]
-    fn a_held_voice_answers_that_it_plays() {
-        let (ends, mut renderer) = renderer(1);
-        let mut voice = play(&ends, &[0.5; 64]);
-        let mut status = voice.request_status().unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert_eq!(status.try_recv(), Ok(VoiceStatus::Playing));
-    }
-
-    #[test]
-    fn a_question_its_voice_closes_before_comes_back_closed() {
-        let (ends, mut renderer) = renderer(1);
-        let mut voice = play(&ends, &[0.5; 64]);
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-        voice.cancel();
-        let mut status = voice.request_status().unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert_eq!(status.try_recv(), Err(TryRecvStatusError::Closed));
     }
 
     #[test]

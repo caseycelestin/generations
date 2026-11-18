@@ -6,19 +6,18 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, PendingVoiceStatus,
-    PlayError, RecordError, Recording, StatusError, TryRecvStatusError, TryWaitError, Voice,
+    Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, PlayError,
+    RecordError, Recording, StatusError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
-pub use protocol::voice::VoiceStatus;
 pub use realtime::Renderer;
 
 use std::num::NonZeroUsize;
 
 use protocol::inputs::InputRequest;
 use protocol::recording::RecordingRequest;
-use protocol::voice::VoiceRequest;
+use protocol::voice::VoiceData;
 
 /// Recordings the renderer holds at once, so the requests its recording
 /// channel needs: each holds one until its reply is taken.
@@ -42,7 +41,7 @@ pub fn create(
 ) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) =
-        crate::request::channel::<VoiceRequest>(voice_capacity(voice_queue, voices));
+        crate::request::channel::<VoiceData>(voice_capacity(voice_queue, voices));
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
     let (inputs_control, inputs_realtime) = crate::request::channel::<InputRequest>(inputs);

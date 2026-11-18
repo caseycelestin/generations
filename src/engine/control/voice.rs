@@ -5,10 +5,10 @@ use std::sync::atomic::Ordering;
 
 use thiserror::Error;
 
-use super::{StatusError, TryRecvStatusError, TryWaitError};
+use super::TryWaitError;
 use crate::audio::Audio;
-use crate::engine::protocol::voice::{VoiceRequest, VoiceState, VoiceStatus};
-use crate::request::{self, ControlEnd, RequestHandle, ReserveError};
+use crate::engine::protocol::voice::{VoiceData, VoiceState};
+use crate::request::{ControlEnd, ReserveError};
 use crate::transfer::Transfer;
 
 /// Nothing was sent.
@@ -34,23 +34,20 @@ impl From<ReserveError> for PlayError {
 /// one kept after its voice ends must be waited on to give the slot back.
 #[derive(Debug)]
 pub struct Voice {
-    handle: Transfer<VoiceRequest>,
+    handle: Transfer<VoiceData>,
     state: Arc<VoiceState>,
 }
 
 impl Voice {
-    pub(crate) fn play(
-        requests: &ControlEnd<VoiceRequest>,
-        audio: &Audio,
-    ) -> Result<Self, PlayError> {
+    pub(crate) fn play(requests: &ControlEnd<VoiceData>, audio: &Audio) -> Result<Self, PlayError> {
         let permit = requests.try_reserve()?;
         let audio_clone = Arc::clone(audio.shared());
         let state = Arc::new(VoiceState::default());
-        let request = VoiceRequest {
+        let data = VoiceData {
             audio: audio_clone,
             state: Arc::clone(&state),
         };
-        let handle = permit.open(request);
+        let handle = permit.open(data);
         Ok(Self { handle, state })
     }
 
@@ -59,26 +56,9 @@ impl Voice {
         self.state.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Asks the renderer, which answers at its next period.
-    pub fn request_status(&mut self) -> Result<PendingVoiceStatus, StatusError> {
-        let pending = self.handle.request_status()?;
-        Ok(PendingVoiceStatus(pending))
-    }
-
     /// `Ok` once it has ended.
     pub fn try_wait(&mut self) -> Result<(), TryWaitError> {
         self.handle.try_wait()?;
         Ok(())
-    }
-}
-
-/// The renderer's answer to one status question about a voice.
-#[derive(Debug)]
-pub struct PendingVoiceStatus(request::PendingStatus<VoiceRequest>);
-
-impl PendingVoiceStatus {
-    pub fn try_recv(&mut self) -> Result<VoiceStatus, TryRecvStatusError> {
-        let status = self.0.try_recv()?;
-        Ok(status)
     }
 }

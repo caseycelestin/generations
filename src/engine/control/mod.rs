@@ -10,7 +10,7 @@ pub use input::{Input, PendingInputStatus};
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
 pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
-pub use voice::{PendingVoiceStatus, PlayError, Voice};
+pub use voice::{PlayError, Voice};
 
 use crate::audio::Audio;
 use crate::engine::protocol::inputs::InputChannels;

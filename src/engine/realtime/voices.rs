@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
-use crate::engine::protocol::voice::{VoiceRequest, VoiceState};
+use crate::engine::protocol::voice::{VoiceData, VoiceState};
 use crate::layout::ChannelLayout;
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 
@@ -66,7 +66,7 @@ impl Voice {
     }
 
     /// The one way a voice leaves: its audio goes back in the reply.
-    pub(crate) fn end(self, requests: &mut RealtimeEnd<VoiceRequest>) {
+    pub(crate) fn end(self, requests: &mut RealtimeEnd<VoiceData>) {
         requests.close(self.permit, self.audio);
     }
 }
