@@ -1,7 +1,8 @@
-//! Requests from control-side callers to a real-time side, each answered
-//! by exactly one reply; nothing else crosses. Each request brings its own
-//! reply ring, made on the control side, and the real-time side sends its
-//! end back after replying, so the ring is freed on the control side.
+//! Requests from control-side callers to a real-time side; nothing else
+//! crosses. The reply is the request itself, coming back with whatever the
+//! real-time side wrote into it, so everything it owns is freed on the
+//! control side. Each request brings its own reply ring, and the real-time
+//! side sends its end back after replying, so the ring is freed there too.
 //! Knows nothing of audio.
 //!
 //! Each side's end is its own module, so `realtime.rs` can be held to the
