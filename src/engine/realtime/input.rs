@@ -3,7 +3,7 @@
 
 use super::{Frame, Renderer};
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputChannels, InputEnd, InputRequest};
+use crate::engine::protocol::inputs::{InputChannels, InputData, InputEnd};
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 
 #[derive(Debug)]
@@ -44,7 +44,7 @@ impl Input {
     }
 
     /// The one way an input leaves.
-    pub(crate) fn end(self, why: InputEnd, requests: &mut RealtimeEnd<InputRequest>) {
+    pub(crate) fn end(self, why: InputEnd, requests: &mut RealtimeEnd<InputData>) {
         requests.close(self.permit, why);
     }
 }

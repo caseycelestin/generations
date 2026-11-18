@@ -15,7 +15,7 @@ pub use realtime::Renderer;
 
 use std::num::NonZeroUsize;
 
-use protocol::inputs::InputRequest;
+use protocol::inputs::InputData;
 use protocol::recording::RecordingRequest;
 use protocol::voice::VoiceData;
 
@@ -44,7 +44,7 @@ pub fn create(
         crate::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
     let (recording_control, recording_realtime) =
         crate::request::channel::<RecordingRequest>(RECORDERS);
-    let (inputs_control, inputs_realtime) = crate::request::channel::<InputRequest>(inputs);
+    let (inputs_control, inputs_realtime) = crate::request::channel::<InputData>(inputs);
     (
         Control::new(
             control::Requests {

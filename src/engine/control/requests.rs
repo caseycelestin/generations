@@ -3,7 +3,7 @@
 
 use thiserror::Error;
 
-use crate::engine::protocol::inputs::InputRequest;
+use crate::engine::protocol::inputs::InputData;
 use crate::engine::protocol::recording::RecordingRequest;
 use crate::request;
 
@@ -102,7 +102,7 @@ impl From<request::ReserveError> for ControlError {
 #[derive(Debug, Clone)]
 pub(crate) struct Requests {
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
-    pub(crate) inputs: request::ControlEnd<InputRequest>,
+    pub(crate) inputs: request::ControlEnd<InputData>,
 }
 
 impl Requests {

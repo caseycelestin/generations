@@ -1,17 +1,17 @@
 //! An input: capture channels the renderer routes to stereo.
 
 use super::{StatusError, TryRecvStatusError, TryWaitError};
-use crate::engine::protocol::inputs::{InputChannels, InputEnd, InputRequest, InputStatus};
+use crate::engine::protocol::inputs::{InputChannels, InputEnd, InputData, InputStatus};
 use crate::request::{self, RequestHandle, RequestPermit};
 
 #[derive(Debug)]
 pub struct Input {
-    handle: RequestHandle<InputRequest>,
+    handle: RequestHandle<InputData>,
 }
 
 impl Input {
-    pub(crate) fn open(permit: RequestPermit<'_, InputRequest>, channels: InputChannels) -> Self {
-        let handle = permit.open(InputRequest { channels });
+    pub(crate) fn open(permit: RequestPermit<'_, InputData>, channels: InputChannels) -> Self {
+        let handle = permit.open(InputData { channels });
         Self { handle }
     }
 
@@ -41,7 +41,7 @@ impl Drop for Input {
 
 /// The renderer's answer to one status question about an input.
 #[derive(Debug)]
-pub struct PendingInputStatus(request::PendingStatus<InputRequest>);
+pub struct PendingInputStatus(request::PendingStatus<InputData>);
 
 impl PendingInputStatus {
     pub fn try_recv(&mut self) -> Result<InputStatus, TryRecvStatusError> {

@@ -11,7 +11,7 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputEnd, InputRequest, InputStatus};
+use crate::engine::protocol::inputs::{InputEnd, InputData, InputStatus};
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::VoiceData;
 use crate::request::{self, Received};
@@ -27,7 +27,7 @@ type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 #[derive(Debug)]
 pub(crate) struct Requests {
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
-    pub(crate) inputs: request::RealtimeEnd<InputRequest>,
+    pub(crate) inputs: request::RealtimeEnd<InputData>,
 }
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and

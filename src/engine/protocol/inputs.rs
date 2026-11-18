@@ -1,15 +1,18 @@
 //! What crosses for inputs.
 
-use crate::request::Request;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-#[derive(Debug)]
-pub(crate) struct InputRequest {
-    pub(crate) channels: InputChannels,
+/// Shared by both sides while the input is open.
+#[derive(Debug, Default)]
+pub(crate) struct InputState {
+    pub(crate) stop: AtomicBool,
 }
 
-impl Request for InputRequest {
-    type Reply = InputEnd;
-    type Status = InputStatus;
+#[derive(Debug)]
+pub(crate) struct InputData {
+    pub(crate) channels: InputChannels,
+    pub(crate) state: Arc<InputState>,
 }
 
 /// The capture device's channels an input reads, counted from zero.
@@ -18,16 +21,4 @@ pub enum InputChannels {
     Mono(usize),
     /// Left, then right.
     Stereo(usize, usize),
-}
-
-/// The renderer's answer, while it holds the input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputStatus {
-    Open,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputEnd {
-    /// Its `stop` arrived, or its handle was dropped.
-    Stopped,
 }
