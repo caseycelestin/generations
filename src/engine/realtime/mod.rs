@@ -29,13 +29,6 @@ pub(crate) struct Requests {
     pub(crate) inputs: request::RealtimeEnd<InputRequest>,
 }
 
-/// One transfer channel per actor, at its real-time end, as each moves off
-/// its request channel.
-#[derive(Debug)]
-pub(crate) struct Transfers {
-    pub(crate) voices: transfer::RealtimeEnd<VoiceData>,
-}
-
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
 /// every handle from the same [`create`](crate::engine::create) report the
 /// renderer gone, though a recording still ends with its audio. A stream
@@ -66,14 +59,14 @@ impl Renderer {
     /// control side.
     pub(crate) fn new(
         requests: Requests,
-        transfers: Transfers,
+        voice_transfers: transfer::RealtimeEnd<VoiceData>,
         voices: NonZeroUsize,
         capture_channels: usize,
         inputs: usize,
     ) -> Self {
         Self {
             requests,
-            voices: Voices::new(voices, transfers.voices),
+            voices: Voices::new(voices, voice_transfers),
             recording: None,
             capture_channels,
             inputs: Vec::with_capacity(inputs),
@@ -241,11 +234,8 @@ mod tests {
             recording: recording_realtime,
             inputs: inputs_realtime,
         };
-        let transfers = Transfers {
-            voices: voices_realtime,
-        };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, transfers, voices, 0, 0))
+        (ends, Renderer::new(requests, voices_realtime, voices, 0, 0))
     }
 
     /// Starts a mono voice of `samples`, as `Control::play` does, keeping

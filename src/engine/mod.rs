@@ -61,9 +61,7 @@ pub fn create(
                 recording: recording_realtime,
                 inputs: inputs_realtime,
             },
-            realtime::Transfers {
-                voices: voices_realtime,
-            },
+            voices_realtime,
             voices,
             capture_channels,
             inputs,
