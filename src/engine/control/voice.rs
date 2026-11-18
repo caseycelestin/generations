@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::audio::Audio;
-use crate::engine::protocol::voice::{VoiceRequest, VoiceStatus};
+use crate::engine::protocol::voice::{VoiceRequest, VoiceState, VoiceStatus};
 use crate::request::{self, ControlEnd, RequestHandle, ReserveError};
 
 /// Nothing was sent.
@@ -42,7 +42,12 @@ impl Voice {
     ) -> Result<Self, PlayError> {
         let permit = requests.try_reserve()?;
         let audio_clone = Arc::clone(audio.shared());
-        let handle = permit.open(VoiceRequest { audio: audio_clone });
+        let state = Arc::new(VoiceState::default());
+        let request = VoiceRequest {
+            audio: audio_clone,
+            state,
+        };
+        let handle = permit.open(request);
         Ok(Self { handle })
     }
 

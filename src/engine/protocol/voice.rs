@@ -15,6 +15,7 @@ pub(crate) struct VoiceState {
 #[derive(Debug)]
 pub(crate) struct VoiceRequest {
     pub(crate) audio: Arc<AudioBuffer>,
+    pub(crate) state: Arc<VoiceState>,
 }
 
 /// A play's audio comes back with its reply, to be freed on the control
