@@ -7,7 +7,7 @@ use thiserror::Error;
 use super::Completion;
 
 /// The caller's claim on one value while it is away. Dropping it early is
-/// safe: the completion still comes back, and the value is freed here.
+/// safe: the value and its ring still come back, and are freed here.
 #[derive(Debug)]
 pub struct Transfer<T> {
     pub(super) ring: Consumer<T>,
@@ -16,14 +16,14 @@ pub struct Transfer<T> {
 }
 
 impl<T> Transfer<T> {
-    /// A value that came back before its completion was dropped is still
-    /// taken.
+    /// A value that came back before the ring's other end was freed is
+    /// still taken.
     pub fn try_wait(&mut self) -> Result<T, TryWaitError> {
         if self.taken {
             return Err(TryWaitError::Taken);
         }
-        // Asked before popping: a completion dropped by now pushed any value
-        // first, so an empty ring after it means none is coming.
+        // Asked before popping: the other end, if freed by now, pushed any
+        // value first, so an empty ring after it means none is coming.
         let abandoned = self.ring.is_abandoned();
         let Ok(value) = self.ring.pop() else {
             if abandoned {

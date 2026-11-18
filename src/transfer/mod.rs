@@ -2,8 +2,8 @@
 //! back; nothing else crosses. The real-time side works on each value, then
 //! completes it, and it comes back with whatever was written into it, so
 //! everything it owns is freed on the control side. Each transfer brings
-//! its own return ring, and its completion comes back too, so the ring is
-//! freed there as well. Knows nothing of audio.
+//! its own return ring, whose sending end comes back after the value, so
+//! the ring is freed there as well. Knows nothing of audio.
 //!
 //! Each side's end is its own module, so `realtime.rs` can be held to the
 //! real-time rules alone.
@@ -17,8 +17,8 @@ pub use realtime::{Completion, RealtimeEnd};
 use rtrb::RingBuffer;
 
 /// `capacity` is how many transfers can be in flight, from started until
-/// their `Completion` is back; both rings hold that many, so neither ever
-/// fills.
+/// their return ring's sending end is back; both rings hold that many, so
+/// neither ever fills.
 pub fn channel<T>(capacity: usize) -> (ControlEnd<T>, RealtimeEnd<T>) {
     let (started_producer, started_consumer) = RingBuffer::new(capacity);
     let (returned_producer, returned_consumer) = RingBuffer::new(capacity);
