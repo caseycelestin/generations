@@ -1,6 +1,7 @@
 //! A voice: one playing of some audio.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use thiserror::Error;
 
@@ -34,6 +35,7 @@ impl From<ReserveError> for PlayError {
 #[derive(Debug)]
 pub struct Voice {
     handle: Transfer<VoiceRequest>,
+    state: Arc<VoiceState>,
 }
 
 impl Voice {
@@ -46,15 +48,15 @@ impl Voice {
         let state = Arc::new(VoiceState::default());
         let request = VoiceRequest {
             audio: audio_clone,
-            state,
+            state: Arc::clone(&state),
         };
         let handle = permit.open(request);
-        Ok(Self { handle })
+        Ok(Self { handle, state })
     }
 
     /// Dropping the handle instead lets the voice play out.
-    pub fn stop(&mut self) {
-        self.handle.cancel();
+    pub fn stop(&self) {
+        self.state.stop.store(true, Ordering::Relaxed);
     }
 
     /// Asks the renderer, which answers at its next period.
