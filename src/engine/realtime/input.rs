@@ -5,6 +5,7 @@ use super::{Frame, Renderer};
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputChannels, InputData, InputEnd};
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
+use crate::transfer;
 
 #[derive(Debug)]
 pub(crate) struct Input {
@@ -46,6 +47,30 @@ impl Input {
     /// The one way an input leaves.
     pub(crate) fn end(self, why: InputEnd, requests: &mut RealtimeEnd<InputData>) {
         requests.close(self.permit, why);
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct Inputs {
+    /// Never past its capacity, so opening one never allocates.
+    open: Vec<Input>,
+    /// Samples per capture frame.
+    capture_channels: usize,
+    /// The only way inputs arrive or leave.
+    transfers: transfer::RealtimeEnd<InputData>,
+}
+
+impl Inputs {
+    pub(crate) fn new(
+        places: usize,
+        capture_channels: usize,
+        transfers: transfer::RealtimeEnd<InputData>,
+    ) -> Self {
+        Self {
+            open: Vec::with_capacity(places),
+            capture_channels,
+            transfers,
+        }
     }
 }
 

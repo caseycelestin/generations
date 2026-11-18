@@ -16,7 +16,7 @@ use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, Recordi
 use crate::engine::protocol::voice::VoiceData;
 use crate::request::{self, Received};
 use crate::transfer;
-use input::Input;
+use input::{Input, Inputs};
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::Voices;
@@ -27,7 +27,6 @@ type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 #[derive(Debug)]
 pub(crate) struct Requests {
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
-    pub(crate) inputs: request::RealtimeEnd<InputData>,
 }
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
@@ -42,8 +41,7 @@ pub struct Renderer {
     recording: Option<Recording>,
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
-    /// Never past its capacity, so opening one never allocates.
-    inputs: Vec<Input>,
+    inputs: Inputs,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -63,6 +61,7 @@ impl Renderer {
         voice_transfers: transfer::RealtimeEnd<VoiceData>,
         voices: NonZeroUsize,
         capture_channels: usize,
+        input_transfers: transfer::RealtimeEnd<InputData>,
         inputs: usize,
     ) -> Self {
         Self {
@@ -70,7 +69,7 @@ impl Renderer {
             voices: Voices::new(voices, voice_transfers),
             recording: None,
             capture_channels,
-            inputs: Vec::with_capacity(inputs),
+            inputs: Inputs::new(inputs, capture_channels, input_transfers),
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
