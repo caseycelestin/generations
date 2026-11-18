@@ -5,10 +5,9 @@ use std::sync::atomic::Ordering;
 
 use thiserror::Error;
 
-use super::TryWaitError;
 use crate::audio::Audio;
 use crate::engine::protocol::voice::{VoiceData, VoiceState};
-use crate::transfer::{self, ControlEnd, Transfer};
+use crate::transfer::{self, ControlEnd};
 
 /// Nothing was played.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -33,7 +32,6 @@ impl From<transfer::StartError<VoiceData>> for VoiceError {
 /// on or dropped.
 #[derive(Debug)]
 pub struct Voice {
-    handle: Transfer<VoiceData>,
     state: Arc<VoiceState>,
 }
 
@@ -48,8 +46,8 @@ impl Voice {
             audio: audio_clone,
             state: Arc::clone(&state),
         };
-        let handle = transfers.try_start(data)?;
-        Ok(Self { handle, state })
+        transfers.try_start(data)?;
+        Ok(Self { state })
     }
 
     /// Dropping the handle instead lets the voice play out.
@@ -59,23 +57,16 @@ impl Voice {
     ///
     /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0);
     /// let audio = AudioMemory::new().alloc(ChannelLayout::Mono, 48_000)?;
-    /// let mut voice = control.play(&audio)?;
+    /// let voice = control.play(&audio)?;
     ///
     /// // Heard from the renderer's next period until stopped; silent from
     /// // the one after.
     /// renderer.render(&[], &mut [0.0; 512 * 2]);
     /// voice.stop();
     /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// println!("ended: {:?}", voice.try_wait());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn stop(&self) {
         self.state.stop.store(true, Ordering::Relaxed);
-    }
-
-    /// `Ok` once it has ended.
-    pub fn try_wait(&mut self) -> Result<(), TryWaitError> {
-        self.handle.try_wait()?;
-        Ok(())
     }
 }
