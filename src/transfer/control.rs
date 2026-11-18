@@ -51,7 +51,7 @@ pub enum TryWaitError {
 #[derive(Debug)]
 pub struct ControlEnd<T> {
     pub(super) started: Producer<Completion<T>>,
-    pub(super) returned: Consumer<Completion<T>>,
+    pub(super) returned: Consumer<Producer<T>>,
     /// Started and not yet back on `returned`.
     pub(super) in_flight: usize,
 }
@@ -94,8 +94,8 @@ impl<T> ControlEnd<T> {
 
     /// Rings whose transfer is gone are freed here, with any value in them.
     pub fn take_in(&mut self) {
-        while let Ok(completion) = self.returned.pop() {
-            drop(completion);
+        while let Ok(ring) = self.returned.pop() {
+            drop(ring);
             self.in_flight -= 1;
         }
     }

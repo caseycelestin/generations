@@ -15,7 +15,7 @@ pub struct Completion<T> {
 #[derive(Debug)]
 pub struct RealtimeEnd<T> {
     pub(super) started: Consumer<Completion<T>>,
-    pub(super) returned: Producer<Completion<T>>,
+    pub(super) returned: Producer<Producer<T>>,
 }
 
 /// Drops every value not yet received, so their transfers learn it will not
@@ -31,13 +31,14 @@ impl<T> RealtimeEnd<T> {
         self.started.pop().ok()
     }
 
-    /// Takes the completion and the value, so a transfer completes once and
-    /// both always go back, to be freed on the control side. Cannot fail:
+    /// Takes the completion, so a transfer completes once and its value and
+    /// ring always go back, to be freed on the control side. Cannot fail:
     /// each ring has room for it.
-    pub fn complete(&mut self, mut completion: Completion<T>, value: T) {
-        let sent = completion.ring.push(value);
+    pub fn complete(&mut self, completion: Completion<T>) {
+        let Completion { value, mut ring } = completion;
+        let sent = ring.push(value);
         debug_assert!(sent.is_ok(), "a return ring holds its one value");
-        let returned = self.returned.push(completion);
+        let returned = self.returned.push(ring);
         debug_assert!(returned.is_ok(), "the ring holds every transfer in flight");
     }
 }
