@@ -67,12 +67,25 @@ pub struct ControlEnd<T> {
     pub(super) in_flight: usize,
 }
 
+/// Nothing was started; the value comes back with the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum StartError<T> {
+    /// `capacity` transfers are in flight.
+    #[error("every transfer is in flight")]
+    Full(T),
+    /// Nothing would ever receive it.
+    #[error("the real-time end is gone")]
+    Disconnected(T),
+}
+
 impl<T> ControlEnd<T> {
-    /// Hands the value back when `capacity` transfers are in flight.
-    pub fn try_start(&mut self, value: T) -> Result<Transfer<T>, T> {
+    pub fn try_start(&mut self, value: T) -> Result<Transfer<T>, StartError<T>> {
+        if self.started.is_abandoned() {
+            return Err(StartError::Disconnected(value));
+        }
         self.take_in();
         if self.in_flight == self.started.buffer().capacity() {
-            return Err(value);
+            return Err(StartError::Full(value));
         }
         let (completion, transfer) = return_ring();
         let pushed = self.started.push((value, completion));

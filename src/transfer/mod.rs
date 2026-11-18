@@ -11,7 +11,7 @@
 mod control;
 mod realtime;
 
-pub use control::{ControlEnd, Transfer, TryWaitError};
+pub use control::{ControlEnd, StartError, Transfer, TryWaitError};
 pub use realtime::{Completion, RealtimeEnd};
 
 use rtrb::RingBuffer;
@@ -74,12 +74,15 @@ mod tests {
     fn starting_is_refused_at_capacity_until_a_completion_is_back() {
         let (mut control, mut realtime) = channel(1);
         let _transfer = control.try_start(Ask(1)).unwrap();
-        assert_eq!(control.try_start(Ask(2)).err(), Some(Ask(2)));
+        assert_eq!(
+            control.try_start(Ask(2)).err(),
+            Some(StartError::Full(Ask(2)))
+        );
 
         let (value, completion) = realtime.try_recv().unwrap();
         assert_eq!(
             control.try_start(Ask(3)).err(),
-            Some(Ask(3)),
+            Some(StartError::Full(Ask(3))),
             "a value received but not completed is still in flight"
         );
 
@@ -90,7 +93,10 @@ mod tests {
     #[test]
     fn a_channel_of_no_capacity_refuses_every_transfer() {
         let (mut control, _realtime) = channel(0);
-        assert_eq!(control.try_start(Ask(1)).err(), Some(Ask(1)));
+        assert_eq!(
+            control.try_start(Ask(1)).err(),
+            Some(StartError::Full(Ask(1)))
+        );
     }
 
     #[test]
@@ -130,6 +136,16 @@ mod tests {
         let (_, completion) = realtime.try_recv().unwrap();
         drop(completion);
         assert_eq!(transfer.try_wait(), Err(TryWaitError::Disconnected));
+    }
+
+    #[test]
+    fn starting_is_refused_once_the_realtime_end_is_gone() {
+        let (mut control, realtime) = channel(1);
+        drop(realtime);
+        assert_eq!(
+            control.try_start(Ask(1)).err(),
+            Some(StartError::Disconnected(Ask(1)))
+        );
     }
 
     #[test]
