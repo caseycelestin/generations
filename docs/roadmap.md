@@ -170,18 +170,18 @@ or rejected instead. The history of how a shape was reached is in git.
   carries `Audio` between them. An `Engine` type over both was dissolved,
   since no method needed both sides, and a joint constructor was rejected
   as the same thing again.
-- **A verb lives on the thing it acts on.** `voice.stop()`,
-  `voice.request_status()` and `voice.try_wait()` act on one playing. A
-  handle holds its request, never a `Control`, so the dependency runs one
-  way. Audio carrying a handle and sending its removal from `Drop` was
-  tried and rejected as the wrong coupling.
+- **A verb lives on the thing it acts on.** `voice.stop()` and
+  `voice.try_wait()` act on one playing. A handle holds its request,
+  never a `Control`, so the dependency runs one way. Audio carrying a
+  handle and sending its removal from `Drop` was tried and rejected as
+  the wrong coupling.
 - **A voice is stopped by its handle.** A caller keeps the handle of
-  anything it may stop, and stopping them all is a loop over them; each
-  stop is a cancel, which cannot fail. `control.stop(&audio)` and
-  `stop_all()` were removed: they reached only voices whose handles were
-  dropped, and cost two more requests on the voice channel, a shared
-  reply and headroom kept for them. A list of voices in `Control` was
-  rejected: it would trail the renderer, which decides when a voice ends.
+  anything it may stop, and stopping them all is a loop over them; a stop
+  cannot fail. `control.stop(&audio)` and `stop_all()` were removed:
+  they reached only voices whose handles were dropped, and cost two more
+  requests on the voice channel, a shared reply and headroom kept for
+  them. A list of voices in `Control` was rejected: it would trail the
+  renderer, which decides when a voice ends.
 - **`Control` does what can fail; a handle is made from a permit.**
   `open_input` reserves, then `Input::open(permit)` cannot fail, so
   every refusal shows in the public method and nothing is built for a
@@ -194,9 +194,8 @@ or rejected instead. The history of how a shape was reached is in git.
   for what it is to the caller; `RendererHandle`, `Link` and `Remote` were
   rejected.
 - **A handle's errors are in the engine's terms.** `PlayError`,
-  `RecordError`, `TryWaitError`, `StatusError` and `TryRecvStatusError`
-  translate `request`'s, so a caller reads "the
-  renderer is gone, and the audio with it", not a channel's
+  `RecordError` and `TryWaitError` translate `request`'s, so a caller
+  reads "the renderer is gone, and the audio with it", not a channel's
   `Disconnected`.
 - **Loaded audio is plain data.** Hold `Audio` and it is in RAM; drop it
   and its voices play out, its memory repaid once the last voice's reply
@@ -221,7 +220,8 @@ or rejected instead. The history of how a shape was reached is in git.
 ### Requests
 
 The two sides speak only through `request`, a generic channel at the
-crate root that knows nothing of audio.
+crate root that knows nothing of audio. `request_v2` replaces it: built
+and tested; the engine has not moved onto it.
 
 - **One request, one reply; the real-time side never speaks unprompted.**
   Everything sent back answers one message sent, so each return ring is
@@ -233,38 +233,48 @@ crate root that knows nothing of audio.
   how it ended and its take. The control side frees all of it, so nothing is freed on the
   audio thread. A collector channel for freeing was built and removed
   once every return rode in a reply.
-- **Status is asked, not pushed, and is advisory.** `request_status`
-  returns a pending answer, one question at a time, given at the
-  renderer's next period while it still holds the request; once the
-  request has closed the question comes back `Closed`, and the reply has
-  the last word. Atomic cells published each period were weighed and
-  deferred: they hold only a word, and would be a second mechanism.
-- **Cancel is on the handle, and cannot fail.** Its slot is reserved with
-  the request; like `JoinHandle::abort` it is idempotent and returns
-  nothing. Stopping one voice is its cancel; dropping a recording cancels
-  it.
+- **A request is only sent and answered; the rest is cells.** Stop,
+  settings (monitoring, level, pan) and status are atomics the handle and
+  the renderer share: the handle writes stop and settings, the renderer
+  writes status, each read once a block. Plugins and Kira keep parameters
+  this way. Where the cells live is not decided. Cancel and asked status
+  rode the ring first: a cancel could outlive its request on a shared
+  ring, and every status only said "still held". Updates as messages, on
+  the request's ring, a ring of their own or their own channel by key,
+  each needed ordering rules a cell does not, and a lost one goes
+  unseen. Decided, not built.
+- **Each request brings its own reply ring, and its sender comes back.**
+  `try_send` makes a one-deep ring and sends its `ReplySender` with the
+  request; the caller keeps the `ReplyReceiver`, as tokio's actor pattern
+  pairs an `mpsc` with a `oneshot`. The renderer replies through the
+  sender and sends it back on `returned`, so the ring is freed on the
+  control side, as Kira returns unused resources. Nothing is shared, so
+  no request carries an id and nothing locks. Reply rings per slot, made
+  at `create` with shared queues for slots in use and draining, were
+  built and set aside on branch `request-v2-slots`. A `Drop` sending the
+  sender back was rejected: it would share `returned` with every sender.
 - **One channel per actor, typed by its request.** Both ends deal in the
-  request type's own reply and status, so nothing converts and nothing
+  request type's own reply, so nothing converts and nothing
   can be sent the wrong reply. Each is sized by its actor: voices by
   `voices + voice_queue`, recording by `RECORDERS`, inputs by `inputs`.
   One shared channel with umbrella `Command` and `Event` enums came
   first. Order across channels is lost, which does no harm: the renderer
   takes in every channel at the start of a period.
-- **Reserving holds room for all a request can send.** Out three (it, its
-  cancel, one question), back two (its reply, one answer), so `open`,
-  `cancel`, `close` and `answer` cannot fail. The reservation is counted,
-  not a held lock: a permit that held the lock until `open` hung any
-  caller that touched the same channel in between. The count is tokio's
-  `Permit` shape.
-- **A slot is held until its reply is taken or its handle dropped.**
-  Counting until read keeps one number for room and for the table of
-  replies, so memory stays fixed at creation. A dropped handle's reply is
-  dropped on the control side when taken in; reserving takes in first,
-  and `Control::collect` takes in every channel.
-- **Plain handles over a shared state.** Every handle reaches one
-  `Arc<Mutex<...>>`, as `std` and tokio's channels do, so dropping one
-  means something. Handles as plain ids routed through the end were
-  weighed: no lock, but a drop could do nothing.
+- **A request is in flight from sent until its sender is back, so no send
+  fails.** `ControlEnd` counts them, and both shared rings hold
+  `capacity`: a request read but not answered still counts, as its
+  sender has yet to come back. `try_send` hands the request back at
+  capacity; whether a permit comes first, as before, is not decided.
+- **A dropped receiver needs nothing done.** Its ring, and any reply in
+  it, is freed when its sender comes back and `take_in` drops it.
+- **A dropped real-time end drops its unread requests,** so their
+  receivers learn no reply is coming: the ring would keep them while the
+  control end lives. It frees then, at teardown, when no deadline is
+  left.
+- **`Control` is not `Clone`.** An app holds one, in its own state, and
+  shares it its own way, so both shared rings stay owned. Handles as ids
+  routed through the end were weighed: a drop could do nothing. The
+  engine's `Control` is `Clone` until it moves onto `request_v2`.
 
 ### The render side
 
@@ -296,8 +306,6 @@ crate root that knows nothing of audio.
 - **A voice's reply carries no reason.** Nothing on the control side acts
   on why a voice ended, so its handle learns only that it did.
   `Finished`, `Stopped` and `Cut` were reported before.
-- **A status has no `Pending` and no `Ended`.** The renderer answers only
-  while it holds the voice or recording, and the end comes in the reply.
 - **Requests are tasks.** A `VoiceRequest` is a play and a
   `RecordingRequest` a `Start`, each answered when done; meaning
   stays plain, the handles carry the verbs. Operations on what the
@@ -343,10 +351,10 @@ Inputs are built; monitoring is not.
   `mpsc::Sender` does. It comes back if `Control` holds what a renderer
   was told, to replay. Keeping the engine across a switch is the
   caller's (Deferred).
-- **Changing an open input is not decided.** Monitoring needs "monitor
-  this input"; requests carry only an open, a cancel and a question. An
-  update message on the request channel, which voices would reuse for
-  level and pan, is the likely shape.
+- **Monitoring is a cell on the input.** `input.set_monitoring(bool)`
+  sets a flag in the input's cells, read each block, changeable while the
+  input is open. A second request kind on the input channel was tried and
+  dropped: it forced a shared reply type. Decided, not built.
 
 ### Devices and examples
 
@@ -382,9 +390,9 @@ Inputs are built; monitoring is not.
 Built for the main out; recording inputs are not built yet.
 
 - **A recording is a handle, as a voice is, and one handle is one take.**
-  `control.record(audio)` returns a `Recording` with `stop`,
-  `request_status` and `try_wait`. Recording again is a new `record`, so
-  a late stop or answer can never reach a newer take.
+  `control.record(audio)` returns a `Recording` with `stop` and
+  `try_wait`. Recording again is a new `record`, so a late stop can never
+  reach a newer take.
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
   length is a maximum, and reaching it ends the take `Full`, which is not
   an error. Only stereo audio is taken: the main out is stereo.
@@ -503,9 +511,6 @@ The project does not know about tiers.
   reservation and no swap; the crate does not own the process.
 - **A level meter on a take**, in its status; the same could report a
   take's progress.
-- **Published state cells**, atomics the renderer writes each period, for
-  state read every frame, if a status question per frame proves a
-  measured cost.
 - **Saving a take as loaded audio**, a copy into a right-sized buffer,
   for playing a resample at once without reading it back from disk.
 - **Hardware monitoring** on the target's codec, if it has it.
