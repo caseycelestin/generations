@@ -58,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err(error) => println!("no result: {error}"),
     }
 
-    // Whether each voice has ended; taking that also frees its slot.
+    // Whether each voice has ended; its slot was freed when it did.
     for voice in [&mut played, &mut stopped] {
         match voice.try_wait() {
             Ok(()) => println!("ended"),

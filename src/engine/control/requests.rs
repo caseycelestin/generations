@@ -79,7 +79,7 @@ impl From<request::TryRecvStatusError> for TryRecvStatusError {
 /// Nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ControlError {
-    /// Stop or drop one, then try again.
+    /// Stop one, or wait for one to end, then try again.
     #[error("every place is held")]
     Full,
     #[error("the renderer is gone")]

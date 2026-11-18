@@ -71,8 +71,8 @@ pub fn create(
     )
 }
 
-/// Every voice playing, plus the queue; each holds one until its reply is
-/// taken.
+/// Every voice playing, plus the queue; each holds one from play until it
+/// ends.
 fn voice_capacity(voice_queue: usize, voices: NonZeroUsize) -> usize {
     voices.get() + voice_queue
 }

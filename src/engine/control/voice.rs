@@ -8,8 +8,8 @@ use crate::audio::Audio;
 use crate::engine::protocol::voice::{VoiceData, VoiceState};
 use crate::transfer::{ControlEnd, Transfer};
 
-/// Holds a voice slot until `try_wait` returns `Ok` or it is dropped, so
-/// one kept after its voice ends must be waited on to give the slot back.
+/// Its voice holds a slot until it ends, whether the handle is kept, waited
+/// on or dropped.
 #[derive(Debug)]
 pub struct Voice {
     handle: Transfer<VoiceData>,

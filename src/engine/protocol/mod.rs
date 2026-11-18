@@ -1,9 +1,10 @@
-//! What crosses between the two sides, owned by neither.
+//! What crosses between the two sides, owned by neither. Each feature has
+//! its own file and its own channel; handles stand for what crosses on the
+//! control side.
 //!
-//! Each request is a task the renderer carries out, answered once it is
-//! done; handles stand for them on the control side. Only plain data
-//! crosses: audio and values. Each feature has its own file and its own
-//! request channel.
+//! Voices are transfers: their data goes to the renderer and comes back
+//! whole once they end, and their state is shared by both sides while they
+//! play. Recording and inputs are still requests, answered once done.
 
 pub(crate) mod inputs;
 pub(crate) mod recording;
