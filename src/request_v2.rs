@@ -22,6 +22,24 @@ pub struct ControlEnd<Q: Request> {
     replies: Vec<(Slot, Consumer<Q::Reply>)>,
 }
 
+impl<Q: Request> ControlEnd<Q> {
+    /// Hands the request back when every slot is open.
+    pub fn open(&mut self, request: Q) -> Result<RequestHandle<Q>, Q> {
+        let Some((slot, reply)) = self.replies.pop() else {
+            return Err(request);
+        };
+        let pushed = self.to_realtime.push((slot, request));
+        assert!(pushed.is_ok(), "the ring holds a request per slot");
+        Ok(RequestHandle { slot, reply })
+    }
+}
+
+/// Owns its slot's reply ring while its request is open.
+pub struct RequestHandle<Q: Request> {
+    slot: Slot,
+    reply: Consumer<Q::Reply>,
+}
+
 pub struct RealtimeEnd<Q: Request> {
     from_control: Consumer<(Slot, Q)>,
     /// By slot.
