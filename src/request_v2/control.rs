@@ -46,7 +46,7 @@ pub enum TryWaitError {
     Disconnected,
 }
 
-/// One request's reply ring, one deep: a request has one reply.
+/// One deep: a request has one reply.
 fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
     let (producer, consumer) = RingBuffer::new(1);
     let sender = ReplySender { reply: producer };
@@ -58,11 +58,9 @@ fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
 }
 
 pub struct ControlEnd<Q: Request> {
-    /// Each request with the end its reply goes into.
     pub(super) requests: Producer<(Q, ReplySender<Q::Reply>)>,
-    /// Reply ends the real-time side is done with, to drop here.
     pub(super) returned: Consumer<ReplySender<Q::Reply>>,
-    /// Sent and not yet back on `returned`; `try_send` refuses at capacity.
+    /// Sent and not yet back on `returned`.
     pub(super) in_flight: usize,
 }
 
@@ -80,8 +78,7 @@ impl<Q: Request> ControlEnd<Q> {
         Ok(receiver)
     }
 
-    /// Drops every `ReplySender` the real-time side has sent back, freeing
-    /// rings whose receiver is gone, and counts each out of flight.
+    /// Rings whose receiver is gone are freed here, with any reply in them.
     pub fn take_in(&mut self) {
         while let Ok(sender) = self.returned.pop() {
             drop(sender);

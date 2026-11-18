@@ -6,9 +6,8 @@ use rtrb::{Consumer, Producer};
 
 use super::Request;
 
-/// Held by the real-time side while it runs one request. Goes back on
-/// `returned` once used, never dropped there: it may be the last end of its
-/// ring.
+/// Never dropped on the real-time side, as it may be the last end of its
+/// ring: `reply` sends it back.
 pub struct ReplySender<R> {
     pub(super) reply: Producer<R>,
 }
