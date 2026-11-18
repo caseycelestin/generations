@@ -6,7 +6,6 @@ use std::sync::atomic::Ordering;
 use super::{Frame, Renderer};
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::{InputChannels, InputData};
-use crate::request::ReplyPermit;
 use crate::transfer::{self, Completion};
 
 #[derive(Debug)]
@@ -89,10 +88,17 @@ impl Inputs {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
 
+    use super::*;
+    use crate::engine::protocol::inputs::InputState;
+
+    /// Received as the renderer receives it.
     fn input(channels: InputChannels, capture_channels: usize) -> Input {
-        Input::open(ReplyPermit::for_test(0), channels, capture_channels)
+        let (mut control, mut realtime) = transfer::channel(1);
+        let state = Arc::new(InputState::default());
+        let _transfer = control.try_start(InputData { channels, state }).unwrap();
+        Input::open(realtime.try_recv().unwrap(), capture_channels)
     }
 
     #[test]
