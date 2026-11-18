@@ -2,6 +2,8 @@
 //! never allocates, frees, locks or blocks, except when dropped, at
 //! teardown, when no deadline is left.
 
+use std::ops::{Deref, DerefMut};
+
 use rtrb::{Consumer, Producer};
 
 /// Never dropped on the real-time side, as it may be the last end of its
@@ -10,6 +12,22 @@ use rtrb::{Consumer, Producer};
 pub struct Completion<T> {
     pub(super) value: T,
     pub(super) ring: Producer<T>,
+}
+
+/// The value is read and written through it, never moved out: it leaves
+/// only through `complete`.
+impl<T> Deref for Completion<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> DerefMut for Completion<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
 }
 
 #[derive(Debug)]
