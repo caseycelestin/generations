@@ -108,6 +108,12 @@ pub struct RealtimeEnd<Q: Request> {
     returned: Producer<ReplySender<Q::Reply>>,
 }
 
+impl<Q: Request> RealtimeEnd<Q> {
+    pub fn try_recv(&mut self) -> Option<(Q, ReplySender<Q::Reply>)> {
+        self.requests.pop().ok()
+    }
+}
+
 /// `capacity` is in requests: the most that can be in flight at once,
 /// from open until their reply end is back. Both rings hold that, as each
 /// request sends one open and returns one end, so neither ever fills.
