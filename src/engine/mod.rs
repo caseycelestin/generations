@@ -103,30 +103,33 @@ mod tests {
     }
 
     #[test]
-    fn a_played_voice_is_heard_then_ends() {
+    fn a_played_voice_is_heard_then_gives_its_audio_back() {
         let (mut control, mut renderer) = create(4, 2, 0, 0);
         let audio = audio(&[0.5; 2]);
-        let mut voice = control.play(&audio).unwrap();
-        assert_eq!(voice.try_wait(), Err(TryWaitError::NotEnded));
+        let _voice = control.play(&audio).unwrap();
 
         let mut out = vec![0.0; 3 * 2];
         renderer.render(&[], &mut out);
+        control.collect();
 
         assert_eq!(out, vec![0.5, 0.5, 0.5, 0.5, 0.0, 0.0]);
-        assert_eq!(voice.try_wait(), Ok(()));
+        assert_eq!(Arc::strong_count(audio.shared()), 1);
     }
 
     #[test]
-    fn a_stopped_voice_ends() {
+    fn a_stopped_voice_falls_silent_and_gives_its_audio_back() {
         let (mut control, mut renderer) = create(4, 2, 0, 0);
         let audio = audio(&[0.5; 64]);
-        let mut voice = control.play(&audio).unwrap();
+        let voice = control.play(&audio).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
         voice.stop();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
+        let mut out = vec![0.5; 4 * 2];
+        renderer.render(&[], &mut out);
+        control.collect();
 
-        assert_eq!(voice.try_wait(), Ok(()));
+        assert_eq!(out, vec![0.0; 4 * 2]);
+        assert_eq!(Arc::strong_count(audio.shared()), 1);
     }
 
     #[test]
@@ -152,7 +155,7 @@ mod tests {
         let (mut control, _renderer) = create(0, 1, 0, 0);
         let audio = audio(&[0.5; 2]);
         let _voice = control.play(&audio).unwrap();
-        assert!(matches!(control.play(&audio), Err(ControlError::Full)));
+        assert!(matches!(control.play(&audio), Err(VoiceError::Full)));
     }
 
     #[test]
@@ -291,68 +294,51 @@ mod tests {
     }
 
     #[test]
-    fn a_stopped_input_ends_stopped() {
-        let (control, mut renderer) = create(4, 1, 1, 1);
-        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
-        renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
-        assert_eq!(input.try_wait(), Err(TryWaitError::NotEnded));
-
-        input.stop();
-        renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
-
-        assert_eq!(input.try_wait(), Ok(InputEnd::Stopped));
-    }
-
-    #[test]
     fn an_open_is_refused_while_every_input_is_open() {
-        let (control, _renderer) = create(4, 1, 1, 1);
+        let (mut control, _renderer) = create(4, 1, 1, 1);
         let _open = control.open_input(InputChannels::Mono(0)).unwrap();
         assert!(matches!(
             control.open_input(InputChannels::Mono(0)),
-            Err(ControlError::Full)
+            Err(InputError::Full)
         ));
     }
 
     #[test]
     fn without_capture_channels_every_open_is_refused() {
-        let (control, _renderer) = create(4, 1, 0, 1);
+        let (mut control, _renderer) = create(4, 1, 0, 1);
         assert!(matches!(
             control.open_input(InputChannels::Mono(0)),
-            Err(ControlError::NoSuchChannel)
+            Err(InputError::NoSuchChannel)
         ));
     }
 
     #[test]
     fn a_channel_past_the_device_is_refused() {
-        let (control, _renderer) = create(4, 1, 2, 2);
+        let (mut control, _renderer) = create(4, 1, 2, 2);
         assert!(matches!(
             control.open_input(InputChannels::Mono(2)),
-            Err(ControlError::NoSuchChannel)
+            Err(InputError::NoSuchChannel)
         ));
         assert!(matches!(
             control.open_input(InputChannels::Stereo(0, 2)),
-            Err(ControlError::NoSuchChannel)
+            Err(InputError::NoSuchChannel)
         ));
         assert!(control.open_input(InputChannels::Mono(1)).is_ok());
     }
 
     #[test]
     fn inputs_switch_from_two_stereo_to_four_mono_on_one_device() {
-        let (control, mut renderer) = create(4, 1, 4, 4);
-        let mut stereo = [
+        let (mut control, mut renderer) = create(4, 1, 4, 4);
+        let stereo = [
             control.open_input(InputChannels::Stereo(0, 1)).unwrap(),
             control.open_input(InputChannels::Stereo(2, 3)).unwrap(),
         ];
         renderer.render(&[0.0; 4 * 4], &mut [0.0; 4 * 2]);
 
-        for input in &mut stereo {
+        for input in stereo {
             input.stop();
         }
         renderer.render(&[0.0; 4 * 4], &mut [0.0; 4 * 2]);
-        // Taking the replies gives the places back.
-        for input in &mut stereo {
-            assert_eq!(input.try_wait(), Ok(InputEnd::Stopped));
-        }
 
         let mono: Result<Vec<Input>, _> = (0..4)
             .map(|channel| control.open_input(InputChannels::Mono(channel)))
@@ -362,19 +348,10 @@ mod tests {
 
     #[test]
     fn a_dropped_input_gives_its_place_back() {
-        let (control, mut renderer) = create(4, 1, 1, 1);
+        let (mut control, mut renderer) = create(4, 1, 1, 1);
         let open = control.open_input(InputChannels::Mono(0)).unwrap();
         drop(open);
         renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
         assert!(control.open_input(InputChannels::Mono(0)).is_ok());
-    }
-
-    #[test]
-    fn a_held_input_answers_its_status() {
-        let (control, mut renderer) = create(4, 1, 1, 1);
-        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
-        let mut pending = input.request_status().unwrap();
-        renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
-        assert_eq!(pending.try_recv(), Ok(InputStatus::Open));
     }
 }
