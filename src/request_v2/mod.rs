@@ -20,17 +20,6 @@ pub trait Request {
     type Reply;
 }
 
-/// One request's reply ring, one deep: a request has one reply.
-fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
-    let (producer, consumer) = RingBuffer::new(1);
-    let sender = ReplySender { reply: producer };
-    let receiver = ReplyReceiver {
-        reply: consumer,
-        taken: false,
-    };
-    (sender, receiver)
-}
-
 /// `capacity` is in requests: the most that can be in flight at once,
 /// from open until their reply end is back. Both rings hold that, as each
 /// request sends one open and returns one end, so neither ever fills.

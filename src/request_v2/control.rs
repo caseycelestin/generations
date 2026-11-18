@@ -1,10 +1,10 @@
 //! The control side's end, and each request's receiver. Allocating and
 //! freeing are fine here.
 
-use rtrb::{Consumer, Producer};
+use rtrb::{Consumer, Producer, RingBuffer};
 use thiserror::Error;
 
-use super::{ReplySender, Request, reply_ring};
+use super::{ReplySender, Request};
 
 /// The caller's end of one request's reply ring. Dropping it early is
 /// safe: the real-time side's end comes back, and the ring is freed here.
@@ -44,6 +44,17 @@ pub enum TryWaitError {
     /// is gone.
     #[error("no reply will come")]
     Disconnected,
+}
+
+/// One request's reply ring, one deep: a request has one reply.
+fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
+    let (producer, consumer) = RingBuffer::new(1);
+    let sender = ReplySender { reply: producer };
+    let receiver = ReplyReceiver {
+        reply: consumer,
+        taken: false,
+    };
+    (sender, receiver)
 }
 
 pub struct ControlEnd<Q: Request> {
