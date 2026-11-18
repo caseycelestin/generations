@@ -45,18 +45,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("saved as {id:?}");
 
     println!("pluck");
-    let mut first = control.play(&pluck)?;
+    control.play(&pluck)?;
     sleep(Duration::from_millis(600));
-    println!("first ended: {}", first.try_wait().is_ok());
     println!("pluck again, over the first one's tail");
-    let mut second = control.play(&pluck)?;
+    control.play(&pluck)?;
     sleep(Duration::from_millis(1200));
     // Both have played to their last frame by now.
-    println!(
-        "first ended: {}, second ended: {}",
-        first.try_wait().is_ok(),
-        second.try_wait().is_ok()
-    );
     control.collect();
 
     // The audio thread queues its complaints; this is where they are read.
