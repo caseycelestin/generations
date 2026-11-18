@@ -28,9 +28,22 @@ pub struct ReplyReceiver<R> {
 }
 
 impl<R> ReplyReceiver<R> {
-    /// `None` until the reply arrives, and again once it is taken.
-    pub fn try_wait(&mut self) -> Option<R> {
-        self.reply.pop().ok()
+    /// A reply that came before its sender was dropped is still taken.
+    pub fn try_wait(&mut self) -> Result<R, TryWaitError> {
+        if self.taken {
+            return Err(TryWaitError::Taken);
+        }
+        // Asked before popping: a sender dropped by now pushed any reply
+        // first, so an empty ring after it means none is coming.
+        let abandoned = self.reply.is_abandoned();
+        let Ok(reply) = self.reply.pop() else {
+            if abandoned {
+                return Err(TryWaitError::Disconnected);
+            }
+            return Err(TryWaitError::Empty);
+        };
+        self.taken = true;
+        Ok(reply)
     }
 }
 
