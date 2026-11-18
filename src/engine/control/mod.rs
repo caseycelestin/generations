@@ -3,6 +3,7 @@
 mod input;
 mod recording;
 mod requests;
+mod transfers;
 mod voice;
 
 pub use input::{Input, PendingInputStatus};

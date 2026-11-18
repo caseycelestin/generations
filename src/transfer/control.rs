@@ -59,6 +59,7 @@ fn return_ring<T>() -> (Completion<T>, Transfer<T>) {
     (completion, transfer)
 }
 
+#[derive(Debug)]
 pub struct ControlEnd<T> {
     pub(super) started: Producer<(T, Completion<T>)>,
     pub(super) returned: Consumer<Completion<T>>,

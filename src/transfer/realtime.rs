@@ -11,6 +11,7 @@ pub struct Completion<T> {
     pub(super) ring: Producer<T>,
 }
 
+#[derive(Debug)]
 pub struct RealtimeEnd<T> {
     pub(super) started: Consumer<(T, Completion<T>)>,
     pub(super) returned: Producer<Completion<T>>,
