@@ -1,5 +1,6 @@
 //! The real-time side's end. Everything here is wait-free and bounded: it
-//! never allocates, frees, locks or blocks.
+//! never allocates, frees, locks or blocks, except when dropped, at
+//! teardown, when no deadline is left.
 
 use rtrb::{Consumer, Producer};
 
