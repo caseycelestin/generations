@@ -340,9 +340,14 @@ Inputs are built; monitoring is not.
   Apple's `inputNode` has no channels rather than not existing. A
   `NoCapture` error and a second constructor, `create_with_capture`, were
   removed with the ring: a device's width is one number at `create`.
-- **A device change rebuilds the engine**, as a DAW stops its engine to
-  switch interfaces. Attaching a capture to a running renderer by request
-  was rejected for it. Keeping the engine across a switch is the
+- **A device change rebuilds the engine**: the caller calls `create`
+  again, as a DAW stops its engine to switch interfaces. Attaching a
+  capture to a running renderer by request was rejected for it, and so
+  was `Control` making its renderers: once a renderer is gone, `Control`
+  holds nothing a new one needs, and clones that quietly followed a new
+  renderer would break with the handles, which stay tied to theirs as an
+  `mpsc::Sender` does. It comes back if `Control` holds what a renderer
+  was told, to replay. Keeping the engine across a switch is the
   caller's (Deferred).
 - **Changing an open input is not decided.** Monitoring needs "monitor
   this input"; requests carry only an open, a cancel and a question. An
