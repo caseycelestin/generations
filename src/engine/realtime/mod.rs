@@ -18,7 +18,7 @@ use crate::transfer;
 use input::Input;
 use math::{add, hard_clip};
 use recording::Recording;
-use voices::{Voice, Voices};
+use voices::Voices;
 
 type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 
@@ -44,7 +44,6 @@ pub(crate) struct Transfers {
 #[derive(Debug)]
 pub struct Renderer {
     requests: Requests,
-    transfers: Transfers,
     voices: Voices,
     recording: Option<Recording>,
     /// Per frame of `render`'s capture; zero without an input device.
@@ -74,8 +73,7 @@ impl Renderer {
     ) -> Self {
         Self {
             requests,
-            transfers,
-            voices: Voices::new(voices),
+            voices: Voices::new(voices, transfers.voices),
             recording: None,
             capture_channels,
             inputs: Vec::with_capacity(inputs),
@@ -118,20 +116,9 @@ impl Renderer {
     }
 
     fn apply_requests(&mut self) {
-        self.apply_voice_requests();
+        self.voices.receive();
         self.apply_recording_requests();
         self.apply_input_requests();
-    }
-
-    fn apply_voice_requests(&mut self) {
-        while let Some(data) = self.transfers.voices.try_recv() {
-            if let Some(cut) = self.voices.add(Voice::new(data)) {
-                cut.end(&mut self.transfers.voices);
-            }
-        }
-        for stopped in self.voices.extract_if(|voice| voice.stopped()) {
-            stopped.end(&mut self.transfers.voices);
-        }
     }
 
     fn apply_recording_requests(&mut self) {
@@ -187,9 +174,7 @@ impl Renderer {
     }
 
     fn clean_up(&mut self) {
-        for voice in self.voices.extract_if(|voice| voice.finished()) {
-            voice.end(&mut self.transfers.voices);
-        }
+        self.voices.end_finished();
         if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
             full.end(RecordingEnd::Full, &mut self.requests.recording);
         }

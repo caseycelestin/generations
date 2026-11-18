@@ -70,14 +70,37 @@ pub(crate) struct Voices {
     /// How many voices have been added, so the next one's number. A `u64`
     /// cannot run out: a million a second lasts half a million years.
     added: u64,
+    /// The only way voices arrive or leave.
+    transfers: RealtimeEnd<VoiceData>,
 }
 
 impl Voices {
     /// At least one, so `add` always has a place or an oldest to cut.
-    pub(crate) fn new(count: NonZeroUsize) -> Self {
+    pub(crate) fn new(count: NonZeroUsize, transfers: RealtimeEnd<VoiceData>) -> Self {
         Self {
             places: (0..count.get()).map(|_| None).collect(),
             added: 0,
+            transfers,
+        }
+    }
+
+    /// New voices join, cutting the oldest when every place is taken;
+    /// stopped ones end.
+    pub(crate) fn receive(&mut self) {
+        while let Some(data) = self.transfers.try_recv() {
+            if let Some(cut) = self.add(Voice::new(data)) {
+                cut.end(&mut self.transfers);
+            }
+        }
+        for stopped in take_if(&mut self.places, |voice| voice.stopped()) {
+            stopped.end(&mut self.transfers);
+        }
+    }
+
+    /// Voices whose audio has run out end.
+    pub(crate) fn end_finished(&mut self) {
+        for finished in take_if(&mut self.places, |voice| voice.finished()) {
+            finished.end(&mut self.transfers);
         }
     }
 
@@ -107,18 +130,18 @@ impl Voices {
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
         self.places.iter_mut().flatten().map(|(_, voice)| voice)
     }
+}
 
-    /// Takes out every voice `test` picks, as `Vec::extract_if`: stopped
-    /// early, the rest stay.
-    pub(crate) fn extract_if(
-        &mut self,
-        mut test: impl FnMut(&mut Voice) -> bool,
-    ) -> impl Iterator<Item = Voice> {
-        self.places
-            .iter_mut()
-            .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
-            .map(|(_, voice)| voice)
-    }
+/// Takes out every voice `test` picks, as `Vec::extract_if`: stopped early,
+/// the rest stay. On the places alone, so the end can be borrowed beside it.
+fn take_if(
+    places: &mut [Option<(u64, Voice)>],
+    mut test: impl FnMut(&mut Voice) -> bool,
+) -> impl Iterator<Item = Voice> {
+    places
+        .iter_mut()
+        .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
+        .map(|(_, voice)| voice)
 }
 
 #[cfg(test)]
@@ -145,7 +168,8 @@ mod tests {
     }
 
     fn voices(count: usize) -> Voices {
-        Voices::new(NonZeroUsize::new(count).unwrap())
+        let (_, realtime) = transfer::channel(0);
+        Voices::new(NonZeroUsize::new(count).unwrap(), realtime)
     }
 
     #[test]
@@ -211,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn extract_if_takes_only_the_voices_picked() {
+    fn take_if_takes_only_the_voices_picked() {
         let mut voices = voices(2);
         voices.add(voice(ChannelLayout::Mono, &[0.0]));
         voices.add(voice(ChannelLayout::Mono, &[0.0; 4]));
@@ -219,11 +243,10 @@ mod tests {
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let extracted: Vec<usize> = voices
-            .extract_if(|voice| voice.finished())
+        let taken: Vec<usize> = take_if(&mut voices.places, |voice| voice.finished())
             .map(|voice| frames(&voice))
             .collect();
-        assert_eq!(extracted, [1]);
+        assert_eq!(taken, [1]);
         assert_eq!(voices.iter_mut().count(), 1);
     }
 }
