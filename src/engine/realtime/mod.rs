@@ -198,17 +198,19 @@ mod tests {
     fn renderer(voices: usize) -> (Ends, Renderer) {
         let (voices_control, voices_realtime) = transfer::channel(voices + 16);
         let (recording_control, recording_realtime) = request::channel(1);
-        let (_, inputs_realtime) = request::channel(0);
+        let (_, inputs_realtime) = transfer::channel(0);
         let ends = Ends {
             voices: voices_control,
             recording: recording_control,
         };
         let requests = Requests {
             recording: recording_realtime,
-            inputs: inputs_realtime,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (ends, Renderer::new(requests, voices_realtime, voices, 0, 0))
+        (
+            ends,
+            Renderer::new(requests, voices_realtime, voices, 0, inputs_realtime, 0),
+        )
     }
 
     /// Starts a mono voice of `samples`, as `Control::play` does, keeping
