@@ -69,6 +69,22 @@ impl Inputs {
             transfers,
         }
     }
+
+    /// New inputs open; stopped ones end.
+    pub(crate) fn receive(&mut self) {
+        while let Some(data) = self.transfers.try_recv() {
+            let room = self.open.len() < self.open.capacity();
+            debug_assert!(room, "one transfer per place");
+            self.open.push(Input::open(data, self.capture_channels));
+        }
+        for input in self.open.extract_if(.., |input| input.stopped()) {
+            input.end(&mut self.transfers);
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Input> {
+        self.open.iter()
+    }
 }
 
 #[cfg(test)]
