@@ -4,7 +4,7 @@
 use rtrb::{Consumer, Producer, RingBuffer};
 use thiserror::Error;
 
-use super::{ReplySender, Request};
+use super::ReplySender;
 
 /// The caller's end of one request's reply ring. Dropping it early is
 /// safe: the real-time side's end comes back, and the ring is freed here.
@@ -57,16 +57,16 @@ fn reply_ring<R>() -> (ReplySender<R>, ReplyReceiver<R>) {
     (sender, receiver)
 }
 
-pub struct ControlEnd<Q: Request> {
-    pub(super) requests: Producer<(Q, ReplySender<Q::Reply>)>,
-    pub(super) returned: Consumer<ReplySender<Q::Reply>>,
+pub struct ControlEnd<Q> {
+    pub(super) requests: Producer<(Q, ReplySender<Q>)>,
+    pub(super) returned: Consumer<ReplySender<Q>>,
     /// Sent and not yet back on `returned`.
     pub(super) in_flight: usize,
 }
 
-impl<Q: Request> ControlEnd<Q> {
+impl<Q> ControlEnd<Q> {
     /// Hands the request back when `capacity` requests are in flight.
-    pub fn try_send(&mut self, request: Q) -> Result<ReplyReceiver<Q::Reply>, Q> {
+    pub fn try_send(&mut self, request: Q) -> Result<ReplyReceiver<Q>, Q> {
         self.take_in();
         if self.in_flight == self.requests.buffer().capacity() {
             return Err(request);

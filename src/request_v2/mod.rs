@@ -15,13 +15,9 @@ pub use realtime::{RealtimeEnd, ReplySender};
 
 use rtrb::RingBuffer;
 
-pub trait Request {
-    type Reply;
-}
-
 /// `capacity` is how many requests can be in flight, from sent until their
 /// `ReplySender` is back; both rings hold that many, so neither ever fills.
-pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
+pub fn channel<Q>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     let (requests_producer, requests_consumer) = RingBuffer::new(capacity);
     let (returned_producer, returned_consumer) = RingBuffer::new(capacity);
     let control = ControlEnd {
