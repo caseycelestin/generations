@@ -53,16 +53,16 @@ impl Control {
     /// use generations::engine::{self, InputChannels};
     ///
     /// // 16 voices, room for 64 plays, and a mono device with one input.
-    /// let (control, mut renderer) = engine::create(64, 16, 1, 1);
+    /// let (mut control, mut renderer) = engine::create(64, 16, 1, 1);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     ///
     /// // A duplex callback would own the renderer: a period of capture in,
     /// // the same frames out.
     /// renderer.render(&[0.0; 512], &mut [0.0; 512 * 2]);
     ///
+    /// // Silent, and its place free, from the renderer's next period.
     /// input.stop();
     /// renderer.render(&[0.0; 512], &mut [0.0; 512 * 2]);
-    /// println!("ended: {:?}", input.try_wait()?);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn open_input(&mut self, channels: InputChannels) -> Result<Input, InputError> {
