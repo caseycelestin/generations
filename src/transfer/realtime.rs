@@ -14,7 +14,7 @@ pub struct Completion<T> {
 
 #[derive(Debug)]
 pub struct RealtimeEnd<T> {
-    pub(super) started: Consumer<(T, Completion<T>)>,
+    pub(super) started: Consumer<Completion<T>>,
     pub(super) returned: Producer<Completion<T>>,
 }
 
@@ -27,7 +27,7 @@ impl<T> Drop for RealtimeEnd<T> {
 }
 
 impl<T> RealtimeEnd<T> {
-    pub fn try_recv(&mut self) -> Option<(T, Completion<T>)> {
+    pub fn try_recv(&mut self) -> Option<Completion<T>> {
         self.started.pop().ok()
     }
 
