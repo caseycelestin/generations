@@ -6,18 +6,14 @@ use crate::audio::AudioBuffer;
 use crate::request::Request;
 
 #[derive(Debug)]
-pub(crate) enum VoiceRequest {
-    Play(Arc<AudioBuffer>),
-    /// Every voice playing this audio.
-    StopAudio(Arc<AudioBuffer>),
-    StopAll,
+pub(crate) struct VoiceRequest {
+    pub(crate) audio: Arc<AudioBuffer>,
 }
 
-/// What a request carried comes back with its reply, to be freed on the
-/// control side: a play's audio, or the audio a stop named. A stop-all
-/// carries nothing.
+/// A play's audio comes back with its reply, to be freed on the control
+/// side.
 impl Request for VoiceRequest {
-    type Reply = Option<Arc<AudioBuffer>>;
+    type Reply = Arc<AudioBuffer>;
     type Status = VoiceStatus;
 }
 

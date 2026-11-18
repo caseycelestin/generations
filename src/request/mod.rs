@@ -57,18 +57,9 @@ enum FromRealtime<Q: Request> {
 /// question, and the ring back twice, for each one's status answer, so
 /// neither ring ever fills.
 pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
-    channel_with_headroom(capacity, 0)
-}
-
-/// As `channel`, with the last `headroom` slots of `capacity` kept for
-/// `try_reserve_including_headroom`, so ordinary requests cannot crowd it out.
-pub fn channel_with_headroom<Q: Request>(
-    capacity: usize,
-    headroom: usize,
-) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     let (to_realtime, from_control) = RingBuffer::new(3 * capacity);
     let (to_control, from_realtime) = RingBuffer::new(2 * capacity);
-    let control = ControlEnd::new(to_realtime, from_realtime, capacity, headroom);
+    let control = ControlEnd::new(to_realtime, from_realtime, capacity);
     let realtime = RealtimeEnd::new(from_control, to_control);
     (control, realtime)
 }
@@ -145,28 +136,6 @@ mod tests {
         let (control, _realtime) = channel::<Ask>(1);
         drop(control.try_reserve().unwrap());
         assert!(control.try_reserve().is_ok());
-    }
-
-    #[test]
-    fn try_reserve_leaves_the_headroom() {
-        let (control, _realtime) = channel_with_headroom::<Ask>(2, 1);
-        let _first = open(&control, 1);
-        assert_eq!(control.try_reserve().err(), Some(ReserveError::Full));
-        assert!(control.try_reserve_including_headroom().is_ok());
-    }
-
-    #[test]
-    fn the_headroom_is_part_of_the_capacity() {
-        let (control, _realtime) = channel_with_headroom::<Ask>(2, 1);
-        let _first = open(&control, 1);
-        let _second = control
-            .try_reserve_including_headroom()
-            .unwrap()
-            .open(Ask(2));
-        assert_eq!(
-            control.try_reserve_including_headroom().err(),
-            Some(ReserveError::Full)
-        );
     }
 
     #[test]

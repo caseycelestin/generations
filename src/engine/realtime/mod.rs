@@ -116,23 +116,10 @@ impl Renderer {
     fn apply_voice_requests(&mut self) {
         while let Some(received) = self.requests.voices.try_recv() {
             match received {
-                Received::Request(permit, VoiceRequest::Play(audio)) => {
+                Received::Request(permit, VoiceRequest { audio }) => {
                     if let Some(cut) = self.voices.add(Voice::new(permit, audio)) {
                         cut.end(&mut self.requests.voices);
                     }
-                }
-                Received::Request(permit, VoiceRequest::StopAudio(audio)) => {
-                    for voice in self.voices.extract_if(|voice| voice.plays(&audio)) {
-                        voice.end(&mut self.requests.voices);
-                    }
-                    // The audio goes back with the reply, never freed here.
-                    self.requests.voices.close(permit, Some(audio));
-                }
-                Received::Request(permit, VoiceRequest::StopAll) => {
-                    for voice in self.voices.drain() {
-                        voice.end(&mut self.requests.voices);
-                    }
-                    self.requests.voices.close(permit, None);
                 }
                 Received::Cancel(id) => {
                     if let Some(stopped) = self.voices.remove(id) {
@@ -257,7 +244,7 @@ mod tests {
 
     /// A renderer with `voices` places, and the control ends of its channels.
     fn renderer(voices: usize) -> (Ends, Renderer) {
-        let (voices_control, voices_realtime) = request::channel_with_headroom(voices + 16, 2);
+        let (voices_control, voices_realtime) = request::channel(voices + 16);
         let (recording_control, recording_realtime) = request::channel(1);
         let (_, inputs_realtime) = request::channel(0);
         let ends = Ends {
@@ -283,15 +270,7 @@ mod tests {
         ends.voices
             .try_reserve()
             .unwrap()
-            .open(VoiceRequest::Play(audio))
-    }
-
-    /// Opens a stop, as `Control::stop` and `stop_all` do.
-    fn stop(ends: &Ends, request: VoiceRequest) {
-        ends.voices
-            .try_reserve_including_headroom()
-            .unwrap()
-            .open(request);
+            .open(VoiceRequest { audio })
     }
 
     fn ended(voice: &mut RequestHandle<VoiceRequest>) -> bool {
@@ -374,37 +353,6 @@ mod tests {
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
         assert!(ended(&mut voice));
-    }
-
-    #[test]
-    fn stop_all_ends_every_voice_and_falls_silent() {
-        let (ends, mut renderer) = renderer(2);
-        let mut first = play(&ends, &[0.5; 64]);
-        let mut second = play(&ends, &[0.5; 64]);
-        let mut out = vec![0.0; 4 * 2];
-        renderer.render(&[], &mut out);
-        stop(&ends, VoiceRequest::StopAll);
-        renderer.render(&[], &mut out);
-        assert_eq!(out, vec![0.0; 4 * 2]);
-        assert!(ended(&mut first));
-        assert!(ended(&mut second));
-    }
-
-    #[test]
-    fn stop_audio_ends_only_the_voices_playing_it() {
-        let (ends, mut renderer) = renderer(3);
-        let stopped = Arc::new(buffer(ChannelLayout::Mono, &[0.5; 64]));
-        let mut first = play_audio(&ends, Arc::clone(&stopped));
-        let mut second = play_audio(&ends, Arc::clone(&stopped));
-        let mut kept = play(&ends, &[0.25; 64]);
-        let mut out = vec![0.0; 4 * 2];
-        renderer.render(&[], &mut out);
-        stop(&ends, VoiceRequest::StopAudio(Arc::clone(&stopped)));
-        renderer.render(&[], &mut out);
-        assert_eq!(out, vec![0.25; 4 * 2]);
-        assert!(ended(&mut first));
-        assert!(ended(&mut second));
-        assert!(!ended(&mut kept));
     }
 
     #[test]

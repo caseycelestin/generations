@@ -77,12 +77,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Every voice playing this audio, without their handles.
-    control.stop(&audio)?;
-
-    // Every voice at once, without their handles.
-    control.stop_all()?;
-
     // Sends collect on their own; call it when the app goes quiet.
     control.collect();
     Ok(())

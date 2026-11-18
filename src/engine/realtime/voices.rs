@@ -54,10 +54,6 @@ impl Voice {
         self.permit.id() == id
     }
 
-    pub(crate) fn plays(&self, audio: &Arc<AudioBuffer>) -> bool {
-        Arc::ptr_eq(&self.audio, audio)
-    }
-
     /// Its last frame has been rendered.
     pub(crate) fn finished(&self) -> bool {
         self.position == self.audio.frames()
@@ -65,7 +61,7 @@ impl Voice {
 
     /// The one way a voice leaves: its audio goes back in the reply.
     pub(crate) fn end(self, requests: &mut RealtimeEnd<VoiceRequest>) {
-        requests.close(self.permit, Some(self.audio));
+        requests.close(self.permit, self.audio);
     }
 }
 
@@ -140,13 +136,6 @@ impl Voices {
             .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
             .map(|(_, voice)| voice)
     }
-
-    pub(crate) fn drain(&mut self) -> impl Iterator<Item = Voice> + '_ {
-        self.places
-            .iter_mut()
-            .filter_map(Option::take)
-            .map(|(_, voice)| voice)
-    }
 }
 
 #[cfg(test)]
@@ -201,14 +190,6 @@ mod tests {
         voice.render(&mut scratch);
         voice.render(&mut scratch);
         assert_eq!(scratch, [[3.0, 3.0], [4.0, 4.0]]);
-    }
-
-    #[test]
-    fn a_voice_plays_only_its_own_audio() {
-        let voice = voice(ChannelLayout::Mono, &[0.0]);
-        let other = Arc::new(buffer(ChannelLayout::Mono, &[0.0]));
-        assert!(voice.plays(&voice.audio));
-        assert!(!voice.plays(&other));
     }
 
     #[test]
@@ -271,14 +252,5 @@ mod tests {
             .collect();
         assert_eq!(extracted, [RequestId(0)]);
         assert_eq!(voices.iter_mut().count(), 1);
-    }
-
-    #[test]
-    fn drain_takes_out_every_voice() {
-        let mut voices = voices(3);
-        voices.add(voice(ChannelLayout::Mono, &[0.0]));
-        voices.add(voice(ChannelLayout::Mono, &[0.0]));
-        assert_eq!(voices.drain().count(), 2);
-        assert_eq!(voices.iter_mut().count(), 0);
     }
 }
