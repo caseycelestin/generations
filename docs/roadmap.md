@@ -405,7 +405,9 @@ Built for the main out; recording inputs are not built yet.
   clears the audio and prefaults it first.
 - **`try_wait` gives how it ended and the audio, once.** It polls, as
   `Child::try_wait` does, and is the only way the take comes back:
-  `(RecordingEnd, Audio)`, `Full` or `Stopped`. A cached `state()` beside
+  `(RecordingEnd, Audio)`, `Full`, `Stopped` or `RendererGone`: a dropped
+  renderer still hands back what was heard, as nothing else holds the
+  audio, so a device failure keeps the take. A cached `state()` beside
   `take()` was replaced: it claimed `Recording` when it only meant no
   reply yet.
 - **Dropping a recording stops it**, unlike a voice, which plays out: no
