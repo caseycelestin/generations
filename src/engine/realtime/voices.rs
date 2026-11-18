@@ -3,6 +3,7 @@
 
 use std::mem;
 use std::num::NonZeroUsize;
+use std::sync::atomic::Ordering;
 
 use super::{Frame, Renderer};
 use crate::engine::protocol::voice::VoiceData;
@@ -41,6 +42,11 @@ impl Voice {
         }
         silence.fill([0.0; Renderer::OUTPUT_CHANNELS]);
         self.position = end;
+    }
+
+    /// Its handle asked it to stop.
+    pub(crate) fn stopped(&self) -> bool {
+        self.data.state.stop.load(Ordering::Relaxed)
     }
 
     /// Its last frame has been rendered.

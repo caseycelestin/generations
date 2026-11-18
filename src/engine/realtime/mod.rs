@@ -129,6 +129,9 @@ impl Renderer {
                 cut.end(&mut self.transfers.voices);
             }
         }
+        for stopped in self.voices.extract_if(|voice| voice.stopped()) {
+            stopped.end(&mut self.transfers.voices);
+        }
     }
 
     fn apply_recording_requests(&mut self) {
