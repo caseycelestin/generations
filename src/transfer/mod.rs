@@ -52,8 +52,9 @@ mod tests {
     fn a_value_comes_back_to_its_transfer_with_what_was_written() {
         let (mut control, mut realtime) = channel(1);
         let mut transfer = control.try_start(Ask(7)).unwrap();
-        let (Ask(number), completion) = realtime.try_recv().unwrap();
-        realtime.complete(completion, Ask(number * 2));
+        let mut completion = realtime.try_recv().unwrap();
+        completion.0 *= 2;
+        realtime.complete(completion);
         assert_eq!(transfer.try_wait(), Ok(Ask(14)));
     }
 
@@ -62,10 +63,10 @@ mod tests {
         let (mut control, mut realtime) = channel(2);
         let mut first = control.try_start(Ask(1)).unwrap();
         let mut second = control.try_start(Ask(2)).unwrap();
-        let (first_value, first_completion) = realtime.try_recv().unwrap();
-        let (second_value, second_completion) = realtime.try_recv().unwrap();
-        realtime.complete(second_completion, second_value);
-        realtime.complete(first_completion, first_value);
+        let first_completion = realtime.try_recv().unwrap();
+        let second_completion = realtime.try_recv().unwrap();
+        realtime.complete(second_completion);
+        realtime.complete(first_completion);
         assert_eq!(first.try_wait(), Ok(Ask(1)));
         assert_eq!(second.try_wait(), Ok(Ask(2)));
     }
@@ -79,14 +80,14 @@ mod tests {
             Some(StartError::Full(Ask(2)))
         );
 
-        let (value, completion) = realtime.try_recv().unwrap();
+        let completion = realtime.try_recv().unwrap();
         assert_eq!(
             control.try_start(Ask(3)).err(),
             Some(StartError::Full(Ask(3))),
             "a value received but not completed is still in flight"
         );
 
-        realtime.complete(completion, value);
+        realtime.complete(completion);
         assert!(control.try_start(Ask(4)).is_ok());
     }
 
@@ -103,9 +104,9 @@ mod tests {
     fn try_wait_is_empty_until_the_value_comes_back() {
         let (mut control, mut realtime) = channel(1);
         let mut transfer = control.try_start(Ask(1)).unwrap();
-        let (value, completion) = realtime.try_recv().unwrap();
+        let completion = realtime.try_recv().unwrap();
         assert_eq!(transfer.try_wait(), Err(TryWaitError::Empty));
-        realtime.complete(completion, value);
+        realtime.complete(completion);
         assert_eq!(transfer.try_wait(), Ok(Ask(1)));
     }
 
@@ -113,8 +114,8 @@ mod tests {
     fn a_value_is_taken_back_once() {
         let (mut control, mut realtime) = channel(1);
         let mut transfer = control.try_start(Ask(1)).unwrap();
-        let (value, completion) = realtime.try_recv().unwrap();
-        realtime.complete(completion, value);
+        let completion = realtime.try_recv().unwrap();
+        realtime.complete(completion);
         assert_eq!(transfer.try_wait(), Ok(Ask(1)));
         assert_eq!(transfer.try_wait(), Err(TryWaitError::Taken));
     }
@@ -123,8 +124,8 @@ mod tests {
     fn a_value_whose_completion_was_dropped_since_is_still_taken() {
         let (mut control, mut realtime) = channel(1);
         let mut transfer = control.try_start(Ask(1)).unwrap();
-        let (value, completion) = realtime.try_recv().unwrap();
-        realtime.complete(completion, value);
+        let completion = realtime.try_recv().unwrap();
+        realtime.complete(completion);
         control.take_in();
         assert_eq!(transfer.try_wait(), Ok(Ask(1)));
     }
@@ -133,7 +134,7 @@ mod tests {
     fn a_completion_dropped_without_completing_disconnects_its_transfer() {
         let (mut control, mut realtime) = channel(1);
         let mut transfer = control.try_start(Ask(1)).unwrap();
-        let (_, completion) = realtime.try_recv().unwrap();
+        let completion = realtime.try_recv().unwrap();
         drop(completion);
         assert_eq!(transfer.try_wait(), Err(TryWaitError::Disconnected));
     }
@@ -161,8 +162,8 @@ mod tests {
         let (mut control, mut realtime) = channel(1);
         let carried = Arc::new(());
         drop(control.try_start(Carry(Arc::clone(&carried))).unwrap());
-        let (value, completion) = realtime.try_recv().unwrap();
-        realtime.complete(completion, value);
+        let completion = realtime.try_recv().unwrap();
+        realtime.complete(completion);
         assert_eq!(Arc::strong_count(&carried), 2, "in its ring, not yet freed");
 
         control.take_in();
@@ -180,8 +181,8 @@ mod tests {
                 control.try_start(Ask(round)).is_err(),
                 "full in round {round}"
             );
-            while let Some((value, completion)) = realtime.try_recv() {
-                realtime.complete(completion, value);
+            while let Some(completion) = realtime.try_recv() {
+                realtime.complete(completion);
             }
         }
     }
@@ -191,8 +192,8 @@ mod tests {
         let (mut control, mut realtime) = channel(1);
         let mut transfer = control.try_start(Ask(1)).unwrap();
         drop(control);
-        let (value, completion) = realtime.try_recv().unwrap();
-        realtime.complete(completion, value);
+        let completion = realtime.try_recv().unwrap();
+        realtime.complete(completion);
         assert_eq!(transfer.try_wait(), Ok(Ask(1)));
     }
 
