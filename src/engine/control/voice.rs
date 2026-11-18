@@ -51,7 +51,7 @@ impl Voice {
     }
 
     /// Dropping the handle instead lets the voice play out.
-    pub fn stop(&self) {
+    pub fn stop(self) {
         self.state.stop.store(true, Ordering::Relaxed);
     }
 }
