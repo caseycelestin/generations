@@ -9,9 +9,9 @@ mod voice;
 pub use input::{Input, InputError};
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
-pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
+pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
 pub(crate) use transfers::Transfers;
-pub use voice::Voice;
+pub use voice::{Voice, VoiceError};
 
 use crate::audio::Audio;
 use crate::engine::protocol::inputs::InputChannels;
@@ -35,7 +35,7 @@ impl Control {
         }
     }
 
-    pub fn play(&mut self, audio: &Audio) -> Result<Voice, ControlError> {
+    pub fn play(&mut self, audio: &Audio) -> Result<Voice, VoiceError> {
         Voice::play(&mut self.transfers.voices, audio)
     }
 

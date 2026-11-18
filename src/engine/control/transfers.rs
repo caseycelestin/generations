@@ -1,6 +1,6 @@
 //! The engine's face on the transfer channels, in the engine's terms.
 
-use super::{ControlError, TryWaitError};
+use super::TryWaitError;
 use crate::engine::protocol::inputs::InputData;
 use crate::engine::protocol::voice::VoiceData;
 use crate::transfer;
@@ -11,16 +11,6 @@ impl From<transfer::TryWaitError> for TryWaitError {
             transfer::TryWaitError::Empty => Self::NotEnded,
             transfer::TryWaitError::Taken => Self::Taken,
             transfer::TryWaitError::Disconnected => Self::RendererGone,
-        }
-    }
-}
-
-/// The value inside is dropped; a caller that needs it back maps by hand.
-impl<T> From<transfer::StartError<T>> for ControlError {
-    fn from(error: transfer::StartError<T>) -> Self {
-        match error {
-            transfer::StartError::Full(_) => Self::Full,
-            transfer::StartError::Disconnected(_) => Self::RendererGone,
         }
     }
 }
