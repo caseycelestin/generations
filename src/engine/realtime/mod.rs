@@ -1,4 +1,5 @@
-//! The audio thread: turns requests and audio into periods of output.
+//! The audio thread: turns what the control side sends into periods of
+//! output.
 //! Code here has a deadline: no allocating, locking, blocking or system
 //! calls. An offline bounce runs the same code with no deadline.
 
@@ -22,7 +23,7 @@ use voices::Voices;
 
 type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 
-/// One request channel per actor, at its real-time end.
+/// One request channel per actor still on `request`, at its real-time end.
 #[derive(Debug)]
 pub(crate) struct Requests {
     pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
