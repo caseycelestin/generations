@@ -27,9 +27,7 @@ impl Voice {
             audio: audio_clone,
             state: Arc::clone(&state),
         };
-        let Ok(handle) = transfers.try_start(data) else {
-            return Err(ControlError::Full);
-        };
+        let handle = transfers.try_start(data)?;
         Ok(Self { handle, state })
     }
 
