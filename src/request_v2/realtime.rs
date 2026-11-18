@@ -17,6 +17,14 @@ pub struct RealtimeEnd<Q: Request> {
     pub(super) returned: Producer<ReplySender<Q::Reply>>,
 }
 
+/// Drops every request not yet read, so their receivers learn no reply is
+/// coming: the ring keeps them while the control end lives.
+impl<Q: Request> Drop for RealtimeEnd<Q> {
+    fn drop(&mut self) {
+        while self.requests.pop().is_ok() {}
+    }
+}
+
 impl<Q: Request> RealtimeEnd<Q> {
     pub fn try_recv(&mut self) -> Option<(Q, ReplySender<Q::Reply>)> {
         self.requests.pop().ok()

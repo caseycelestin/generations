@@ -61,6 +61,14 @@ mod tests {
         type Reply = Arc<()>;
     }
 
+    /// A request that carries something whose freeing can be watched.
+    #[derive(Debug)]
+    struct Carry(#[expect(dead_code, reason = "held only to be dropped")] Arc<()>);
+
+    impl Request for Carry {
+        type Reply = ();
+    }
+
     #[test]
     fn a_reply_reaches_the_receiver_of_its_request() {
         let (mut control, mut realtime) = channel::<Ask>(1);
@@ -164,5 +172,47 @@ mod tests {
         control.take_in();
 
         assert_eq!(Arc::strong_count(&held), 1);
+    }
+
+    #[test]
+    fn a_full_channel_can_be_filled_again_once_every_sender_is_back() {
+        let (mut control, mut realtime) = channel::<Ask>(2);
+        for round in 0..3 {
+            let _first = control.try_send(Ask(round)).unwrap();
+            let _second = control.try_send(Ask(round)).unwrap();
+            assert!(
+                control.try_send(Ask(round)).is_err(),
+                "full in round {round}"
+            );
+            while let Some((_, sender)) = realtime.try_recv() {
+                realtime.reply(sender, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_realtime_end_still_replies_once_the_control_end_is_gone() {
+        let (mut control, mut realtime) = channel::<Ask>(1);
+        let mut receiver = control.try_send(Ask(1)).unwrap();
+        drop(control);
+        let (_, sender) = realtime.try_recv().unwrap();
+        realtime.reply(sender, 1);
+        assert_eq!(receiver.try_wait(), Ok(1));
+    }
+
+    #[test]
+    fn an_unread_request_is_dropped_with_the_realtime_end() {
+        let (mut control, realtime) = channel::<Carry>(1);
+        let carried = Arc::new(());
+        let _receiver = control.try_send(Carry(Arc::clone(&carried))).unwrap();
+        assert_eq!(Arc::strong_count(&carried), 2, "on the ring");
+
+        drop(realtime);
+
+        assert_eq!(
+            Arc::strong_count(&carried),
+            1,
+            "dropped though the control end still holds the ring"
+        );
     }
 }
