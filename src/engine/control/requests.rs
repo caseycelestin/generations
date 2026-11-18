@@ -3,7 +3,6 @@
 
 use thiserror::Error;
 
-use crate::engine::protocol::recording::RecordingRequest;
 use crate::request;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -77,12 +76,8 @@ impl From<request::TryRecvStatusError> for TryRecvStatusError {
 
 /// One request channel per actor in the renderer.
 #[derive(Debug, Clone)]
-pub(crate) struct Requests {
-    pub(crate) recording: request::ControlEnd<RecordingRequest>,
-}
+pub(crate) struct Requests {}
 
 impl Requests {
-    pub(crate) fn take_in(&self) {
-        self.recording.take_in();
-    }
+    pub(crate) fn take_in(&self) {}
 }
