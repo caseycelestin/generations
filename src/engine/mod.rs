@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn a_played_voice_is_heard_then_ends() {
-        let (control, mut renderer) = create(4, 2, 0, 0);
+        let (mut control, mut renderer) = create(4, 2, 0, 0);
         let audio = audio(&[0.5; 2]);
         let mut voice = control.play(&audio).unwrap();
         assert_eq!(voice.try_wait(), Err(TryWaitError::NotEnded));
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn a_stopped_voice_ends() {
-        let (control, mut renderer) = create(4, 2, 0, 0);
+        let (mut control, mut renderer) = create(4, 2, 0, 0);
         let audio = audio(&[0.5; 64]);
         let mut voice = control.play(&audio).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn collect_frees_the_audio_of_a_dropped_voice() {
-        let (control, mut renderer) = create(4, 2, 0, 0);
+        let (mut control, mut renderer) = create(4, 2, 0, 0);
         let audio = audio(&[0.5; 2]);
         let voice = control.play(&audio).unwrap();
         drop(voice);
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn with_no_queue_a_play_is_refused_while_every_voice_is_held() {
-        let (control, _renderer) = create(0, 1, 0, 0);
+        let (mut control, _renderer) = create(0, 1, 0, 0);
         let audio = audio(&[0.5; 2]);
         let _voice = control.play(&audio).unwrap();
         assert!(matches!(control.play(&audio), Err(ControlError::Full)));
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn a_recording_runs_until_stopped() {
-        let (control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn record_refuses_mono_audio_and_hands_it_back() {
-        let (control, _renderer) = create(4, 1, 0, 0);
+        let (mut control, _renderer) = create(4, 1, 0, 0);
         let mono = AudioMemory::new().alloc(ChannelLayout::Mono, 4).unwrap();
         let error = control.record(mono).unwrap_err();
         assert!(matches!(error, RecordError::NotStereo(_)));
@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn record_refuses_audio_a_voice_holds() {
-        let (control, _renderer) = create(4, 1, 0, 0);
+        let (mut control, _renderer) = create(4, 1, 0, 0);
         let audio = room(4);
         let _voice = control.play(&audio).unwrap();
         assert!(matches!(
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn record_refuses_while_another_recording_holds_the_recorder() {
-        let (control, _renderer) = create(4, 1, 0, 0);
+        let (mut control, _renderer) = create(4, 1, 0, 0);
         let _first = control.record(room(64)).unwrap();
         let error = control.record(room(8)).unwrap_err();
         assert!(matches!(error, RecordError::Full(_)));
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn dropping_a_recording_frees_the_recorder() {
-        let (control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0);
         let first = control.record(room(64)).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn try_wait_hands_back_what_was_heard() {
-        let (control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
         let mut recording = control.record(room(64)).unwrap();
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn dropping_the_renderer_hands_back_what_was_heard() {
-        let (control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
         let mut recording = control.record(room(64)).unwrap();
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn dropping_the_renderer_hands_back_a_recording_it_never_started() {
-        let (control, renderer) = create(4, 1, 0, 0);
+        let (mut control, renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
 
         drop(renderer);
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn try_wait_is_not_ended_until_the_recording_ends_and_taken_once() {
-        let (control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
         assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
         renderer.render(&[], &mut [0.0; 4 * 2]);
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn a_recording_starts_from_empty() {
-        let (control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut used = room(4);
         used.extend([0.9; 4 * 2]);
         let mut recording = control.record(used).unwrap();
