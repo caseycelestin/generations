@@ -11,12 +11,12 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputEnd, InputData, InputStatus};
+use crate::engine::protocol::inputs::InputData;
 use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
 use crate::engine::protocol::voice::VoiceData;
 use crate::request::{self, Received};
 use crate::transfer;
-use inputs::{Input, Inputs};
+use inputs::Inputs;
 use math::{add, hard_clip};
 use recording::Recording;
 use voices::Voices;
@@ -89,6 +89,7 @@ impl Renderer {
             "capture and output are not the same frames"
         );
         self.voices.receive();
+        self.inputs.receive();
         self.apply_requests();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; Self::OUTPUT_CHANNELS]);
@@ -98,7 +99,7 @@ impl Renderer {
                 add(out_block, scratch);
             }
             // Nothing hears an input yet.
-            for input in &self.inputs {
+            for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
             }
             hard_clip(out_block);
@@ -112,7 +113,6 @@ impl Renderer {
 
     fn apply_requests(&mut self) {
         self.apply_recording_requests();
-        self.apply_input_requests();
     }
 
     fn apply_recording_requests(&mut self) {
@@ -133,33 +133,6 @@ impl Renderer {
                         self.requests
                             .recording
                             .answer(permit, RecordingStatus::Recording);
-                    }
-                    // Otherwise it is closed, and its reply has the last word.
-                }
-            }
-        }
-    }
-
-    fn apply_input_requests(&mut self) {
-        while let Some(received) = self.requests.inputs.try_recv() {
-            match received {
-                Received::Request(permit, request) => {
-                    let room = self.inputs.len() < self.inputs.capacity();
-                    debug_assert!(room, "one request per input");
-                    let input = Input::open(permit, request.channels, self.capture_channels);
-                    self.inputs.push(input);
-                }
-                Received::Cancel(id) => {
-                    let found = self.inputs.iter().position(|input| input.is(id));
-                    if let Some(at) = found {
-                        let stopped = self.inputs.swap_remove(at);
-                        stopped.end(InputEnd::Stopped, &mut self.requests.inputs);
-                    }
-                }
-                Received::Status(permit) => {
-                    let held = self.inputs.iter().any(|input| input.is(permit.id()));
-                    if held {
-                        self.requests.inputs.answer(permit, InputStatus::Open);
                     }
                     // Otherwise it is closed, and its reply has the last word.
                 }
