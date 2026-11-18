@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{Frame, Renderer};
 use crate::audio::AudioBuffer;
-use crate::engine::protocol::voice::VoiceRequest;
+use crate::engine::protocol::voice::{VoiceRequest, VoiceState};
 use crate::layout::ChannelLayout;
 use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 
@@ -15,15 +15,21 @@ use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
 pub(crate) struct Voice {
     permit: ReplyPermit,
     audio: Arc<AudioBuffer>,
+    state: Arc<VoiceState>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(permit: ReplyPermit, audio: Arc<AudioBuffer>) -> Self {
+    pub(crate) fn new(
+        permit: ReplyPermit,
+        audio: Arc<AudioBuffer>,
+        state: Arc<VoiceState>,
+    ) -> Self {
         Self {
             permit,
             audio,
+            state,
             position: 0,
         }
     }
@@ -152,7 +158,8 @@ mod tests {
     /// For tests that tell voices apart by their request.
     fn voice_from(id: u64, layout: ChannelLayout, samples: &[f32]) -> Voice {
         let audio = Arc::new(buffer(layout, samples));
-        Voice::new(ReplyPermit::for_test(id), audio)
+        let state = Arc::new(VoiceState::default());
+        Voice::new(ReplyPermit::for_test(id), audio, state)
     }
 
     fn voices(count: usize) -> Voices {

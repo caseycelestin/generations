@@ -116,8 +116,8 @@ impl Renderer {
     fn apply_voice_requests(&mut self) {
         while let Some(received) = self.requests.voices.try_recv() {
             match received {
-                Received::Request(permit, VoiceRequest { audio }) => {
-                    if let Some(cut) = self.voices.add(Voice::new(permit, audio)) {
+                Received::Request(permit, VoiceRequest { audio, state }) => {
+                    if let Some(cut) = self.voices.add(Voice::new(permit, audio, state)) {
                         cut.end(&mut self.requests.voices);
                     }
                 }
@@ -232,6 +232,7 @@ mod tests {
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
+    use crate::engine::protocol::voice::VoiceState;
     use crate::layout::ChannelLayout;
     use crate::request::{ControlEnd, RequestHandle, TryRecvStatusError, TryWaitError};
     use crate::testing::buffer;
@@ -267,10 +268,9 @@ mod tests {
 
     /// Opens a voice of `audio`, for voices that share it.
     fn play_audio(ends: &Ends, audio: Arc<AudioBuffer>) -> RequestHandle<VoiceRequest> {
-        ends.voices
-            .try_reserve()
-            .unwrap()
-            .open(VoiceRequest { audio })
+        let state = Arc::new(VoiceState::default());
+        let request = VoiceRequest { audio, state };
+        ends.voices.try_reserve().unwrap().open(request)
     }
 
     fn ended(voice: &mut RequestHandle<VoiceRequest>) -> bool {
