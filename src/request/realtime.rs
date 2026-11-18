@@ -22,14 +22,6 @@ impl ReplyPermit {
     }
 }
 
-#[cfg(test)]
-impl ReplyPermit {
-    /// For tests of what holds a permit, without a channel to receive one.
-    pub(crate) fn for_test(id: u64) -> Self {
-        Self { id: RequestId(id) }
-    }
-}
-
 /// For one status question. Drop it unanswered only once its request is
 /// closed: before then the question stays out, and the request cannot be
 /// asked again.
