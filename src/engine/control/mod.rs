@@ -10,7 +10,7 @@ pub use input::{Input, PendingInputStatus};
 pub use recording::{PendingRecordingStatus, RecordError, Recording};
 pub(crate) use requests::Requests;
 pub use requests::{ControlError, StatusError, TryRecvStatusError, TryWaitError};
-pub use voice::{PlayError, Voice};
+pub use voice::Voice;
 
 use crate::audio::Audio;
 use crate::engine::protocol::inputs::InputChannels;
@@ -32,7 +32,7 @@ impl Control {
         }
     }
 
-    pub fn play(&self, audio: &Audio) -> Result<Voice, PlayError> {
+    pub fn play(&self, audio: &Audio) -> Result<Voice, ControlError> {
         Voice::play(&self.requests.voices, audio)
     }
 

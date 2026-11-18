@@ -6,8 +6,8 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, PlayError,
-    RecordError, Recording, StatusError, TryRecvStatusError, TryWaitError, Voice,
+    Control, ControlError, Input, PendingInputStatus, PendingRecordingStatus, RecordError,
+    Recording, StatusError, TryRecvStatusError, TryWaitError, Voice,
 };
 pub use protocol::inputs::{InputChannels, InputEnd, InputStatus};
 pub use protocol::recording::{RecordingEnd, RecordingStatus};
@@ -150,7 +150,7 @@ mod tests {
         let (control, _renderer) = create(0, 1, 0, 0);
         let audio = audio(&[0.5; 2]);
         let _voice = control.play(&audio).unwrap();
-        assert!(matches!(control.play(&audio), Err(PlayError::Full)));
+        assert!(matches!(control.play(&audio), Err(ControlError::Full)));
     }
 
     #[test]
