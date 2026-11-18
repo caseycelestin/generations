@@ -18,27 +18,34 @@ pub struct Slot(usize);
 
 pub struct ControlEnd<Q: Request> {
     to_realtime: Producer<(Slot, Q)>,
-    from_realtime: Consumer<(Slot, Q::Reply)>,
+    /// Each slot's reply ring.
+    replies: Vec<(Slot, Consumer<Q::Reply>)>,
 }
 
 pub struct RealtimeEnd<Q: Request> {
     from_control: Consumer<(Slot, Q)>,
-    to_control: Producer<(Slot, Q::Reply)>,
+    /// By slot.
+    replies: Box<[Producer<Q::Reply>]>,
 }
 
-/// `capacity` is in requests: the most that can be open at once. Both rings
-/// hold that, as a slot carries one request and one reply at a time, so
-/// neither ever fills.
+/// `capacity` is in requests: the most that can be open at once. The ring
+/// of opens holds that, and each slot's reply ring one, as a slot carries
+/// one request and one reply at a time, so none ever fills.
 pub fn channel<Q: Request>(capacity: usize) -> (ControlEnd<Q>, RealtimeEnd<Q>) {
     let (to_realtime, from_control) = RingBuffer::new(capacity);
-    let (to_control, from_realtime) = RingBuffer::new(capacity);
+    let (to_control, from_realtime): (Vec<_>, Vec<_>) =
+        (0..capacity).map(|_| RingBuffer::new(1)).unzip();
     let control = ControlEnd {
         to_realtime,
-        from_realtime,
+        replies: from_realtime
+            .into_iter()
+            .enumerate()
+            .map(|(index, reply)| (Slot(index), reply))
+            .collect(),
     };
     let realtime = RealtimeEnd {
         from_control,
-        to_control,
+        replies: to_control.into_boxed_slice(),
     };
     (control, realtime)
 }
