@@ -3,32 +3,10 @@
 use std::sync::Arc;
 
 use crate::audio::AudioBuffer;
-use crate::request::Request;
 
+/// Comes back whole once the recording ends, its audio holding what was
+/// heard until then.
 #[derive(Debug)]
-pub(crate) enum RecordingRequest {
-    Start(Arc<AudioBuffer>),
-}
-
-/// Its audio comes back with why it ended, which says what the audio holds.
-impl Request for RecordingRequest {
-    type Reply = (RecordingEnd, Arc<AudioBuffer>);
-    type Status = RecordingStatus;
-}
-
-/// The renderer's answer, while it holds the recording.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordingStatus {
-    Recording,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordingEnd {
-    /// Its audio has no room left.
-    Full,
-    /// Its `stop` arrived.
-    Stopped,
-    /// The renderer was dropped, as when its stream goes; the audio holds
-    /// what was heard until then.
-    RendererGone,
+pub(crate) struct RecordingData {
+    pub(crate) audio: Arc<AudioBuffer>,
 }
