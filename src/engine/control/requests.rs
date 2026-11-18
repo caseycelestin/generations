@@ -5,7 +5,6 @@ use thiserror::Error;
 
 use crate::engine::protocol::inputs::InputRequest;
 use crate::engine::protocol::recording::RecordingRequest;
-use crate::engine::protocol::voice::VoiceRequest;
 use crate::request;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -80,7 +79,7 @@ impl From<request::TryRecvStatusError> for TryRecvStatusError {
 /// Nothing was sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ControlError {
-    /// Stop or drop one, then try again.
+    /// Stop one, or wait for one to end, then try again.
     #[error("every place is held")]
     Full,
     #[error("the renderer is gone")]
@@ -102,14 +101,12 @@ impl From<request::ReserveError> for ControlError {
 /// One request channel per actor in the renderer.
 #[derive(Debug, Clone)]
 pub(crate) struct Requests {
-    pub(crate) voices: request::ControlEnd<VoiceRequest>,
     pub(crate) recording: request::ControlEnd<RecordingRequest>,
     pub(crate) inputs: request::ControlEnd<InputRequest>,
 }
 
 impl Requests {
     pub(crate) fn take_in(&self) {
-        self.voices.take_in();
         self.recording.take_in();
         self.inputs.take_in();
     }

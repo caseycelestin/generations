@@ -24,10 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let audio = project.load(SampleId(0), &memory)?;
 
     // 16 voices at once, and room for 64 plays on their way.
-    let (control, renderer) = engine::create(64, 16, 0, 0);
-
-    // Clones are the same engine.
-    let _ui = control.clone();
+    let (mut control, renderer) = engine::create(64, 16, 0, 0);
 
     let mut played = control.play(&audio)?;
     let mut stopped = control.play(&audio)?;
@@ -36,9 +33,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Room for a second of the main out, paid for now.
     let take = memory.alloc(ChannelLayout::Stereo, 48_000)?;
     let mut recording = control.record(take)?;
-
-    // Asked now, answered at the renderer's next period.
-    let mut status = played.request_status()?;
 
     // A device callback would own the renderer.
     let audio_thread = thread::spawn(move || {
@@ -52,11 +46,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     audio_thread.join().expect("audio thread");
 
-    match status.try_recv() {
-        Ok(status) => println!("the renderer said: {status:?}"),
-        Err(error) => println!("no answer: {error}"),
-    }
-
     recording.stop();
 
     // How it ended, with the audio holding what was recorded, here to be
@@ -69,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err(error) => println!("no result: {error}"),
     }
 
-    // Whether each voice has ended; taking that also frees its slot.
+    // Whether each voice has ended; its slot was freed when it did.
     for voice in [&mut played, &mut stopped] {
         match voice.try_wait() {
             Ok(()) => println!("ended"),

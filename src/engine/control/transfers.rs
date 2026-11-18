@@ -1,0 +1,38 @@
+//! The engine's face on the transfer channels, in the engine's terms.
+
+use super::{ControlError, TryWaitError};
+use crate::engine::protocol::voice::VoiceData;
+use crate::transfer;
+
+impl From<transfer::TryWaitError> for TryWaitError {
+    fn from(error: transfer::TryWaitError) -> Self {
+        match error {
+            transfer::TryWaitError::Empty => Self::NotEnded,
+            transfer::TryWaitError::Taken => Self::Taken,
+            transfer::TryWaitError::Disconnected => Self::RendererGone,
+        }
+    }
+}
+
+/// The value inside is dropped; a caller that needs it back maps by hand.
+impl<T> From<transfer::StartError<T>> for ControlError {
+    fn from(error: transfer::StartError<T>) -> Self {
+        match error {
+            transfer::StartError::Full(_) => Self::Full,
+            transfer::StartError::Disconnected(_) => Self::RendererGone,
+        }
+    }
+}
+
+/// One transfer channel per actor in the renderer, as each moves off its
+/// request channel.
+#[derive(Debug)]
+pub(crate) struct Transfers {
+    pub(crate) voices: transfer::ControlEnd<VoiceData>,
+}
+
+impl Transfers {
+    pub(crate) fn take_in(&mut self) {
+        self.voices.take_in();
+    }
+}

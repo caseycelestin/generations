@@ -1,37 +1,30 @@
 //! Voices on the render side: each one while it plays, and the places
 //! they live.
 
-use std::mem;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{Frame, Renderer};
-use crate::audio::AudioBuffer;
-use crate::engine::protocol::voice::VoiceRequest;
+use crate::engine::protocol::voice::VoiceData;
 use crate::layout::ChannelLayout;
-use crate::request::{RealtimeEnd, ReplyPermit, RequestId};
+use crate::transfer::{Completion, RealtimeEnd};
 
 #[derive(Debug)]
 pub(crate) struct Voice {
-    permit: ReplyPermit,
-    audio: Arc<AudioBuffer>,
+    data: Completion<VoiceData>,
     /// The next frame to play.
     position: usize,
 }
 
 impl Voice {
-    pub(crate) fn new(permit: ReplyPermit, audio: Arc<AudioBuffer>) -> Self {
-        Self {
-            permit,
-            audio,
-            position: 0,
-        }
+    pub(crate) fn new(data: Completion<VoiceData>) -> Self {
+        Self { data, position: 0 }
     }
 
     /// Silence once the audio runs out. Mono goes to both sides at full
     /// level.
     pub(crate) fn render(&mut self, scratch: &mut [Frame]) {
-        let audio = &self.audio;
+        let audio = &self.data.audio;
         let end = (self.position + scratch.len()).min(audio.frames());
         let samples = audio.frames_in(self.position..end);
         let (sound, silence) = scratch.split_at_mut(end - self.position);
@@ -50,91 +43,69 @@ impl Voice {
         self.position = end;
     }
 
-    pub(crate) fn is(&self, id: RequestId) -> bool {
-        self.permit.id() == id
+    /// Its handle asked it to stop.
+    pub(crate) fn stopped(&self) -> bool {
+        self.data.state.stop.load(Ordering::Relaxed)
     }
 
     /// Its last frame has been rendered.
     pub(crate) fn finished(&self) -> bool {
-        self.position == self.audio.frames()
+        self.position == self.data.audio.frames()
     }
 
-    /// The one way a voice leaves: its audio goes back in the reply.
-    pub(crate) fn end(self, requests: &mut RealtimeEnd<VoiceRequest>) {
-        requests.close(self.permit, self.audio);
+    /// The one way a voice leaves: its data goes back whole, to be freed
+    /// on the control side.
+    pub(crate) fn end(self, transfers: &mut RealtimeEnd<VoiceData>) {
+        transfers.complete(self.data);
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct Voices {
-    /// `None` is free; a taken place holds its voice's number in the order
-    /// voices were added, lower being older. Boxed so it cannot grow on the
-    /// audio thread.
-    places: Box<[Option<(u64, Voice)>]>,
-    /// How many voices have been added, so the next one's number. A `u64`
-    /// cannot run out: a million a second lasts half a million years.
-    added: u64,
+    /// Oldest first. Never past `places`, so adding never allocates.
+    playing: Vec<Voice>,
+    places: usize,
+    /// The only way voices arrive or leave.
+    transfers: RealtimeEnd<VoiceData>,
 }
 
 impl Voices {
-    /// At least one, so `add` always has a place or an oldest to cut.
-    pub(crate) fn new(count: NonZeroUsize) -> Self {
+    /// At least one place, so a new voice always has one or an oldest to
+    /// cut.
+    pub(crate) fn new(places: NonZeroUsize, transfers: RealtimeEnd<VoiceData>) -> Self {
         Self {
-            places: (0..count.get()).map(|_| None).collect(),
-            added: 0,
+            playing: Vec::with_capacity(places.get()),
+            places: places.get(),
+            transfers,
         }
     }
 
-    /// Takes a free place, or the oldest voice's place, returning the
-    /// voice replaced.
-    pub(crate) fn add(&mut self, voice: Voice) -> Option<Voice> {
-        let numbered = (self.added, voice);
-        self.added += 1;
-        match self.places.iter_mut().find(|place| place.is_none()) {
-            Some(free) => {
-                *free = Some(numbered);
-                None
+    /// New voices join, cutting the oldest when every place is taken;
+    /// stopped ones end.
+    pub(crate) fn receive(&mut self) {
+        while let Some(data) = self.transfers.try_recv() {
+            if self.playing.len() == self.places {
+                let oldest = self.playing.remove(0);
+                oldest.end(&mut self.transfers);
             }
-            None => {
-                let oldest = self
-                    .places
-                    .iter_mut()
-                    .flatten()
-                    .min_by_key(|(number, _)| *number)
-                    .expect("every place is taken, and there is at least one");
-                let (_, replaced) = mem::replace(oldest, numbered);
-                Some(replaced)
-            }
+            self.playing.push(Voice::new(data));
         }
+        self.end_if(Voice::stopped);
+    }
+
+    /// Voices whose audio has run out end.
+    pub(crate) fn end_finished(&mut self) {
+        self.end_if(Voice::finished);
     }
 
     pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Voice> {
-        self.places.iter_mut().flatten().map(|(_, voice)| voice)
+        self.playing.iter_mut()
     }
 
-    pub(crate) fn holds(&self, id: RequestId) -> bool {
-        self.places.iter().flatten().any(|(_, voice)| voice.is(id))
-    }
-
-    pub(crate) fn remove(&mut self, id: RequestId) -> Option<Voice> {
-        let found = self
-            .places
-            .iter_mut()
-            .find(|place| matches!(place, Some((_, voice)) if voice.is(id)));
-        let (_, voice) = found?.take()?;
-        Some(voice)
-    }
-
-    /// Takes out every voice `test` picks, as `Vec::extract_if`: stopped
-    /// early, the rest stay.
-    pub(crate) fn extract_if(
-        &mut self,
-        mut test: impl FnMut(&mut Voice) -> bool,
-    ) -> impl Iterator<Item = Voice> {
-        self.places
-            .iter_mut()
-            .filter_map(move |place| place.take_if(|(_, voice)| test(voice)))
-            .map(|(_, voice)| voice)
+    fn end_if(&mut self, test: impl Fn(&Voice) -> bool) {
+        for voice in self.playing.extract_if(.., |voice| test(voice)) {
+            voice.end(&mut self.transfers);
+        }
     }
 }
 
@@ -143,20 +114,51 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::engine::protocol::voice::VoiceState;
     use crate::testing::buffer;
+    use crate::transfer::{self, Transfer};
 
+    /// Received as the renderer receives it. Tests tell voices apart by
+    /// their length.
     fn voice(layout: ChannelLayout, samples: &[f32]) -> Voice {
-        voice_from(0, layout, samples)
-    }
-
-    /// For tests that tell voices apart by their request.
-    fn voice_from(id: u64, layout: ChannelLayout, samples: &[f32]) -> Voice {
+        let (mut control, mut realtime) = transfer::channel(1);
         let audio = Arc::new(buffer(layout, samples));
-        Voice::new(ReplyPermit::for_test(id), audio)
+        let state = Arc::new(VoiceState::default());
+        let _transfer = control.try_start(VoiceData { audio, state }).unwrap();
+        Voice::new(realtime.try_recv().unwrap())
     }
 
-    fn voices(count: usize) -> Voices {
-        Voices::new(NonZeroUsize::new(count).unwrap())
+    fn frames(voice: &Voice) -> usize {
+        voice.data.audio.frames()
+    }
+
+    /// `places` voices, and the control end that starts theirs.
+    fn voices(places: usize) -> (transfer::ControlEnd<VoiceData>, Voices) {
+        let (control, realtime) = transfer::channel(places + 4);
+        let voices = Voices::new(NonZeroUsize::new(places).unwrap(), realtime);
+        (control, voices)
+    }
+
+    /// A mono voice of `frames` of silence, started as `Control::play` does.
+    fn start(
+        control: &mut transfer::ControlEnd<VoiceData>,
+        frames: usize,
+    ) -> (Transfer<VoiceData>, Arc<VoiceState>) {
+        let audio = Arc::new(buffer(ChannelLayout::Mono, &vec![0.0; frames]));
+        let state = Arc::new(VoiceState::default());
+        let data = VoiceData {
+            audio,
+            state: Arc::clone(&state),
+        };
+        (control.try_start(data).unwrap(), state)
+    }
+
+    fn playing(voices: &mut Voices) -> Vec<usize> {
+        voices.iter_mut().map(|voice| frames(voice)).collect()
+    }
+
+    fn ended(transfer: &mut Transfer<VoiceData>) -> bool {
+        transfer.try_wait().is_ok()
     }
 
     #[test]
@@ -203,54 +205,51 @@ mod tests {
     }
 
     #[test]
-    fn add_takes_a_free_place() {
-        let mut voices = voices(2);
-        assert!(voices.add(voice(ChannelLayout::Mono, &[0.0])).is_none());
-        assert!(voices.add(voice(ChannelLayout::Mono, &[0.0])).is_none());
-        assert_eq!(voices.iter_mut().count(), 2);
+    fn received_voices_take_free_places_oldest_first() {
+        let (mut control, mut voices) = voices(2);
+        let (mut first, _) = start(&mut control, 1);
+        let (mut second, _) = start(&mut control, 2);
+        voices.receive();
+        assert_eq!(playing(&mut voices), [1, 2]);
+        assert!(!ended(&mut first));
+        assert!(!ended(&mut second));
     }
 
     #[test]
-    fn add_when_full_replaces_the_first_added() {
-        let mut voices = voices(2);
-        voices.add(voice_from(1, ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
-        let newest = voice_from(2, ChannelLayout::Mono, &[0.0]);
-        let replaced = voices.add(newest);
-        assert!(replaced.is_some_and(|voice| voice.is(RequestId(1))));
-        assert_eq!(voices.iter_mut().count(), 2);
+    fn a_voice_received_when_full_cuts_the_oldest() {
+        let (mut control, mut voices) = voices(2);
+        let (mut oldest, _) = start(&mut control, 1);
+        let _middle = start(&mut control, 2);
+        let _newest = start(&mut control, 3);
+        voices.receive();
+        assert_eq!(playing(&mut voices), [2, 3]);
+        assert!(ended(&mut oldest));
     }
 
     #[test]
-    fn holds_finds_only_the_voices_held() {
-        let mut voices = voices(1);
-        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
-        assert!(voices.holds(RequestId(0)));
-        assert!(!voices.holds(RequestId(1)));
+    fn a_stopped_voice_ends_on_the_next_receive() {
+        let (mut control, mut voices) = voices(1);
+        let (mut voice, state) = start(&mut control, 4);
+        voices.receive();
+        state.stop.store(true, Ordering::Relaxed);
+        voices.receive();
+        assert!(playing(&mut voices).is_empty());
+        assert!(ended(&mut voice));
     }
 
     #[test]
-    fn remove_takes_the_voice_out_once() {
-        let mut voices = voices(1);
-        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
-        assert!(voices.remove(RequestId(0)).is_some());
-        assert!(voices.remove(RequestId(0)).is_none());
-    }
-
-    #[test]
-    fn extract_if_takes_only_the_voices_picked() {
-        let mut voices = voices(2);
-        voices.add(voice_from(0, ChannelLayout::Mono, &[0.0]));
-        voices.add(voice_from(1, ChannelLayout::Mono, &[0.0; 4]));
+    fn end_finished_ends_only_the_voices_run_out() {
+        let (mut control, mut voices) = voices(2);
+        let (mut short, _) = start(&mut control, 1);
+        let (mut long, _) = start(&mut control, 4);
+        voices.receive();
         let mut scratch = [[0.0; 2]; 2];
         for voice in voices.iter_mut() {
             voice.render(&mut scratch);
         }
-        let extracted: Vec<RequestId> = voices
-            .extract_if(|voice| voice.finished())
-            .map(|voice| voice.permit.id())
-            .collect();
-        assert_eq!(extracted, [RequestId(0)]);
-        assert_eq!(voices.iter_mut().count(), 1);
+        voices.end_finished();
+        assert_eq!(playing(&mut voices), [4]);
+        assert!(ended(&mut short));
+        assert!(!ended(&mut long));
     }
 }
