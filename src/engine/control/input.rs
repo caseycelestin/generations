@@ -57,15 +57,14 @@ impl Input {
         Ok(Self { state })
     }
 
-    pub fn stop(&mut self) {
-        self.state.stop.store(true, Ordering::Relaxed);
-    }
+    /// The same as dropping it.
+    pub fn stop(self) {}
 }
 
 /// Stops an input still open, since nothing could stop it once the handle
 /// is gone.
 impl Drop for Input {
     fn drop(&mut self) {
-        self.stop();
+        self.state.stop.store(true, Ordering::Relaxed);
     }
 }
