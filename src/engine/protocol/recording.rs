@@ -28,4 +28,7 @@ pub enum RecordingEnd {
     Full,
     /// Its `stop` arrived.
     Stopped,
+    /// The renderer was dropped, as when its stream goes; the audio holds
+    /// what was heard until then.
+    RendererGone,
 }

@@ -285,6 +285,33 @@ mod tests {
     }
 
     #[test]
+    fn dropping_the_renderer_hands_back_what_was_heard() {
+        let (control, mut renderer) = create(4, 1, 0, 0);
+        let heard = audio(&[0.25; 64]);
+        let _voice = control.play(&heard).unwrap();
+        let mut recording = control.record(room(64)).unwrap();
+        renderer.render(&[], &mut [0.0; 4 * 2]);
+
+        drop(renderer);
+
+        let (why, taken) = recording.try_wait().unwrap();
+        assert_eq!(why, RecordingEnd::RendererGone);
+        assert_eq!(taken.samples(), [0.25; 4 * 2]);
+    }
+
+    #[test]
+    fn dropping_the_renderer_hands_back_a_recording_it_never_started() {
+        let (control, renderer) = create(4, 1, 0, 0);
+        let mut recording = control.record(room(64)).unwrap();
+
+        drop(renderer);
+
+        let (why, taken) = recording.try_wait().unwrap();
+        assert_eq!(why, RecordingEnd::RendererGone);
+        assert_eq!(taken.frames(), 0);
+    }
+
+    #[test]
     fn try_wait_is_not_ended_until_the_recording_ends_and_taken_once() {
         let (control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
