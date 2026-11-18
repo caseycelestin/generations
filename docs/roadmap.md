@@ -221,8 +221,7 @@ or rejected instead. The history of how a shape was reached is in git.
 
 The two sides speak only through `request`, a generic channel at the
 crate root that knows nothing of audio. `request_v2` replaces it: built
-on branch `request-v2` as far as `open` and `try_wait`; the engine has
-not moved onto it.
+and tested; the engine has not moved onto it.
 
 - **One request, one reply; the real-time side never speaks unprompted.**
   Everything sent back answers one message sent, so each return ring is
@@ -234,26 +233,26 @@ not moved onto it.
   how it ended and its take. The control side frees all of it, so nothing is freed on the
   audio thread. A collector channel for freeing was built and removed
   once every return rode in a reply.
-- **A request only opens and returns; the rest is cells.** Stop,
-  settings (monitoring, level, pan) and status are atomics kept per slot,
-  made at `create` and reset before each open: the handle writes stop and
-  settings, the renderer writes status, each read once a block, and the
-  reply hands the slot back. Plugins and Kira keep parameters this way.
-  Cancel and asked status rode the ring first: a cancel could outlive its
-  slot, and every status only said "still held". Updates as messages, on
+- **A request is only sent and answered; the rest is cells.** Stop,
+  settings (monitoring, level, pan) and status are atomics the handle and
+  the renderer share: the handle writes stop and settings, the renderer
+  writes status, each read once a block. Plugins and Kira keep parameters
+  this way. Where the cells live is not decided. Cancel and asked status
+  rode the ring first: a cancel could outlive its request on a shared
+  ring, and every status only said "still held". Updates as messages, on
   the request's ring, a ring of their own or their own channel by key,
   each needed ordering rules a cell does not, and a lost one goes
   unseen. Decided, not built.
-- **One ring in, a reply ring per slot.** Opens go out on one ring
-  tagged with their slot; each slot's reply comes back on its own ring,
-  one deep, owned by the handle holding the slot, as tokio's actor
-  pattern pairs an `mpsc` with a `oneshot`. `try_wait` takes no lock and
-  there is no reply table. A ring pair per slot was built and set aside:
-  the renderer would read every slot each period.
-- **A slot is a reused place, not a name.** `Slot` replaces `RequestId`:
-  with nothing sent after the open, nothing can name a closed request,
-  so a slot is safe to reuse once its reply is back. The never-reused id
-  was for late cancels and questions.
+- **Each request brings its own reply ring, and its sender comes back.**
+  `try_send` makes a one-deep ring and sends its `ReplySender` with the
+  request; the caller keeps the `ReplyReceiver`, as tokio's actor pattern
+  pairs an `mpsc` with a `oneshot`. The renderer replies through the
+  sender and sends it back on `returned`, so the ring is freed on the
+  control side, as Kira returns unused resources. Nothing is shared, so
+  no request carries an id and nothing locks. Reply rings per slot, made
+  at `create` with shared queues for slots in use and draining, were
+  built and set aside on branch `request-v2-slots`. A `Drop` sending the
+  sender back was rejected: it would share `returned` with every sender.
 - **One channel per actor, typed by its request.** Both ends deal in the
   request type's own reply, so nothing converts and nothing
   can be sent the wrong reply. Each is sized by its actor: voices by
@@ -261,18 +260,20 @@ not moved onto it.
   One shared channel with umbrella `Command` and `Event` enums came
   first. Order across channels is lost, which does no harm: the renderer
   takes in every channel at the start of a period.
-- **Every ring holds what can be in flight, so no send fails.** The ring
-  in holds `capacity`, each reply ring one. `open` hands the request back
-  when every slot is open, as `ArrayQueue::push` does; whether a permit
-  comes first, as before, is not decided.
-- **A slot is held until its handle is dropped,** as `Child::try_wait`
-  keeps its process: taking the reply frees nothing. A handle dropped
-  before its reply leaves its slot draining until the reply comes, to be
-  freed on the control side. Not built.
+- **A request is in flight from sent until its sender is back, so no send
+  fails.** `ControlEnd` counts them, and both shared rings hold
+  `capacity`: a request read but not answered still counts, as its
+  sender has yet to come back. `try_send` hands the request back at
+  capacity; whether a permit comes first, as before, is not decided.
+- **A dropped receiver needs nothing done.** Its ring, and any reply in
+  it, is freed when its sender comes back and `take_in` drops it.
+- **A dropped real-time end drops its unread requests,** so their
+  receivers learn no reply is coming: the ring would keep them while the
+  control end lives. It frees then, at teardown, when no deadline is
+  left.
 - **`Control` is not `Clone`.** An app holds one, in its own state, and
-  shares it its own way. So the open ring stays owned and only the free
-  list is shared, with handles, to give a slot back on drop. Handles as
-  ids routed through the end were weighed: a drop could do nothing. The
+  shares it its own way, so both shared rings stay owned. Handles as ids
+  routed through the end were weighed: a drop could do nothing. The
   engine's `Control` is `Clone` until it moves onto `request_v2`.
 
 ### The render side
@@ -351,7 +352,7 @@ Inputs are built; monitoring is not.
   was told, to replay. Keeping the engine across a switch is the
   caller's (Deferred).
 - **Monitoring is a cell on the input.** `input.set_monitoring(bool)`
-  sets a flag in the input's slot, read each block, changeable while the
+  sets a flag in the input's cells, read each block, changeable while the
   input is open. A second request kind on the input channel was tried and
   dropped: it forced a shared reply type. Decided, not built.
 
