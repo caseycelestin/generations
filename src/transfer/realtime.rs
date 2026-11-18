@@ -8,6 +8,7 @@ use rtrb::{Consumer, Producer};
 /// ring: `complete` sends it back.
 #[derive(Debug)]
 pub struct Completion<T> {
+    pub(super) value: T,
     pub(super) ring: Producer<T>,
 }
 

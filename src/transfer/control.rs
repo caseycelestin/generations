@@ -49,19 +49,18 @@ pub enum TryWaitError {
 }
 
 /// One deep: a value comes back once.
-fn return_ring<T>() -> (Completion<T>, Transfer<T>) {
+fn return_ring<T>() -> (Producer<T>, Transfer<T>) {
     let (producer, consumer) = RingBuffer::new(1);
-    let completion = Completion { ring: producer };
     let transfer = Transfer {
         ring: consumer,
         taken: false,
     };
-    (completion, transfer)
+    (producer, transfer)
 }
 
 #[derive(Debug)]
 pub struct ControlEnd<T> {
-    pub(super) started: Producer<(T, Completion<T>)>,
+    pub(super) started: Producer<Completion<T>>,
     pub(super) returned: Consumer<Completion<T>>,
     /// Started and not yet back on `returned`.
     pub(super) in_flight: usize,
@@ -87,8 +86,9 @@ impl<T> ControlEnd<T> {
         if self.in_flight == self.started.buffer().capacity() {
             return Err(StartError::Full(value));
         }
-        let (completion, transfer) = return_ring();
-        let pushed = self.started.push((value, completion));
+        let (ring, transfer) = return_ring();
+        let completion = Completion { value, ring };
+        let pushed = self.started.push(completion);
         assert!(pushed.is_ok(), "the ring holds every transfer in flight");
         self.in_flight += 1;
         Ok(transfer)
