@@ -5,6 +5,7 @@
 
 mod inputs;
 mod math;
+mod recorder;
 mod recording;
 mod voices;
 
@@ -12,22 +13,16 @@ use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
 use crate::engine::protocol::inputs::InputData;
-use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
+use crate::engine::protocol::recording::RecordingData;
 use crate::engine::protocol::voice::VoiceData;
-use crate::request::{self, Received};
 use crate::transfer;
 use inputs::Inputs;
 use math::{add, hard_clip};
+use recorder::Recorder;
 use recording::Recording;
 use voices::Voices;
 
 type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
-
-/// One request channel per actor still on `request`, at its real-time end.
-#[derive(Debug)]
-pub(crate) struct Requests {
-    pub(crate) recording: request::RealtimeEnd<RecordingRequest>,
-}
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
 /// every handle from the same [`create`](crate::engine::create) report the
@@ -36,12 +31,11 @@ pub(crate) struct Requests {
 /// callback must hand it back when dropped.
 #[derive(Debug)]
 pub struct Renderer {
-    requests: Requests,
     voices: Voices,
-    recording: Option<Recording>,
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
+    recorder: Recorder,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -57,19 +51,18 @@ impl Renderer {
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(
-        requests: Requests,
         voice_transfers: transfer::RealtimeEnd<VoiceData>,
         voices: NonZeroUsize,
         capture_channels: usize,
         input_transfers: transfer::RealtimeEnd<InputData>,
         inputs: usize,
+        recording_transfers: transfer::RealtimeEnd<RecordingData>,
     ) -> Self {
         Self {
-            requests,
             voices: Voices::new(voices, voice_transfers),
-            recording: None,
             capture_channels,
             inputs: Inputs::new(inputs, capture_channels, input_transfers),
+            recorder: Recorder::new(recording_transfers),
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
