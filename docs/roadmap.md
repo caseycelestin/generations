@@ -1,594 +1,181 @@
 # Roadmap
 
-The order the engine is being built in, and why. Steps are deliberately
-small; each one is a PR that leaves `main` working. The architecture itself
-is documented in the crate: `cargo doc --open` and start at the top.
+The plan as it stands: what is built, what comes next, what is open, and
+the decisions that shape work still to come. The architecture is in the
+crate (`cargo doc --open`); how it got this way is in git.
 
-| # | Step | Status |
-|---|------|--------|
-| 1 | Core data model | done, then rebuilt in step 3 |
-| 2 | First print: one real effect (reverse) and an engine that applies it | done, then removed in step 5 |
-| 3 | Persistence: the project lives on disk, every change durable at once | done |
-| 4 | Hear something: load a WAV and play it through the audio device | done |
-| 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
-| 6 | Recording: audio input as a new root | done on `src/engine/`: the main out or an input, `take` included |
-| 7 | Input monitoring: hear the input through the output | done on `src/engine/`, on a duplex `render` |
-| 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
-| 9 | Arrangement and more effects | |
+## Built
 
-## Why this order
+- **The project on disk:** samples stored as WAVs under a manifest, ids
+  minted by the project, every change durable when the call returns.
+- **One audio memory figure** (`AudioMemory`) for all audio in RAM.
+- **The engine:** a duplex `Renderer` driven by the caller's device, and a
+  `Control` that plays voices, opens inputs and records takes.
+  - A fixed voice pool, mixed in blocks to a stereo main out.
+  - Inputs from capture channels, each heard through the main out when
+    monitored.
+  - Recording from the main out or one input.
+- **Examples:** one per feature, over cpal, in `examples/`.
 
-The novel and risky part of the project is the generation model, not the
-hardware. Audio I/O in Rust is well trodden, so it can wait; the data model
-shapes everything built on top of it, so it goes first. Only playback,
-mixing and sequencing are real-time, so sequencing is the hard part and
-comes late.
+## Next
 
-## Design decisions
+1. **Timestamped requests.** The renderer counts frames, and a request can
+   name the frame it lands on, placed inside its block. Every option for
+   sequencing needs this, and so do live triggers and the offline bounce.
+   Not built.
+2. **A clock shared by both sides.** The caller hands `render` the
+   callback's device timestamp; the renderer publishes which frame was at
+   which time, so the control side can stamp a press or a MIDI note and
+   have it land a fixed delay later, with no jitter. Not built. Open:
+   which clock, since cpal's differs per host and a MIDI stamp may use
+   another, and whether the engine or the caller converts.
+3. **Sequencing**, once the open questions below are settled.
 
-Each entry is a decision that stands today: what, why, and what was tried
-or rejected instead. The history of how a shape was reached is in git.
+## Open questions
+
+- **What lives on the audio thread.** Today it carries out tasks the
+  control side hands it, and holds nothing of its own beyond them. The
+  alternative is that it owns what is playable (pads, patterns, the
+  transport, mixer and effect settings) and the control side edits that
+  state and supplies its memory, so a press is "trigger pad 3" rather than
+  a transfer carrying audio.
+- **Where the sequencer runs.** On the control side it schedules ahead by
+  a lookahead and stamps each event: sample-accurate unless that thread
+  stalls past the lookahead, and an edit is heard only after it. On the
+  audio thread it reads the pattern itself: always sample-accurate, an
+  edit heard on the next pass, and the pattern and the audio its steps
+  play must live there.
+- **What a step holds:** a pad, a sound, or its own audio.
+
+The accuracy target: sequenced steps land on their sample; a live trigger
+has a small fixed latency and no jitter.
+
+## Decisions
+
+Each is a decision that stands today, with what it rules out where that
+might be tried again.
+
+### Target and format
+
+- **Desktop first,** then perhaps a tablet, then perhaps hardware (a
+  Raspberry Pi CM4); the Roland SP-404 MK2 is the reference. Devices that
+  change while running, run at other rates or clock input and output apart
+  are normal cases.
+- **One format: 48 kHz `f32`,** on disk, in RAM and on the render path;
+  each buffer is mono or stereo. `i16` storage was rejected: it loses
+  24-bit sources at every generation, and the render path should read
+  samples, not convert them.
 
 ### The project
 
-- **The project is the disk.** `Project` is a directory and holds no
-  in-memory copy of the project, not even a cache: the OS caches the
-  files, and nothing real-time reads them. Every change is durable when
-  the call returns, so there is no save step; on the device the active
-  project lives on eMMC and a "save" is a copy to the SD card. A model
-  that kept everything in RAM and dumped it to disk was replaced in
-  step 3.
-- **Project and storage are one type.** A split into rules over a
-  separate storage medium was dropped: with no rules left, `Project` only
-  passed calls through, behind two nested error types. When lineage
-  returns, its rules are checks against the manifest before a write, on
-  `Project`.
-- **The project mints sample ids.** A sample does not exist until it is
-  stored, like a database insert returning the row id. The counter is on
-  disk, only goes up, and never reuses an id. There is no remove: one was
-  built and cut for want of a caller.
-- **A sample is named by its `SampleId`; a voice is not.** A sample
-  outlives the program, so callers refer to it by an id they can keep and
-  store (a parent pointer, pads and patterns later), and
-  `load(id, &memory)` turns that into `Audio` the way a path opens a file.
-  A voice lives only while it plays, so its handle keeps its id private
-  and carries the verbs instead.
-- **Generation is a relationship, not a type.** Not built: a sample will
-  be an id and an optional parent id, and lineage the tree of parent
-  pointers. It was built once and removed while nothing made a child; it
-  returns with prints. `parent` goes in the manifest's per-sample `Entry`
-  with `#[serde(default)]`, its rule on `Project`, and `metadata(id)`
-  reads it. Other fields join the sample the same way as steps need
-  them.
-- **"Project"** is what every sampler calls the unit a user opens and
-  copies to a card. It will hold patterns, settings and pad layouts too.
-
-### Files
-
-- **No backend abstraction.** A `Storage` trait was removed: it had one
-  implementation, and the tests run on a temporary directory instead of
-  an in-memory stub.
-- **A `Project` is always a whole project.** `open(dir)` creates an empty
-  project in an empty or missing directory, validates a whole project
-  otherwise, and refuses anything else. Validation happens on open, not
-  per call: the manifest reads, the counter is past every id, every WAV
-  is present in the engine's format. When lineage returns, every parent
-  must exist and be minted before its child, which rules out cycles
-  without a graph walk.
-- **Every write is fsynced before the call returns.** WAV before the
-  manifest names it, temp manifest before the rename, the directory after
-  each file change. A power cut leaves the old manifest or the new one; a
-  WAV the manifest does not name is ignored.
-- **The manifest is a private struct,** not a serde derive on the model,
-  so the file format is versioned on its own. Samples are WAV rather than
-  raw bytes so any audio tool can open one.
-- **The directory belongs to the engine.** A hand-renamed WAV makes open
-  refuse the project; recovering is content-hash territory (Deferred).
-
-### Audio
-
-- **Target: desktop first, then perhaps a tablet, then perhaps
-  hardware** on a Raspberry Pi Compute Module 4; reference device Roland
-  SP-404 MK2. The concept is proven and tuned where iterating is cheap,
-  rather than on the hardware first. Desktop devices change under a
-  running app, run at other rates and clock input and output apart, so
-  the engine treats those as normal, not as edge cases.
-- **One fixed format: 48 kHz, `f32`, on disk, in RAM and on the render
-  path.** Channel count (1 or 2) is per buffer. Not `i16` storage with
-  `f32` processing: the CM4 has hardware float, `i16` throws away 24-bit
-  sources at every generation, and the render path should read samples
-  rather than convert them. Cost: half the resident minutes. The `Pcm`
-  alias keeps the choice in one place; an `i16` build is a deferred idea,
-  chosen at build time, never a hybrid.
-- **Effects are not built.** They will live on the render side. An
-  offline form (`&AudioBuffer -> AudioBuffer`) was removed: it was the one
-  allocation the RAM budget could not see.
-
-### Audio in
-
-- **Audio enters a project by being written.** `memory.alloc` hands out
-  empty `Audio`, `extend` fills it, and `project.add_sample` stores it and
-  mints its id. `alloc` is named for what it does: it takes memory and
-  touches no disk. WAV import was removed; it is in the history before
-  97e8eff if a file format is needed again.
-- **The rule is that every byte of audio in RAM is counted, not that the
-  user never touches audio.** `Audio` is public, readable and writable;
-  only the crate can make one, so all of it comes from `AudioMemory`.
-- **Audio in RAM, samples on disk.** What RAM holds has no id: it becomes
-  a sample only when a project stores it. So the RAM types are named for
-  audio (`AudioMemory`, `Audio`, crate-private `AudioBuffer`) and the
-  project's for samples (`SampleId`, `add_sample`). `Sample` and
-  `SampleMemory` were the RAM names before.
-- **One type is written, played and saved.** `Audio` is an
-  `Arc<AudioBuffer>` with no `Clone`. `extend` goes through
-  `Arc::get_mut`: refused while the engine holds the audio, which is what
-  `Audio` protects; a read by the project is protected by an ordinary
-  borrow. A voice holds it until it ends and `collect` takes its data in,
-  whether or not its handle is kept. Recording cannot share it this way, so `record` takes the
-  audio by value (see Recording).
+- **The project is the disk.** A directory with no in-memory copy; every
+  write is fsynced before the call returns, in an order that leaves the
+  old manifest or the new one after a power cut, so there is no save step.
+- **A sample exists once it is stored.** The project mints its
+  `SampleId` from a counter that never reuses one; callers keep the id
+  (in a parent pointer, a pad, a pattern) and `load` turns it into
+  `Audio`.
+- **Generation is a relationship, not a type.** A sample will carry an
+  optional parent id, and lineage is the tree of parent pointers. Not
+  built; it returns with prints, in the manifest's per-sample entry, with
+  every parent minted before its child.
+- **A project is validated whole on open** and refused if anything is
+  off; the directory belongs to the engine. The manifest is a private
+  struct, versioned apart from the model; samples are WAVs so any tool can
+  open them.
 
 ### Memory
 
-- **One figure covers all audio-length memory.** The caller makes one
-  `AudioMemory` per machine, not per project, and shares it as a
-  cloneable handle; loaded samples, audio being written and later effect
-  state all count against it. A per-sample length bound was rejected: the
-  worst case was a multiple that depended on the operation.
-- **`AudioMemory` makes every `AudioBuffer`, and a buffer is the only
-  audio-length memory.** A buffer has fixed capacity and repays on drop,
-  so release cannot be forgotten or doubled. A reservation held beside an
-  ordinary `Vec` was replaced: the buffer is its own receipt.
-- **Who may allocate is who holds an `AudioMemory`:** the caller, and what
-  it lends one to for a call (`Project::load`). The project and the
-  engine hold none; the render side never allocates. A parameter, not a global, because the
-  signature is the permission and tests need their own budgets.
-- **Track what scales with audio; bound the rest.** Fixed overhead (the
-  manifest, the channels, the renderer's scratch and its voice
-  pool) is not counted; it is sized once by the caller. Counting the old
-  input rings was tried and reverted as one mechanism too many.
-- **The OS backs the figure.** Audio is ordinary heap memory; the
-  guarantee is a cgroup reservation, no swap, and a budget set below what
-  is free. `AudioMemory` makes sure the crate never asks for more than
-  that one number. A locked arena was considered and left for later.
-- **Live effects will allocate on the control side** at instantiation and
-  move to the renderer by request.
-- **Prefault what the audio thread writes first.** Fresh memory is
-  reserved, not backed: the first write to each page stops the thread
-  while the kernel finds one. Memory the control side fills (loaded audio,
-  the renderer's pool) is backed before the audio thread sees it; memory
-  the audio thread is first to write (a recording, later a delay line) is
-  written once on the control side before the audio thread has it:
-  `record` prefaults its audio. Prefaulting every allocation was rejected
-  as work with nothing to gain.
-- **Review rule:** every new audio-length allocation comes from
-  `AudioMemory`, or the figure is a lie; one the audio thread fills is
-  prefaulted.
+- **All audio-length memory comes from one `AudioMemory`,** made once per
+  machine and lent by the caller; a buffer repays it on drop. What does
+  not scale with audio (rings, the voice pool, scratch) is sized once by
+  the caller and not counted.
+- **The render side never allocates.** What it needs is allocated on the
+  control side and handed over: live effects will be too.
+- **Memory the audio thread writes first is prefaulted** on the control
+  side (a take, later a delay line); a first write would otherwise stall
+  the audio thread on a page fault.
 
-### The two sides
+### The engine
 
 - **The project and the engine never name each other;** the caller
-  carries `Audio` between them. An `Engine` type over both was dissolved,
-  since no method needed both sides, and a joint constructor was rejected
-  as the same thing again.
-- **A verb lives on the thing it acts on.** `voice.stop()` acts on one
-  playing. A handle holds its state (a recording also its `Transfer`),
-  never a `Control`, so the dependency runs one way. Audio carrying a
-  handle and sending its removal from `Drop` was tried and rejected as
-  the wrong coupling.
-- **A voice is stopped by its handle.** A caller keeps the handle of
-  anything it may stop, and stopping them all is a loop over them; a stop
-  cannot fail. `control.stop(&audio)` and `stop_all()` were removed:
-  they reached only voices whose handles were dropped, and cost two more
-  requests on the voice channel, a shared reply and headroom kept for
-  them. A list of voices in `Control` was rejected: it would trail the
-  renderer, which decides when a voice ends.
-- **`stop` takes the handle.** A stopped voice or input has nothing left
-  to do, so `stop(self)` consumes it; on an input it is dropping by name,
-  kept so a caller finds the verb. Drop-only, as `MutexGuard` has no
-  `unlock`, was the purer Rust; `&self` left a dead handle.
-- **Nothing waits on a voice or an input.** Each drops its `Transfer` at
-  start and keeps only its state: an ended voice's audio is freed at the
-  next `take_in` whether its handle is kept, and an input ends only when
-  stopped. `try_wait` on them told only "ended", a period late; a status
-  field in the state is the way once a caller needs it.
-- **A handle's constructor does its checks.** `Voice::play`,
-  `Input::open` and `Recording::record` check first, then start;
-  `Control`'s methods only pass through, so each feature's
-  refusals sit beside the data it builds. `try_start` hands the value back
-  on refusal: the only work lost is building it, so a permit for transfers
-  was weighed and not added. `open_input` checking channels itself, before
-  a reserve that could not fail, came before.
-- **`Control` is the door to one renderer.** It holds one channel end per
-  actor in the renderer as its own fields; a `Transfers` struct grouping
-  them was removed as a hop that did nothing. Named for what it is to the
-  caller; `RendererHandle`, `Link` and `Remote` were rejected.
-- **Each handle has its own error, in the engine's terms.** `VoiceError`,
-  `InputError` and `RecordError` list only what can happen to theirs, flat,
-  and translate the channels', so a caller reads "the renderer is gone",
-  not a channel's `Disconnected`. A shared `ControlError` was removed:
-  `play` returned an input's `NoSuchChannel` it could never get. Nesting
-  the shared refusals in each was weighed: deeper matches, and
-  `RecordError` must carry its audio anyway.
-- **Loaded audio is plain data.** Hold `Audio` and it is in RAM; drop it
-  and its voices play out, its memory repaid once the last voice's data
-  comes home and is taken in. Stopping their handles cuts them first. Each load is its
-  own copy; no dedup. What to load at open is the caller's to remember: a
-  persisted `loaded` flag was built and removed (it recorded a preference
-  before any panel had one).
-- **Adding a sample and loading it are separate.** A print must land on
-  disk even when it does not fit in RAM.
-- **Loading is synchronous** on the control thread. If it ever visibly
-  stalls a panel, the fix is a worker thread, not async methods.
-- **`create` takes plain sizes and panics on zero `voices`**, as
-  `slice::chunks` does: a zero is a typo, not something to recover from.
-  `NonZeroUsize` parameters made every caller wrap its constants.
-  `voice_queue` may be zero: a play is then refused, not stolen, while
-  every voice is held. `capture_channels` may be zero, with no input
-  device, and so may `inputs`.
-- **One file per feature; only real-time code is marked.** A voice, input
-  or recording keeps what crosses, its handle and its audio-thread part in
-  one file, since a change to a feature touches all three; the
-  audio-thread part sits in a `mod realtime`. Control-side code is the
-  default and goes unmarked; a file that is real-time throughout says so in
-  its doc, and code a name already marks (`RealtimeEnd`) needs no module.
-  A split by thread into `control/`, `protocol/` and `realtime/` came
-  first: each feature spread over three folders, and `protocol/` existed
-  only so the other two could share types. The source tree is the
-  architecture, drawn in the crate docs.
-
-### Transfers
-
-The two sides speak through `transfer`, a generic channel that knows
-nothing of audio, private to the engine, its only user; it sat at the
-crate root while being generic seemed reason enough. Voices, inputs and
-recordings are on it. It replaced `request`, deleted once nothing used it.
-
-- **A value goes over and comes home whole; nothing else crosses back.**
-  The reply is the value itself, with whatever the renderer wrote into
-  it, so everything it owns is freed on the control side and each return
-  ring is sized by what is in flight. A separate reply type was dropped:
-  the renderer could forget to send back what a request owned. A duplex
-  channel, sending a handle any number of events, was built and dropped:
-  its return ring could not be sized. A collector channel for freeing was
-  built and removed once everything rode home.
-- **Named for DMA transfers in embedded Rust,** where a `Transfer` owns
-  the buffer while the hardware works and `wait` hands it back; io_uring
-  runtimes call it ownership passing. `request` stopped fitting once
-  nothing was asked for; "loan" was weighed and collides with Rust's
-  lending iterators. Payloads are named for what they hold: `VoiceData`,
-  `InputData` and `RecordingData`, as Kira plays a `StaticSoundData`.
-- **What changes while running is state beside the value.** A
-  `VoiceState`, `InputState` or `RecordingState` (`stop`) rides in its data behind an `Arc`
-  and the handle keeps a clone: the handle writes, the renderer reads once a
-  period. Lock-free atomics of 64 bits or less, each read alone; a
-  snapshot type waits for fields that must agree. The engine defines the
-  state, not `transfer`, which stays only sent and handed back. Status is
-  out until a caller needs it. Cancel and asked status on the ring came
-  first: a cancel could outlive its request, and every status only said
-  "still held". Updates as messages each needed ordering rules a flag
-  does not.
-- **Each transfer brings its own return ring, and its end comes back.**
-  `try_start` makes a one-deep ring; the caller keeps the `Transfer`, and
-  the renderer receives a `Completion`: the value and the ring's sending
-  end, read and written through it but never moved out. `complete` sends
-  the value home and the end back on `returned`, so the ring is freed on
-  the control side, as Kira returns unused resources. Nothing is shared,
-  so no id and no lock. A value and completion handed over apart were
-  replaced: one could be completed with another's value. Reply rings per
-  slot, made at `create`, were built and set aside on branch
-  `request-v2-slots`. A `Drop` sending the end back was rejected: it
-  would share `returned` with every end.
-- **One channel per actor, typed by its value.** Each is sized by its
-  actor: voices by `voices + voice_queue`, recording by `RECORDERS`,
-  inputs by `inputs`. One shared channel with umbrella `Command` and
-  `Event` enums came first. Order across channels is lost, which does no
-  harm: the renderer takes in every channel at the start of a period.
-- **A transfer is in flight from started until its end is back, so
-  completing never fails.** `ControlEnd` counts them, and both shared
-  rings hold `capacity`: a value received but not completed still
-  counts. `try_start` refuses with `StartError::Full` at capacity, or
-  `Disconnected` once the renderer is gone, either way with the value.
-  Without that check, a value started after the renderer went sat in a
-  ring nobody reads, and its transfer said "not yet" forever.
-- **A dropped `Transfer` needs nothing done.** Its ring, and the value in
-  it, is freed when the end comes back and `take_in` drops it.
-- **A dropped real-time end drops its unreceived values,** so their
-  transfers learn none is coming: the ring would keep them while the
-  control end lives. It frees then, at teardown, when no deadline is
-  left.
-- **`Control` is not `Clone`.** An app holds one, in its own state, and
-  shares it its own way: `play`, `open_input`, `record` and `collect` take
-  `&mut self`,
-  as Kira's `AudioManager::play` does, so the single-producer rings stay
-  owned. Handles as ids routed through the end were weighed: a drop could
-  do nothing.
-
-### The render side
-
-- **The render side never waits.** It owns the real-time ends of the
-  channels (`rtrb` rings: lock-free SPSC, fixed capacity; `mpsc`
-  locks and allocates) and takes in what arrived at the start of each
-  period. No disk, no clock, no allocation, no lock, no error path. It
-  reads only audio already in RAM: an fsync on eMMC can stall I/O for
-  hundreds of milliseconds.
-- **Real-time safe, not real-time only.** Frame counts, never a clock, so
-  the same `render` drives a device callback live or a loop offline (the
-  bounce).
-- **Mix in blocks.** `render(capture, out)` takes the device's flat
-  interleaved period, of any length, capture and output the same frames.
-  It mixes in blocks of `BLOCK_FRAMES` (64), the capture cut at the same
-  frames: each block starts silent, each voice renders into one shared
-  scratch and is added in, and the period is hard-clipped once. Blocks
-  keep the scratch fixed and are what Pd, SuperCollider and Max do; the
-  latency is the device's period, not the block. The mix is always
-  stereo (`Renderer::OUTPUT_CHANNELS`): mono audio plays at full level on
-  both sides. A `Source` trait, boxed `Processor` chains and a generic
-  `Mixer` were each built and dropped.
-- **Voices are a fixed pool.** `voices` is given to `create` and the pool
-  never resizes: a CPU budget the caller sizes for its hardware, with no
-  hardware maximums in the crate, and not counted by `AudioMemory`. A play
-  with every place taken cuts the oldest: a press must sound. The pool is
-  a `Vec` kept oldest first and never past its places, so the oldest is
-  the first; numbered places searched for the lowest came before. It owns
-  the voices' end of their channel, so every way a voice arrives or
-  leaves is in `voices.rs`: received, cut, stopped at the start of a
-  period, finished at its end.
-- **The render loop chooses what happens to each voice.** It iterates
-  the voices and mixes each itself, and `end_finished` ends the finished
-  ones after the loop. A `Voices::render` that mixed them, or took the
-  per-voice step as a callback, was weighed and rejected: routing and
-  levels to come belong in the loop.
-- **A voice, an input or a recording comes home with no reason.** Nothing
-  on the control side acts on why one ended yet. A voice's `Finished`,
-  `Stopped` and `Cut`, an input's `InputEnd::Stopped` and a recording's
-  `RecordingEnd` were reported before. A take shows its own: it is full
-  at the length allocated, and otherwise the caller stopped it or the
-  renderer went.
-- **What crosses is a task.** A `VoiceData` is a play and a
-  `RecordingData` a take, each handed back when done; meaning
-  stays plain, the handles carry the verbs. Operations on what the
-  renderer held (`Add`, `Remove`) came while replies were events.
-- **One concept, one name; the module says the side.** `Voice` is both
-  the control-side handle and the render side's playing, as `io::Error`
-  and `fmt::Error`. The old engine said `Sound` and `SoundId`.
-- **Clip once, hard, last.** Same result on every device and offline; it is
-  what hardware samplers do. A master gain or limiter goes before it.
-
-### Input and monitoring
-
-- **The renderer is duplex.** `render(capture, out)` takes the input
-  device's frames for the same period it fills, interleaved,
-  `capture_channels` wide. One callback is one clock, and it is how JUCE,
-  PortAudio and JACK hand audio over; a caller with two clocks, common on
-  desktop, bridges them before `render`, since only it knows its devices. A capture ring per device, filled by a `Feeder` on
-  the capture thread, was built first and removed: it put a cushion, clock
-  drift and a feeder that could go away inside the engine.
-- **An input names capture channels; it owns none.** `open_input` takes
-  `InputChannels::Mono(c)` or `Stereo(left, right)`, counted from zero,
-  and refuses one past the device at once (`NoSuchChannel`). Inputs may
-  read the same channel; `inputs` is how many can be open at once, not
-  the channel count. Each input keeps the capture width to cut a block
-  into frames.
-- **Every open input renders each block, whether or not anything hears
-  it**, so a take can record one unmonitored. `Inputs` holds them with the
-  inputs' end of their channel, as `Voices` does, and monitoring adds what
-  one renders. Each period new
-  inputs open before stopped ones end, so one stopped before it arrived
-  still gives its place back that period.
-- **Opening an input is always on `Control`.** With zero capture channels
-  every channel is past the device, so it answers `NoSuchChannel`, as
-  Apple's `inputNode` has no channels rather than not existing. A
-  `NoCapture` error and a second constructor, `create_with_capture`, were
-  removed with the ring: a device's width is one number at `create`.
-- **A device change rebuilds the engine**: the caller calls `create`
-  again, as a DAW stops its engine to switch interfaces. Attaching a
-  capture to a running renderer by request was rejected for it, and so
-  was `Control` making its renderers: once a renderer is gone, `Control`
-  holds nothing a new one needs, and clones that quietly followed a new
-  renderer would break with the handles, which stay tied to theirs as an
-  `mpsc::Sender` does. It comes back if `Control` holds what a renderer
-  was told, to replay. Keeping the engine across a switch is the
-  caller's (Deferred).
-- **Monitoring is state on the input**, off when opened, so an open mic
-  is not heard until asked for. `input.set_monitoring(bool)` sets a flag
-  in its state, as stop is on a voice, and the renderer reads it each
-  block. A monitored input is added to the main out before the clip, so a
-  recording of the main out takes it too. A second request kind on the
-  input channel was tried and dropped: it forced a shared reply type.
-
-### Devices and examples
-
-- **The device is the caller's, not the crate's.** Which machine, which
-  audio library, whether there is a device at all: the library has no
-  audio dependency, `cpal` is a dev-dependency, and `examples/device/` is
-  the only code that knows there is an audio thread. A headless machine
-  runs the engine all the same. A trait over cpal was rejected: one
-  implementation, and tests hold the renderer directly.
-- **The caller is a patch bay; the engine is the mixer.** Which device and
-  channel is the caller's, thin and decision-free; what is heard and at
-  what level is the engine's, by request.
-- **The stream runs from open to drop.** Opening clicks and costs tens of
-  milliseconds, so it renders silence when idle. Audio can be dropped in
-  any order: the last `Arc`, held by a voice, comes back in its reply to
-  be freed on the control side.
-- **cpal is pinned to master for its duplex streams** (ALSA and JACK),
-  which 0.18.2 lacks, and goes back to a release when 0.19 ships.
-- **The examples' `Device` is one duplex stream**, as `render` takes it:
-  ALSA's `default`, fetched by id, since cpal's default devices have one
-  direction each and the first duplex one it lists can be `null`. It is
-  `f32` only and converts nothing; a device that cannot is refused, not
-  bridged. An output-only `Device` and a `Capture` converting `i16` and
-  `i32` came before, and a `Duplex` beside them was dropped: the engine
-  only takes duplex, and example code need not be universal.
-- **An example is small and shows one feature on a device**, what only
-  listening can check: plain demonstration code, no hardening or shared
-  abstractions there. Refusals and edge cases are for tests and doc
-  examples. One example per area showing everything it does (`voices`,
-  `record`, `inputs`) was tried and split: each was long, and a refusal
-  printed on a device checks nothing a test does not. `first_sound` and
-  `engine`, a non-running demo of the API, were removed.
-  When the device exists, the examples move into a binary crate.
-- **A new feature is shown in a doc example on its API**, `no_run`, as
-  inputs are on `open_input`: `cargo test` compiles it as surely as an
-  example, and `cargo doc` shows it beside what it uses.
-
-### Recording
-
-- **A recording is a handle, as a voice is, and one handle is one take.**
-  `control.record(audio, tap)` returns a `Recording` with `stop` and
-  `try_take`. Recording again is a new `record`, so a late stop can never
-  reach a newer take.
-- **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
-  length is a maximum, and reaching it ends the take, which is not an
-  error. Only stereo audio is taken, from any tap: a mono input is
-  recorded on both sides, as it is heard, so a take's layout never depends
-  on its tap. It costs a mono source twice its memory; a fold can come
-  later.
-- **The renderer holds the only reference while it writes**, through
-  `Arc::get_mut`. Only the control side clones or drops audio and the
-  caller gives theirs up, so `record` knows exactly whether a voice still
-  holds it and refuses at once. Every refusal hands the audio back in a
-  `RecordError`, as `TrySendError` does; a refused `try_start` returns
-  the data, and the error takes the audio out of it.
-- **One recorder, sized into its channel.** The recording channel holds
-  `RECORDERS` (one) transfers, so a second `record` before the first
-  comes back is refused at once with `RecordError::Full` and never
-  reaches the renderer. The place frees when the recording ends, not
-  when its audio is taken. A refusal by the renderer, ending `Refused`,
-  came before.
-- **The render side has a `Recorder`, not a recording.** It lives as long
-  as the renderer and holds one recording's `Completion` at a time; with
-  several, they become `Recorders`. Named as audio libraries name the
-  thing that records (Tone.js, `MediaRecorder`, `AVAudioRecorder`); the
-  recording is what travels, `RecordingData` and the handle. A
-  render-side `Recording` beside it was removed: a recording needs
-  nothing beyond its data.
-- **A take records from a `Tap`, chosen per take:** `Tap::MainOut` or
-  `Tap::Input(&input)`. It crosses as `TapData`, an input's holding that
-  input's `Arc<InputState>`, which is both its identity and its stop.
-  Device channels as the tap (`Tap::Capture(InputChannels)`) were weighed:
-  nothing to match, but a tap names a point in the signal path, and
-  whatever an input does later would be skipped. Two takes on one tap do
-  no harm, so nothing refuses them; one recorder per tap (`TapInUse`) came
-  before.
-- **The render loop records at its tap points.** After each input renders
-  and after the clip, it asks `records_from(TapPoint)` and writes what it
-  has there, as it chooses for voices. A recorder matching inside
-  `write_input` and `write_main_out` hid where recording happens; a node
-  graph would bring back the `Processor` chains already dropped, and is
-  for when routing grows a special case per feature.
-- **The main out is written as heard, an input as it renders.** The main
-  out after each block is clipped; an input monitored or not, and
-  unclipped: `f32` keeps overs, so clipping belongs where audio reaches
-  the device or leaves `f32`. A take ends in the block that fills it:
-  `write` checks where it becomes true, and nothing after the loop has to
-  remember. `record` clears the audio and prefaults it first.
-- **A take ends with its input.** The recorder reads the input's stop as
-  its own, so the take comes back the period its input leaves; one whose
-  input stopped before it arrived ends empty. A take left waiting for
-  frames that cannot come was rejected.
-- **`try_take` hands over the audio, once.** It polls, and is the only
-  way the take comes back: `TryTakeError` says `Recording` until then,
-  `Taken` after. Named for what the caller gets, as audio libraries hand
-  back the recording and Rust's `take` moves a thing out once; `try_wait`,
-  after `Child::try_wait`, came before. A dropped renderer still hands
-  back what was heard, through `Recorder`'s `Drop`, even a recording it
-  had not yet received, so a device failure keeps the take. A cached
-  `state()` beside `take()` was replaced: it claimed `Recording` when it
-  only meant no reply yet.
-- **Dropping a recording stops it**, unlike a voice, which plays out: no
-  one could take its audio. `stop` keeps the handle (`&mut self`), unlike
-  a voice's or an input's, as `try_take` comes after it.
-- **Arming comes later, with the features that need it.** An armed
-  recording is held by the renderer, which starts it itself: at the frame
-  the input crosses a level (threshold start), on the next beat or bar
-  once there is a clock (quantized start), or with the second before the
-  press kept from a ring written while armed (pre-roll). Only the audio
-  thread can time these. Arming also claims the recorder early, so a busy
-  one is refused before the press, and takes `record`'s prefault off the
-  press. Until then the user waits for the prefault, a few milliseconds
-  per 30 s of stereo; accepted for now (2026-11-13).
+  carries `Audio` between them.
+- **The device is the caller's.** The crate has no audio dependency and
+  `render(capture, out)` is handed one duplex period; a caller with
+  separate input and output clocks bridges them before `render`. A device
+  change means calling `create` again.
+- **The render side never waits:** no disk, lock, allocation or error
+  path, and frame counts rather than a clock, so the same `render` runs
+  offline.
+- **A transfer goes over and comes home whole,** so everything it owns is
+  freed on the control side. What changes while it runs (stop,
+  monitoring) is lock-free state shared beside it, not further messages.
+  Each feature has its own channel, sized by how many of it can be in
+  flight.
+- **A verb lives on the thing it acts on.** Handles (`Voice`, `Input`,
+  `Recording`) carry their own verbs and errors, check before they start,
+  and never hold a `Control`.
+- **Voices are a fixed pool** sized by the caller; a play with every voice
+  taken cuts the oldest, because a press must sound.
+- **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
+  A master gain or limiter goes before the clip.
+- **Inputs name capture channels and own none.** Every open input renders
+  each block whether heard or not, so it can be recorded unmonitored;
+  monitoring is off until asked for.
+- **Recording is one handle per take,** into audio the caller allocated:
+  stereo from any tap, ending when full, stopped, or when its input stops.
+  Dropping the handle stops it. A take records from a tap, the main out
+  after the clip or an input unclipped, chosen per take; the render loop
+  writes at each tap point.
+- **Arming is for the audio thread,** when it comes: a take that starts
+  itself at a threshold, on a beat, or with pre-roll kept from before the
+  press. Not built.
+- **One file per feature.** A feature's data, handle and audio-thread part
+  sit together; the audio-thread part in a `mod realtime`.
 
 ### Process
 
-- **One product, opinionated, with clean seams.** Build what this sampler
-  needs when a step needs it; keep the seams that testing and the hardware
-  require (no device in the crate). The renderer pair is justified by the
-  bounce and step 8; a many-renderer API is not.
-- **The public surface is minimal.** Convenience methods arrive with a
-  caller.
-- **Nothing is settled by having been written.** New steps are designed
-  from the decision, and existing code is changed to fit.
+- **One opinionated product with clean seams.** Build what the sampler
+  needs when a step needs it; the public surface stays minimal and
+  convenience arrives with a caller.
+- **Nothing is settled by having been written.** A step is designed from
+  its decision, and existing code changes to fit.
+- **Examples show one feature each on a device,** as plain demonstration
+  code. Refusals and edge cases belong in tests; a new feature also gets a
+  `no_run` doc example on its API.
+- **cpal is pinned to master** for duplex streams, back to a release when
+  0.19 ships.
 
-## Step 8: the real-time side
+## Later
 
-Built on `src/engine/`: voices, block mixing and recording of the main out
-or an input, over the channels (see Transfers, above).
+Not planned yet; kept so they are not forgotten.
 
-What is left:
-- **Sequencing**, decided but not built: it runs on the audio thread,
-  reading a fixed-size pattern that requests edit in place, so an edit is
-  heard on the next pass whatever the control side is doing. Its voices
-  are not requests and send nothing back. Whether a step names a pad, a
-  sound or holds its audio is open.
-- **Sample-accurate requests** arrive with sequencing, as a time on the
-  request.
+**Engine**
+- Effects on the render side, heard live; a print is the committed render,
+  stored as a new generation. Replayable recipes as presets after that.
+- Offline bounce: a renderer driven in a loop with timestamped requests,
+  its output stored as a new root.
+- Busses, each a new tap point; master gain and limiter.
+- A mono output device folding the stereo mix at the end (level
+  undecided).
+- Keeping the engine across a device switch: the callback hands the
+  renderer back before its stream drops.
+- Stream errors reported to the caller.
+- A real-time rulebook, and a test allocator asserting `render` allocates
+  nothing.
+- A level meter and progress on a take; saving a take straight into
+  loaded audio.
+- Streaming long recordings rather than holding them in RAM.
 
-## Storage tiers on the device
+**Project**
+- Content-hash dedup, also matching a renamed WAV back to its sample.
+- Removing a whole lineage.
+- Projects stored in another format, converted on load.
 
-```
-SD card   kept projects; a copy of the active one, made on request
-eMMC      the active project; every change lands here at once
-RAM       loaded audio, under AudioMemory
-```
-
-The project does not know about tiers.
-
-## Deferred ideas
-
-- **A mono output device** folds the stereo mix at the very end; the mix
-  itself stays stereo. The fold's level (a plain sum, or -3 or -6 dB) is
-  undecided.
-- **Effects on the render side.** Heard live on a sound or a bus; a print
-  is the committed offline render of the same effect, stored as a new
-  generation.
-- **Replayable recipes** on prints, as presets. Needs effects-as-data.
-- **Offline bounce:** a renderer driven in a loop with frame-stamped
-  requests, its output stored as a new root.
-- **Real-time rulebook** (a doc) and an **allocation-counting test
-  allocator** asserting `Renderer::render` allocates nothing.
-- **Busses** on the hard-coded path, each a new tap point.
-- **Master gain and bus limiter** before the clip.
-- **Stream errors** reported to a front panel.
-- **Keeping the engine across a device switch.** cpal drops a callback
-  with its stream, so the caller would have the callback hand the
-  renderer back first, through a one-slot ring, and start the new stream
-  with it. The engine needs nothing for it; a helper only
-  if callers get it wrong.
-- **Content-hash dedup** on add, and on import if it returns, also
-  matching a renamed WAV back to its sample.
-- **Removing a whole lineage** as one operation.
-- **A SQLite medium**, a trait over the project's files again, if a
-  single-file project or transactions are worth it.
-- **Streaming long recordings** from eMMC instead of holding them
-  resident.
-- **A budget read from the device's configuration** once the CM4 variant
-  is known.
-- **An `i16` build** for low-power hardware, chosen at build time.
-- **Projects in another stored format** than the engine's, converted on
-  load and saved in the engine's.
-- **Warming the small rings.** A return ring's slots are first written
-  by the renderer, so each faults a few pages on its first pushes. rtrb
-  has no hook to prefault; pushing and popping a value through every slot
-  at creation would do it.
-- **`mlockall` on the device.** `mlockall(MCL_CURRENT | MCL_FUTURE)`
-  backs and locks every page the process has or will have, the blanket
-  form of prefaulting, and guarantees nothing is paged out later. It
-  needs `CAP_IPC_LOCK` or a raised `RLIMIT_MEMLOCK` and is a
-  process-wide choice, so it is the caller's, beside the cgroup
-  reservation and no swap; the crate does not own the process.
-- **A level meter on a take**, in its status; the same could report a
-  take's progress.
-- **Saving a take as loaded audio**, a copy into a right-sized buffer,
-  for playing a resample at once without reading it back from disk.
-- **Hardware monitoring** on the target's codec, if it has it.
+**Hardware**
+- Storage tiers: the active project on eMMC, kept projects on the SD
+  card, audio in RAM under `AudioMemory`; the project does not know.
+- An `i16` build, chosen at build time.
+- The memory budget read from the device's configuration.
+- `mlockall`, a cgroup reservation and no swap, set by the caller.
+- Hardware monitoring on the codec.

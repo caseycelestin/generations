@@ -1,8 +1,8 @@
 # generations
 
 The engine behind the **generations** sampler, recorder, and multitrack
-recorder. Written in Rust, with the long-term goal of powering a dedicated
-hardware unit for music production.
+recorder. Written in Rust for a desktop app first, then perhaps a tablet,
+and in the long run perhaps a dedicated hardware unit for music production.
 
 ## The idea
 
@@ -38,15 +38,20 @@ the hardware unit all sit on top of. It is responsible for:
 
 ## Status
 
-Early. A project opens on disk, imports audio, keeps itself durable across
-a power-down and loads samples into RAM under one memory budget; a renderer
-plays them, and hears a microphone, through whatever device the caller
-gives it. The crate itself needs no audio device. Nothing prints yet, so
+Early. A project lives on disk, durable across a power-down, and loads
+samples into RAM under one memory budget. A renderer, driven by whatever
+duplex device the caller gives it, plays them on a fixed pool of voices,
+hears inputs through the main out, and records the main out or an input
+as a take. The crate itself needs no audio device. Nothing prints yet, so
 generations are not recorded; lineage returns with the effects that print
-them.
-See [docs/roadmap.md](docs/roadmap.md) for
-the plan and the decisions behind it, and `cargo doc --open` for the
-architecture.
+them. Timing comes next: requests stamped with the frame they land on,
+then sequencing.
+
+- [docs/roadmap.md](docs/roadmap.md): the plan as it stands and the
+  decisions that shape it.
+- [docs/decisions.md](docs/decisions.md): how the engine reached its
+  shape, written once as of November 2026.
+- `cargo doc --open`: the architecture.
 
 ## Building
 
