@@ -6,8 +6,7 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, Input, InputError, RecordError, Recording, StatusError, TryRecvStatusError,
-    TryTakeError, TryWaitError, Voice, VoiceError,
+    Control, Input, InputError, RecordError, Recording, TryTakeError, Voice, VoiceError,
 };
 pub use protocol::inputs::InputChannels;
 pub use realtime::Renderer;
@@ -91,13 +90,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Asks, then renders a frame for the renderer to answer in.
-    fn status(recording: &mut Recording, renderer: &mut Renderer) -> RecordingStatus {
-        let mut pending = recording.request_status().unwrap();
-        renderer.render(&[], &mut [0.0; 2]);
-        pending.try_recv().unwrap()
-    }
-
     #[test]
     fn a_played_voice_is_heard_then_gives_its_audio_back() {
         let (mut control, mut renderer) = create(4, 2, 0, 0);
@@ -159,16 +151,12 @@ mod tests {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert_eq!(
-            status(&mut recording, &mut renderer),
-            RecordingStatus::Recording
-        );
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
 
         recording.stop();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        let (why, _) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::Stopped);
+        assert!(recording.try_take().is_ok());
     }
 
     #[test]
@@ -211,14 +199,11 @@ mod tests {
         let mut second = control.record(room(64)).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        assert_eq!(
-            status(&mut second, &mut renderer),
-            RecordingStatus::Recording
-        );
+        assert!(matches!(second.try_take(), Err(TryTakeError::Recording)));
     }
 
     #[test]
-    fn try_wait_hands_back_what_was_heard() {
+    fn try_take_hands_back_what_was_heard() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
@@ -228,7 +213,7 @@ mod tests {
         recording.stop();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        let (_, taken) = recording.try_wait().unwrap();
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.samples(), [0.25; 4 * 2]);
     }
 
@@ -242,8 +227,7 @@ mod tests {
 
         drop(renderer);
 
-        let (why, taken) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::RendererGone);
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.samples(), [0.25; 4 * 2]);
     }
 
@@ -254,24 +238,23 @@ mod tests {
 
         drop(renderer);
 
-        let (why, taken) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::RendererGone);
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.frames(), 0);
     }
 
     #[test]
-    fn try_wait_is_not_ended_until_the_recording_ends_and_taken_once() {
+    fn try_take_fails_until_the_recording_ends_and_hands_over_once() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
-        assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
         renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
 
         recording.stop();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        assert!(recording.try_wait().is_ok());
-        assert!(matches!(recording.try_wait(), Err(TryWaitError::Taken)));
+        assert!(recording.try_take().is_ok());
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Taken)));
     }
 
     #[test]
@@ -285,7 +268,7 @@ mod tests {
         recording.stop();
         renderer.render(&[], &mut [0.0; 2 * 2]);
 
-        let (_, taken) = recording.try_wait().unwrap();
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.samples(), [0.0; 2 * 2]);
     }
 

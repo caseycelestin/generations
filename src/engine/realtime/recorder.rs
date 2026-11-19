@@ -43,7 +43,10 @@ impl Recorder {
         if let Some(audio) = audio {
             audio.extend(block.as_flattened().iter().copied());
         }
-        if let Some(full) = self.recording.take_if(|recording| recording.audio.is_full()) {
+        if let Some(full) = self
+            .recording
+            .take_if(|recording| recording.audio.is_full())
+        {
             self.end(full);
         }
     }
