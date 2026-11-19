@@ -20,7 +20,7 @@ mod voice;
 
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
-pub use recording::{RecordError, Recording, TryTakeError};
+pub use recording::{RecordError, Recording, Tap, TryTakeError};
 pub use renderer::Renderer;
 pub use voice::{Voice, VoiceError};
 
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn a_recording_runs_until_stopped() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
-        let mut recording = control.record(room(64)).unwrap();
+        let mut recording = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
 
@@ -155,7 +155,7 @@ mod tests {
     fn record_refuses_mono_audio_and_hands_it_back() {
         let (mut control, _renderer) = create(4, 1, 0, 0);
         let mono = AudioMemory::new().alloc(ChannelLayout::Mono, 4).unwrap();
-        let error = control.record(mono).unwrap_err();
+        let error = control.record(mono, Tap::MainOut).unwrap_err();
         assert!(matches!(error, RecordError::NotStereo(_)));
         assert_eq!(error.into_audio().layout(), ChannelLayout::Mono);
     }
@@ -166,7 +166,7 @@ mod tests {
         let audio = room(4);
         let _voice = control.play(&audio).unwrap();
         assert!(matches!(
-            control.record(audio),
+            control.record(audio, Tap::MainOut),
             Err(RecordError::AudioInUse(_))
         ));
     }
@@ -174,8 +174,8 @@ mod tests {
     #[test]
     fn record_refuses_while_another_recording_holds_the_recorder() {
         let (mut control, _renderer) = create(4, 1, 0, 0);
-        let _first = control.record(room(64)).unwrap();
-        let error = control.record(room(8)).unwrap_err();
+        let _first = control.record(room(64), Tap::MainOut).unwrap();
+        let error = control.record(room(8), Tap::MainOut).unwrap_err();
         assert!(matches!(error, RecordError::Full(_)));
         assert_eq!(error.into_audio().frames(), 0);
     }
@@ -183,12 +183,12 @@ mod tests {
     #[test]
     fn dropping_a_recording_frees_the_recorder() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
-        let first = control.record(room(64)).unwrap();
+        let first = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
         drop(first);
         renderer.render(&[], &mut [0.0; 4 * 2]);
-        let mut second = control.record(room(64)).unwrap();
+        let mut second = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
         assert!(matches!(second.try_take(), Err(TryTakeError::Recording)));
@@ -199,7 +199,7 @@ mod tests {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
-        let mut recording = control.record(room(64)).unwrap();
+        let mut recording = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
         recording.stop();
@@ -214,7 +214,7 @@ mod tests {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
-        let mut recording = control.record(room(64)).unwrap();
+        let mut recording = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
         drop(renderer);
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn dropping_the_renderer_hands_back_a_recording_it_never_started() {
         let (mut control, renderer) = create(4, 1, 0, 0);
-        let mut recording = control.record(room(64)).unwrap();
+        let mut recording = control.record(room(64), Tap::MainOut).unwrap();
 
         drop(renderer);
 
@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn try_take_fails_until_the_recording_ends_and_hands_over_once() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
-        let mut recording = control.record(room(64)).unwrap();
+        let mut recording = control.record(room(64), Tap::MainOut).unwrap();
         assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
@@ -254,7 +254,7 @@ mod tests {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut used = room(4);
         used.extend([0.9; 4 * 2]);
-        let mut recording = control.record(used).unwrap();
+        let mut recording = control.record(used, Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 2 * 2]);
 
         recording.stop();

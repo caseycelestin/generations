@@ -76,6 +76,11 @@ impl Input {
         Ok(Self { state })
     }
 
+    /// What a tap on it holds.
+    pub(crate) fn state(&self) -> &Arc<InputState> {
+        &self.state
+    }
+
     /// Off when the input opens, so an open mic is not heard until asked
     /// for. Takes effect from the renderer's next block.
     pub fn set_monitoring(&mut self, on: bool) {

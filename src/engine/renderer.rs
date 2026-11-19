@@ -112,7 +112,7 @@ mod tests {
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
-    use crate::engine::recording::{RecordingData, RecordingState};
+    use crate::engine::recording::{RecordingData, RecordingState, TapData};
     use crate::engine::transfer::{self, Transfer, TryWaitError};
     use crate::engine::voice::{VoiceData, VoiceState};
     use crate::engine::{input, recording, voice};
@@ -166,6 +166,7 @@ mod tests {
         let state = Arc::new(RecordingState::default());
         let data = RecordingData {
             audio: Arc::new(audio),
+            tap: TapData::MainOut,
             state: Arc::clone(&state),
         };
         let recording = ends.recordings.try_start(data).unwrap();

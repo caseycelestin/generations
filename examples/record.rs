@@ -11,7 +11,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::engine::{self, InputChannels, TryTakeError};
+use generations::engine::{self, InputChannels, Tap, TryTakeError};
 use generations::{AudioMemory, ChannelLayout};
 
 mod device;
@@ -42,18 +42,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mono = memory.alloc(ChannelLayout::Mono, SAMPLE_RATE as usize)?;
-    if let Err(e) = control.record(mono) {
+    if let Err(e) = control.record(mono, Tap::MainOut) {
         println!("mono audio: {e}");
     }
 
     // Two seconds of the main out; the take ends when they are used.
     let take = memory.alloc(ChannelLayout::Stereo, 2 * SAMPLE_RATE as usize)?;
-    let mut recording = control.record(take)?;
+    let mut recording = control.record(take, Tap::MainOut)?;
     println!("recording the plucks");
 
     // A refused recording hands its audio back.
     let spare = memory.alloc(ChannelLayout::Stereo, 5 * SAMPLE_RATE as usize)?;
-    let refused = control.record(spare).expect_err("one recording at a time");
+    let refused = control
+        .record(spare, Tap::MainOut)
+        .expect_err("one recording at a time");
     println!("a second recording: {refused}");
     let spare = refused.into_audio();
 
@@ -75,7 +77,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("playing back {} frames", recorded.frames());
     control.play(&recorded)?;
-    let refused = control.record(recorded).expect_err("a voice holds it");
+    let refused = control
+        .record(recorded, Tap::MainOut)
+        .expect_err("a voice holds it");
     println!("recording over it: {refused}");
     let recorded = refused.into_audio();
     sleep(Duration::from_millis(2200));
@@ -83,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Monitored, an input is in the main out, so it is recorded too.
     let mut input = control.open_input(InputChannels::Mono(0))?;
     input.set_monitoring(true);
-    let mut recording = control.record(spare)?;
+    let mut recording = control.record(spare, Tap::MainOut)?;
     println!("recording channel 0 for three seconds: speak");
     sleep(Duration::from_secs(3));
 
@@ -103,10 +107,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Recorded over from empty, now that the voice has ended. Dropping a
     // recording stops it; its place comes back at the renderer's next period.
-    let recording = control.record(recorded)?;
+    let recording = control.record(recorded, Tap::MainOut)?;
     drop(recording);
     sleep(Duration::from_millis(100));
-    let _again = control.record(spoken)?;
+    let _again = control.record(spoken, Tap::MainOut)?;
     println!("a place is free again");
 
     // The audio thread queues its complaints; this is where they are read.

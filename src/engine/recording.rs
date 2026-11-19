@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
+use crate::engine::input::{Input, InputState};
 use crate::engine::transfer;
 use crate::layout::ChannelLayout;
 
@@ -18,7 +19,24 @@ pub(crate) struct RecordingState {
 #[derive(Debug)]
 pub(crate) struct RecordingData {
     pub(crate) audio: Arc<AudioBuffer>,
+    pub(crate) tap: TapData,
     pub(crate) state: Arc<RecordingState>,
+}
+
+/// Where a recording takes its frames from, chosen per take.
+#[derive(Debug, Clone, Copy)]
+pub enum Tap<'a> {
+    /// As heard, after clipping.
+    MainOut,
+    /// Whether it is monitored or not.
+    Input(&'a Input),
+}
+
+/// A `Tap` owned, to cross to the renderer.
+#[derive(Debug)]
+pub(crate) enum TapData {
+    MainOut,
+    Input(Arc<InputState>),
 }
 
 /// Nothing was recorded; the audio comes back in it.
@@ -95,12 +113,18 @@ impl Recording {
     pub(crate) fn record(
         transfers: &mut transfer::ControlEnd<RecordingData>,
         audio: Audio,
+        tap: Tap<'_>,
     ) -> Result<Self, RecordError> {
         let audio = Self::validate(audio)?;
         let audio = Self::prepare(audio);
+        let tap = match tap {
+            Tap::MainOut => TapData::MainOut,
+            Tap::Input(input) => TapData::Input(Arc::clone(input.state())),
+        };
         let state = Arc::new(RecordingState::default());
         let data = RecordingData {
             audio,
+            tap,
             state: Arc::clone(&state),
         };
         let transfer = transfers.try_start(data)?;
@@ -239,7 +263,7 @@ pub(crate) mod realtime {
 
         use super::*;
         use crate::audio::AudioMemory;
-        use crate::engine::recording::RecordingState;
+        use crate::engine::recording::{RecordingState, TapData};
         use crate::engine::transfer::{ControlEnd, Transfer, TryWaitError};
         use crate::layout::ChannelLayout;
 
@@ -261,6 +285,7 @@ pub(crate) mod realtime {
             let state = Arc::new(RecordingState::default());
             let data = RecordingData {
                 audio: Arc::new(audio),
+                tap: TapData::MainOut,
                 state: Arc::clone(&state),
             };
             let recording = control.try_start(data).unwrap();
