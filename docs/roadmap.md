@@ -11,7 +11,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 3 | Persistence: the project lives on disk, every change durable at once | done |
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
-| 6 | Recording: audio input as a new root | main out done on `src/engine/`, `take` included; inputs to come |
+| 6 | Recording: audio input as a new root | done on `src/engine/`: the main out or an input, `take` included |
 | 7 | Input monitoring: hear the input through the output | done on `src/engine/`, on a duplex `render` |
 | 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
 | 9 | Arrangement and more effects | |
@@ -370,8 +370,9 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
   the channel count. Each input keeps the capture width to cut a block
   into frames.
 - **Every open input renders each block, whether or not anything hears
-  it.** `Inputs` holds them with the inputs' end of their channel, as
-  `Voices` does, and monitoring adds what one renders. Each period new
+  it**, so a take can record one unmonitored. `Inputs` holds them with the
+  inputs' end of their channel, as `Voices` does, and monitoring adds what
+  one renders. Each period new
   inputs open before stopped ones end, so one stopped before it arrived
   still gives its place back that period.
 - **Opening an input is always on `Control`.** With zero capture channels
@@ -419,26 +420,29 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
   bridged. An output-only `Device` and a `Capture` converting `i16` and
   `i32` came before, and a `Duplex` beside them was dropped: the engine
   only takes duplex, and example code need not be universal.
-- **The examples are `voices`, `record` and `inputs`**, each showing
-  everything its feature does on a device: plain demonstration code, no
-  hardening or shared abstractions there. `first_sound` and `engine`, a
-  non-running demo of the API, were removed: doc examples and these three
-  cover them. When the device exists, they move into a binary crate.
+- **An example is small and shows one feature on a device**, what only
+  listening can check: plain demonstration code, no hardening or shared
+  abstractions there. Refusals and edge cases are for tests and doc
+  examples. `record_input` is the first; `voices`, `record` and `inputs`,
+  which each show everything their area does, are not yet split.
+  `first_sound` and `engine`, a non-running demo of the API, were removed.
+  When the device exists, the examples move into a binary crate.
 - **A new feature is shown in a doc example on its API**, `no_run`, as
   inputs are on `open_input`: `cargo test` compiles it as surely as an
   example, and `cargo doc` shows it beside what it uses.
 
 ### Recording
 
-Built for the main out; recording inputs are not built yet.
-
 - **A recording is a handle, as a voice is, and one handle is one take.**
-  `control.record(audio)` returns a `Recording` with `stop` and
+  `control.record(audio, tap)` returns a `Recording` with `stop` and
   `try_take`. Recording again is a new `record`, so a late stop can never
   reach a newer take.
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
   length is a maximum, and reaching it ends the take, which is not an
-  error. Only stereo audio is taken: the main out is stereo.
+  error. Only stereo audio is taken, from any tap: a mono input is
+  recorded on both sides, as it is heard, so a take's layout never depends
+  on its tap. It costs a mono source twice its memory; a fold can come
+  later.
 - **The renderer holds the only reference while it writes**, through
   `Arc::get_mut`. Only the control side clones or drops audio and the
   caller gives theirs up, so `record` knows exactly whether a voice still
@@ -458,10 +462,30 @@ Built for the main out; recording inputs are not built yet.
   recording is what travels, `RecordingData` and the handle. A
   render-side `Recording` beside it was removed: a recording needs
   nothing beyond its data.
-- **The main out is written as heard**, after each block is clipped, and
-  a take ends in the block that fills it: `write` checks where it becomes
-  true, and nothing after the loop has to remember. `record` clears the
-  audio and prefaults it first.
+- **A take records from a `Tap`, chosen per take:** `Tap::MainOut` or
+  `Tap::Input(&input)`. It crosses as `TapData`, an input's holding that
+  input's `Arc<InputState>`, which is both its identity and its stop.
+  Device channels as the tap (`Tap::Capture(InputChannels)`) were weighed:
+  nothing to match, but a tap names a point in the signal path, and
+  whatever an input does later would be skipped. Two takes on one tap do
+  no harm, so nothing refuses them; one recorder per tap (`TapInUse`) came
+  before.
+- **The render loop records at its tap points.** After each input renders
+  and after the clip, it asks `records_from(TapPoint)` and writes what it
+  has there, as it chooses for voices. A recorder matching inside
+  `write_input` and `write_main_out` hid where recording happens; a node
+  graph would bring back the `Processor` chains already dropped, and is
+  for when routing grows a special case per feature.
+- **The main out is written as heard, an input as it renders.** The main
+  out after each block is clipped; an input monitored or not, and
+  unclipped: `f32` keeps overs, so clipping belongs where audio reaches
+  the device or leaves `f32`. A take ends in the block that fills it:
+  `write` checks where it becomes true, and nothing after the loop has to
+  remember. `record` clears the audio and prefaults it first.
+- **A take ends with its input.** The recorder reads the input's stop as
+  its own, so the take comes back the period its input leaves; one whose
+  input stopped before it arrived ends empty. A take left waiting for
+  frames that cannot come was rejected.
 - **`try_take` hands over the audio, once.** It polls, and is the only
   way the take comes back: `TryTakeError` says `Recording` until then,
   `Taken` after. Named for what the caller gets, as audio libraries hand
@@ -497,11 +521,10 @@ Built for the main out; recording inputs are not built yet.
 
 ## Step 8: the real-time side
 
-Built on `src/engine/`: voices, block mixing and recording of the main out,
-over the channels (see Transfers, above).
+Built on `src/engine/`: voices, block mixing and recording of the main out
+or an input, over the channels (see Transfers, above).
 
 What is left:
-- **Recording inputs** (see Recording, above).
 - **Sequencing**, decided but not built: it runs on the audio thread,
   reading a fixed-size pattern that requests edit in place, so an edit is
   heard on the next pass whatever the control side is doing. Its voices
@@ -533,7 +556,7 @@ The project does not know about tiers.
   requests, its output stored as a new root.
 - **Real-time rulebook** (a doc) and an **allocation-counting test
   allocator** asserting `Renderer::render` allocates nothing.
-- **Taps and busses** on the hard-coded path.
+- **Busses** on the hard-coded path, each a new tap point.
 - **Master gain and bus limiter** before the clip.
 - **Stream errors** reported to a front panel.
 - **Keeping the engine across a device switch.** cpal drops a callback
