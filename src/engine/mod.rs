@@ -325,4 +325,18 @@ mod tests {
         renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
         assert!(control.open_input(InputChannels::Mono(0)).is_ok());
     }
+
+    #[test]
+    fn an_input_is_heard_only_once_monitored() {
+        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
+        let mut out = [0.0; 4 * 2];
+        renderer.render(&[0.5; 4], &mut out);
+        assert_eq!(out, [0.0; 4 * 2]);
+
+        input.set_monitoring(true);
+        renderer.render(&[0.5; 4], &mut out);
+
+        assert_eq!(out, [0.5; 4 * 2]);
+    }
 }

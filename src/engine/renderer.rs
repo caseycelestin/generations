@@ -51,8 +51,8 @@ impl Renderer {
     }
 
     /// One period, interleaved stereo, replacing what `out` held: every
-    /// playing voice, summed and clipped. `capture` is the input device's
-    /// frames for the same period, interleaved.
+    /// playing voice and monitored input, summed and clipped. `capture` is
+    /// the input device's frames for the same period, interleaved.
     pub fn render(&mut self, capture: &[Pcm], out: &mut [Pcm]) {
         debug_assert_eq!(
             out.len() % Self::OUTPUT_CHANNELS,
@@ -74,9 +74,11 @@ impl Renderer {
                 voice.render(scratch);
                 add(out_block, scratch);
             }
-            // Nothing hears an input yet.
             for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
+                if input.monitoring() {
+                    add(out_block, scratch);
+                }
             }
             hard_clip(out_block);
             self.recorder.write(out_block);

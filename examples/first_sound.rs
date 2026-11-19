@@ -1,9 +1,9 @@
 //! The first sound: write a decaying tone into audio, save it to a project,
-//! and play it twice through the default output, the second over the
+//! and play it twice through the default device, the second over the
 //! first's tail so the renderer sums them.
 //!
 //! Usage: `cargo run --example first_sound -- <project-dir>`. The directory
-//! is created if it does not exist. Needs an output device.
+//! is created if it does not exist. Needs a duplex device.
 
 use std::error::Error;
 use std::f32::consts::TAU;
@@ -29,8 +29,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::with_budget(AUDIO_RAM_BUDGET);
     let mut project = Project::open(&dir)?;
     // 16 voices at once, and room for 64 plays on their way.
-    let (mut control, mut renderer) = engine::create(64, 16, 0, 0);
-    let mut stream = Device::default_output()?.start(move |out| renderer.render(&[], out))?;
+    let device = Device::default_duplex()?;
+    let (mut control, mut renderer) = engine::create(64, 16, device.capture_channels(), 0);
+    let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // One second of A440, decaying from half scale to near silence.
     let frames = SAMPLE_RATE as usize;

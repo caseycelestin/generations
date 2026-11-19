@@ -64,6 +64,8 @@ impl Control {
     /// // 16 voices, room for 64 plays, and a mono device with one input.
     /// let (mut control, mut renderer) = engine::create(64, 16, 1, 1);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
+    /// // Heard through the main out until stopped.
+    /// input.set_monitoring(true);
     ///
     /// // A duplex callback would own the renderer: a period of capture in,
     /// // the same frames out.
