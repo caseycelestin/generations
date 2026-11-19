@@ -411,14 +411,19 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
   any order: the last `Arc`, held by a voice, comes back in its reply to
   be freed on the control side.
 - **cpal is pinned to master for its duplex streams** (ALSA and JACK),
-  which 0.18.2 lacks, and goes back to a release when 0.19 ships. The
-  examples play and record the main out with no capture; a duplex
-  `Device` comes with the first example that hears an input.
-- **The examples are `first_sound`, `record` and `engine`**, plain
-  demonstration code: no hardening or shared abstractions there.
-  `first_sound` and `record` run on a device; `engine` shows the voice and
-  recording features and compiles. When the device exists, they move into
-  a binary crate.
+  which 0.18.2 lacks, and goes back to a release when 0.19 ships.
+- **The examples' `Device` is one duplex stream**, as `render` takes it:
+  ALSA's `default`, fetched by id, since cpal's default devices have one
+  direction each and the first duplex one it lists can be `null`. It is
+  `f32` only and converts nothing; a device that cannot is refused, not
+  bridged. An output-only `Device` and a `Capture` converting `i16` and
+  `i32` came before, and a `Duplex` beside them was dropped: the engine
+  only takes duplex, and example code need not be universal.
+- **The examples are `first_sound`, `record`, `inputs` and `engine`**,
+  plain demonstration code: no hardening or shared abstractions there.
+  `first_sound`, `record` and `inputs` run on a device; `engine` shows the
+  voice and recording features and compiles. When the device exists, they
+  move into a binary crate.
 - **A new feature is shown in a doc example on its API**, `no_run`, as
   inputs are on `open_input`: `cargo test` compiles it as surely as an
   example, and `cargo doc` shows it beside what it uses. Not yet aligned:
