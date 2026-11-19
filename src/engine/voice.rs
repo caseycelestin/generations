@@ -8,14 +8,11 @@ use thiserror::Error;
 use crate::audio::{Audio, AudioBuffer};
 use crate::engine::transfer::{self, ControlEnd};
 
-/// Shared by both sides while the voice plays.
 #[derive(Debug, Default)]
 pub(crate) struct VoiceState {
     pub(crate) stop: AtomicBool,
 }
 
-/// Comes back whole once the voice ends, so its audio and state are freed
-/// on the control side.
 #[derive(Debug)]
 pub(crate) struct VoiceData {
     pub(crate) audio: Arc<AudioBuffer>,
@@ -69,8 +66,7 @@ impl Voice {
     }
 }
 
-/// Voices on the render side, held to the renderer's real-time rules: each
-/// one while it plays, and the places they live.
+/// Each voice while it plays, and the places they live.
 pub(crate) mod realtime {
     use std::num::NonZeroUsize;
     use std::sync::atomic::Ordering;
@@ -124,8 +120,7 @@ pub(crate) mod realtime {
             self.position == self.data.audio.frames()
         }
 
-        /// The one way a voice leaves: its data goes back whole, to be freed
-        /// on the control side.
+        /// The one way a voice leaves.
         fn end(self, transfers: &mut RealtimeEnd<VoiceData>) {
             transfers.complete(self.data);
         }

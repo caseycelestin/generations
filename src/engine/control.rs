@@ -1,5 +1,3 @@
-//! The control side: runs on UI or event threads. May lock and allocate.
-
 use crate::audio::Audio;
 use crate::engine::input::{Input, InputChannels, InputData, InputError};
 use crate::engine::recording::{RecordError, Recording, RecordingData};
@@ -81,8 +79,9 @@ impl Control {
     }
 
     /// Frees the audio of voices that have ended and of recordings whose
-    /// handles are gone, returning it to `AudioMemory`. `record` does this first; call it when
-    /// the app goes quiet, or before a load that needs the memory.
+    /// handles are gone, returning it to `AudioMemory`. `record` does this
+    /// first; call it when the app goes quiet, or before a load that needs
+    /// the memory.
     pub fn collect(&mut self) {
         self.voices.take_in();
         self.inputs.take_in();

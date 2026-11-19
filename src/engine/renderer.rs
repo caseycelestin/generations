@@ -1,7 +1,5 @@
 //! The audio thread: turns what the control side sends into periods of
-//! output.
-//! Code here has a deadline: no allocating, locking, blocking or system
-//! calls. An offline bounce runs the same code with no deadline.
+//! output. An offline bounce runs the same code with no deadline.
 
 use std::num::NonZeroUsize;
 

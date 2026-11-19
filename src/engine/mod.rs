@@ -1,5 +1,14 @@
-//! Real-time audio and the code that controls it, split by thread. There is
-//! no `Engine` type: [`create`] returns the two sides.
+//! Real-time audio and the code that controls it. There is no `Engine`
+//! type: [`create`] returns the two sides.
+//!
+//! Code runs on control threads, where it may lock and allocate, unless it
+//! is in the renderer or a `mod realtime`. Those run on the audio thread,
+//! which has a deadline: they never allocate, free, lock, block or make
+//! system calls. A helper they call says so where it is defined.
+//!
+//! Each voice, input or recording is a transfer: its data goes to the
+//! renderer and comes back whole once it ends, so it is freed on the control
+//! side, and its state is shared by both sides until then.
 
 mod control;
 mod input;

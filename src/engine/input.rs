@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use crate::engine::transfer::{self, ControlEnd};
 
-/// Shared by both sides while the input is open.
 #[derive(Debug, Default)]
 pub(crate) struct InputState {
     pub(crate) stop: AtomicBool,
@@ -88,9 +87,8 @@ impl Drop for Input {
     }
 }
 
-/// Inputs on the render side, held to the renderer's real-time rules: which
-/// capture channels make each one's stereo frames, and the places they live.
-/// They hold no audio.
+/// Which capture channels make each input's stereo frames, and the places
+/// they live. They hold no audio.
 pub(crate) mod realtime {
     use std::sync::atomic::Ordering;
 
@@ -141,7 +139,6 @@ pub(crate) mod realtime {
     pub(crate) struct Inputs {
         /// Never past its capacity, so opening one never allocates.
         open: Vec<Input>,
-        /// Samples per capture frame.
         capture_channels: usize,
         /// The only way inputs arrive or leave.
         transfers: transfer::RealtimeEnd<InputData>,

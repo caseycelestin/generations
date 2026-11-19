@@ -1,4 +1,5 @@
-//! Arithmetic on periods: free functions over slices, no state.
+//! Arithmetic on periods, safe on the audio thread: no state, never
+//! allocates.
 
 use crate::engine::renderer::Frame;
 

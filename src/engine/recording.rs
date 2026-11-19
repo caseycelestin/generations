@@ -9,14 +9,12 @@ use crate::audio::{Audio, AudioBuffer};
 use crate::engine::transfer;
 use crate::layout::ChannelLayout;
 
-/// Shared by both sides while the recording runs.
 #[derive(Debug, Default)]
 pub(crate) struct RecordingState {
     pub(crate) stop: AtomicBool,
 }
 
-/// Comes back whole once the recording ends, its audio holding what was
-/// heard until then.
+/// Its audio comes back holding what was heard until the recording ended.
 #[derive(Debug)]
 pub(crate) struct RecordingData {
     pub(crate) audio: Arc<AudioBuffer>,
@@ -151,8 +149,7 @@ impl Drop for Recording {
     }
 }
 
-/// The renderer's one recorder, held to its real-time rules: it writes at
-/// most one recording at a time.
+/// The renderer's one recorder: it writes at most one recording at a time.
 pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -210,7 +207,7 @@ pub(crate) mod realtime {
             recording.state.stop.load(Ordering::Relaxed)
         }
 
-        /// The one way a recording leaves: its audio goes home.
+        /// The one way a recording leaves.
         fn end(&mut self, recording: Completion<RecordingData>) {
             self.transfers.complete(recording);
         }
