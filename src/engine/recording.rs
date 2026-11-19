@@ -187,9 +187,17 @@ pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use super::RecordingData;
+    use super::{RecordingData, TapData};
+    use crate::engine::input::realtime::Input;
     use crate::engine::renderer::Frame;
     use crate::engine::transfer::{self, Completion};
+
+    /// A point in the render loop a take may record from.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum TapPoint<'a> {
+        MainOut,
+        Input(&'a Input),
+    }
 
     #[derive(Debug)]
     pub(crate) struct Recorder {
@@ -217,7 +225,23 @@ pub(crate) mod realtime {
             }
         }
 
-        /// Appends `block`, as heard; a recording that fills ends here.
+        /// Never true with no take.
+        pub(crate) fn records_from(&self, point: TapPoint<'_>) -> bool {
+            let Some(recording) = &self.recording else {
+                return false;
+            };
+            match (point, &recording.tap) {
+                (TapPoint::MainOut, TapData::MainOut) => true,
+                (TapPoint::Input(input), TapData::Input(state)) => {
+                    Arc::ptr_eq(input.state(), state)
+                }
+                (TapPoint::MainOut, TapData::Input(_)) | (TapPoint::Input(_), TapData::MainOut) => {
+                    false
+                }
+            }
+        }
+
+        /// Appends `block`; a recording that fills ends here.
         pub(crate) fn write(&mut self, block: &[Frame]) {
             let Some(recording) = &mut self.recording else {
                 return;
@@ -235,9 +259,14 @@ pub(crate) mod realtime {
             }
         }
 
-        /// Its handle stopped it, or is gone.
+        /// Its handle stopped it or is gone, or its input's did: a take
+        /// ends with its input.
         fn stopped(recording: &Completion<RecordingData>) -> bool {
-            recording.state.stop.load(Ordering::Relaxed)
+            let input_stopped = match &recording.tap {
+                TapData::MainOut => false,
+                TapData::Input(input) => input.stop.load(Ordering::Relaxed),
+            };
+            recording.state.stop.load(Ordering::Relaxed) || input_stopped
         }
 
         /// The one way a recording leaves.

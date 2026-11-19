@@ -4,7 +4,7 @@
 use crate::config::Pcm;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
-use crate::engine::recording::realtime::Recorder;
+use crate::engine::recording::realtime::{Recorder, TapPoint};
 use crate::engine::voice::realtime::Voices;
 
 pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
@@ -79,9 +79,14 @@ impl Renderer {
                 if input.monitoring() {
                     add(out_block, scratch);
                 }
+                if self.recorder.records_from(TapPoint::Input(input)) {
+                    self.recorder.write(scratch);
+                }
             }
             hard_clip(out_block);
-            self.recorder.write(out_block);
+            if self.recorder.records_from(TapPoint::MainOut) {
+                self.recorder.write(out_block);
+            }
         }
         self.voices.end_finished();
     }
