@@ -81,7 +81,7 @@ impl Renderer {
         );
         self.voices.receive();
         self.inputs.receive();
-        self.apply_requests();
+        self.recorder.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; Self::OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
@@ -94,58 +94,9 @@ impl Renderer {
                 input.render(capture_block, scratch);
             }
             hard_clip(out_block);
-            if let Some(recording) = &mut self.recording {
-                recording.write(out_block);
-            }
+            self.recorder.write(out_block);
         }
         self.voices.end_finished();
-        self.clean_up();
-    }
-
-    fn apply_requests(&mut self) {
-        self.apply_recording_requests();
-    }
-
-    fn apply_recording_requests(&mut self) {
-        while let Some(received) = self.requests.recording.try_recv() {
-            match received {
-                Received::Request(permit, RecordingRequest::Start(audio)) => {
-                    debug_assert!(self.recording.is_none(), "one request per recorder");
-                    self.recording = Some(Recording::start(permit, audio));
-                }
-                Received::Cancel(id) => {
-                    if let Some(stopped) = self.recording.take_if(|recording| recording.is(id)) {
-                        stopped.end(RecordingEnd::Stopped, &mut self.requests.recording);
-                    }
-                }
-                Received::Status(permit) => {
-                    let held = self.recording.as_ref();
-                    if held.is_some_and(|recording| recording.is(permit.id())) {
-                        self.requests
-                            .recording
-                            .answer(permit, RecordingStatus::Recording);
-                    }
-                    // Otherwise it is closed, and its reply has the last word.
-                }
-            }
-        }
-    }
-
-    fn clean_up(&mut self) {
-        if let Some(full) = self.recording.take_if(|recording| recording.finished()) {
-            full.end(RecordingEnd::Full, &mut self.requests.recording);
-        }
-    }
-}
-
-/// Nothing else holds a recording's audio, so a take, or the room for one
-/// still on its way, would be freed with the renderer.
-impl Drop for Renderer {
-    fn drop(&mut self) {
-        self.apply_recording_requests();
-        if let Some(recording) = self.recording.take() {
-            recording.end(RecordingEnd::RendererGone, &mut self.requests.recording);
-        }
     }
 }
 
