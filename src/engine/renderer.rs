@@ -3,24 +3,19 @@
 //! Code here has a deadline: no allocating, locking, blocking or system
 //! calls. An offline bounce runs the same code with no deadline.
 
-mod inputs;
-mod math;
-mod recorder;
-mod voices;
-
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
 use crate::engine::input::InputData;
+use crate::engine::input::realtime::Inputs;
+use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::RecordingData;
+use crate::engine::recording::realtime::Recorder;
 use crate::engine::voice::VoiceData;
+use crate::engine::voice::realtime::Voices;
 use crate::transfer;
-use inputs::Inputs;
-use math::{add, hard_clip};
-use recorder::Recorder;
-use voices::Voices;
 
-type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
+pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
 /// every handle from the same [`create`](crate::engine::create) report the

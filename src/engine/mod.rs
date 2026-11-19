@@ -3,14 +3,15 @@
 
 mod control;
 mod input;
-mod realtime;
+mod math;
 mod recording;
+mod renderer;
 mod voice;
 
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
-pub use realtime::Renderer;
 pub use recording::{RecordError, Recording, TryTakeError};
+pub use renderer::Renderer;
 pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;

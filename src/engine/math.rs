@@ -1,6 +1,6 @@
 //! Arithmetic on periods: free functions over slices, no state.
 
-use super::Frame;
+use crate::engine::renderer::Frame;
 
 /// Adds rather than writes, so sources sum. Stops at whichever runs out
 /// first.
