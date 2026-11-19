@@ -419,15 +419,15 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
   bridged. An output-only `Device` and a `Capture` converting `i16` and
   `i32` came before, and a `Duplex` beside them was dropped: the engine
   only takes duplex, and example code need not be universal.
-- **The examples are `first_sound`, `record`, `inputs` and `engine`**,
-  plain demonstration code: no hardening or shared abstractions there.
-  `first_sound`, `record` and `inputs` run on a device; `engine` shows the
-  voice and recording features and compiles. When the device exists, they
-  move into a binary crate.
+- **The examples are `record` and `inputs`**, each showing everything its
+  feature does on a device: plain demonstration code, no hardening or
+  shared abstractions there. `first_sound` and `engine`, a non-running demo
+  of the API, were removed: doc examples and these two cover them. When the
+  device exists, they move into a binary crate.
 - **A new feature is shown in a doc example on its API**, `no_run`, as
   inputs are on `open_input`: `cargo test` compiles it as surely as an
-  example, and `cargo doc` shows it beside what it uses. Not yet aligned:
-  `engine`'s features move to doc examples in their own PR.
+  example, and `cargo doc` shows it beside what it uses. Not yet built:
+  one on `record`.
 
 ### Recording
 

@@ -31,7 +31,7 @@
 //! # Where to start
 //!
 //! [`Project`] and [`engine::create`] for what a caller does;
-//! `examples/first_sound.rs` for the whole path, file to speaker;
+//! `examples/` for the engine on a device;
 //! `docs/roadmap.md` for the plan and the decisions behind it.
 
 mod audio;
