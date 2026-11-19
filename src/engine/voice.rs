@@ -1,5 +1,6 @@
 //! A voice: one playing of some audio.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -64,6 +65,16 @@ impl Voice {
     pub fn stop(self) {
         self.state.stop.store(true, Ordering::Relaxed);
     }
+}
+
+/// The channel holds every voice playing plus `queue` more on their way,
+/// each from play until it ends.
+pub(crate) fn channel(
+    voices: NonZeroUsize,
+    queue: usize,
+) -> (ControlEnd<VoiceData>, realtime::Voices) {
+    let (control, realtime) = transfer::channel(voices.get() + queue);
+    (control, realtime::Voices::new(voices, realtime))
 }
 
 /// Each voice while it plays, and the places they live.

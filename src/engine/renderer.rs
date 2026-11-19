@@ -113,6 +113,7 @@ mod tests {
     use crate::engine::recording::{RecordingData, RecordingState};
     use crate::engine::transfer::{self, Transfer, TryWaitError};
     use crate::engine::voice::{VoiceData, VoiceState};
+    use crate::engine::{input, recording, voice};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -124,20 +125,15 @@ mod tests {
 
     /// A renderer with `voices` places, and the control ends of its channels.
     fn renderer(voices: usize) -> (Ends, Renderer) {
-        let (voices_control, voices_realtime) = transfer::channel(voices + 16);
-        let (recordings_control, recordings_realtime) = transfer::channel(1);
-        let (_, inputs_realtime) = transfer::channel(0);
+        let voices = NonZeroUsize::new(voices).unwrap();
+        let (voices_control, voices_realtime) = voice::channel(voices, 16);
+        let (recordings_control, recordings_realtime) = recording::channel();
+        let (_, inputs_realtime) = input::channel(0, 0);
         let ends = Ends {
             voices: voices_control,
             recordings: recordings_control,
         };
-        let voices = NonZeroUsize::new(voices).unwrap();
-        let renderer = Renderer::new(
-            Voices::new(voices, voices_realtime),
-            Inputs::new(0, 0, inputs_realtime),
-            Recorder::new(recordings_realtime),
-            0,
-        );
+        let renderer = Renderer::new(voices_realtime, inputs_realtime, recordings_realtime, 0);
         (ends, renderer)
     }
 

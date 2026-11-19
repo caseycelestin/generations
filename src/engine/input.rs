@@ -87,6 +87,19 @@ impl Drop for Input {
     }
 }
 
+/// `inputs` is how many can be open at once; `capture_channels` is the width
+/// of each period's capture.
+pub(crate) fn channel(
+    inputs: usize,
+    capture_channels: usize,
+) -> (ControlEnd<InputData>, realtime::Inputs) {
+    let (control, realtime) = transfer::channel(inputs);
+    (
+        control,
+        realtime::Inputs::new(inputs, capture_channels, realtime),
+    )
+}
+
 /// Which capture channels make each input's stereo frames, and the places
 /// they live. They hold no audio.
 pub(crate) mod realtime {

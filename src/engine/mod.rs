@@ -26,17 +26,6 @@ pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;
 
-use input::InputData;
-use input::realtime::Inputs;
-use recording::RecordingData;
-use recording::realtime::Recorder;
-use voice::VoiceData;
-use voice::realtime::Voices;
-
-/// Recordings at once: each holds a place from `record` until it comes
-/// back.
-const RECORDERS: usize = 1;
-
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
 /// `voice_queue` is how many plays can be on their way beyond them: the
@@ -54,10 +43,9 @@ pub fn create(
     inputs: usize,
 ) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    let (voices_control, voices_realtime) =
-        transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
-    let (recordings_control, recordings_realtime) = transfer::channel::<RecordingData>(RECORDERS);
-    let (inputs_control, inputs_realtime) = transfer::channel::<InputData>(inputs);
+    let (voices_control, voices_realtime) = voice::channel(voices, voice_queue);
+    let (recordings_control, recordings_realtime) = recording::channel();
+    let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
     (
         Control::new(
             voices_control,
@@ -66,18 +54,12 @@ pub fn create(
             capture_channels,
         ),
         Renderer::new(
-            Voices::new(voices, voices_realtime),
-            Inputs::new(inputs, capture_channels, inputs_realtime),
-            Recorder::new(recordings_realtime),
+            voices_realtime,
+            inputs_realtime,
+            recordings_realtime,
             capture_channels,
         ),
     )
-}
-
-/// Every voice playing, plus the queue; each holds one from play until it
-/// ends.
-fn voice_capacity(voice_queue: usize, voices: NonZeroUsize) -> usize {
-    voices.get() + voice_queue
 }
 
 #[cfg(test)]
