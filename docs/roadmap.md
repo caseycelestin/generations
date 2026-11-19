@@ -423,9 +423,10 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
 - **An example is small and shows one feature on a device**, what only
   listening can check: plain demonstration code, no hardening or shared
   abstractions there. Refusals and edge cases are for tests and doc
-  examples. `record_input` is the first; `voices`, `record` and `inputs`,
-  which each show everything their area does, are not yet split.
-  `first_sound` and `engine`, a non-running demo of the API, were removed.
+  examples. One example per area showing everything it does (`voices`,
+  `record`, `inputs`) was tried and split: each was long, and a refusal
+  printed on a device checks nothing a test does not. `first_sound` and
+  `engine`, a non-running demo of the API, were removed.
   When the device exists, the examples move into a binary crate.
 - **A new feature is shown in a doc example on its API**, `no_run`, as
   inputs are on `open_input`: `cargo test` compiles it as surely as an

@@ -55,7 +55,7 @@ audio dependency; the demos are examples.
 
 ```sh
 cargo test
-cargo run --example record   # needs a duplex device
+cargo run --example play     # needs a duplex device
 ```
 
 The examples build against ALSA through `cpal`, a dev-dependency, so they
