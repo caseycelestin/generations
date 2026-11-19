@@ -18,6 +18,9 @@ pub(crate) struct VoiceState {
 pub(crate) struct VoiceData {
     pub(crate) audio: Arc<AudioBuffer>,
     pub(crate) state: Arc<VoiceState>,
+    /// On the renderer's frame count; one already passed means as soon as
+    /// possible.
+    pub(crate) start_frame: u64,
 }
 
 /// Nothing was played.
@@ -56,6 +59,7 @@ impl Voice {
         let data = VoiceData {
             audio: audio_clone,
             state: Arc::clone(&state),
+            start_frame: 0,
         };
         transfers.try_start(data)?;
         Ok(Self { state })
@@ -97,6 +101,10 @@ pub(crate) mod realtime {
     impl Voice {
         fn new(data: Completion<VoiceData>) -> Self {
             Self { data, position: 0 }
+        }
+
+        pub(crate) fn start_frame(&self) -> u64 {
+            self.data.start_frame
         }
 
         /// Silence once the audio runs out. Mono goes to both sides at full
@@ -201,7 +209,12 @@ pub(crate) mod realtime {
             let (mut control, mut realtime) = transfer::channel(1);
             let audio = Arc::new(buffer(layout, samples));
             let state = Arc::new(VoiceState::default());
-            let _transfer = control.try_start(VoiceData { audio, state }).unwrap();
+            let data = VoiceData {
+                audio,
+                state,
+                start_frame: 0,
+            };
+            let _transfer = control.try_start(data).unwrap();
             Voice::new(realtime.try_recv().unwrap())
         }
 
@@ -226,6 +239,7 @@ pub(crate) mod realtime {
             let data = VoiceData {
                 audio,
                 state: Arc::clone(&state),
+                start_frame: 0,
             };
             (control.try_start(data).unwrap(), state)
         }
