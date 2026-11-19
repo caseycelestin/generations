@@ -23,6 +23,8 @@ pub struct Renderer {
     recorder: Recorder,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
+    /// Counted from creation; also the frame the next block starts on.
+    frames_rendered: u64,
 }
 
 impl Renderer {
@@ -47,6 +49,7 @@ impl Renderer {
             inputs,
             recorder,
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
+            frames_rendered: 0,
         }
     }
 
@@ -87,6 +90,7 @@ impl Renderer {
             if self.recorder.records_from(TapPoint::MainOut) {
                 self.recorder.write(out_block);
             }
+            self.frames_rendered += out_block.len() as u64;
         }
         self.voices.end_finished();
     }
@@ -222,6 +226,17 @@ mod tests {
         renderer.render(&[], &mut out);
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.3, 0.3, 0.4, 0.4]);
+    }
+
+    #[test]
+    fn every_frame_of_every_period_is_counted() {
+        let (_, mut renderer) = renderer(1);
+        let periods = [3, Renderer::BLOCK_FRAMES, Renderer::BLOCK_FRAMES * 2 + 10];
+        for frames in periods {
+            renderer.render(&[], &mut vec![0.0; frames * 2]);
+        }
+        let total: usize = periods.iter().sum();
+        assert_eq!(renderer.frames_rendered, total as u64);
     }
 
     #[test]
