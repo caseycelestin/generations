@@ -1,7 +1,4 @@
-//! Everything an input does: open one on a capture channel, monitor it,
-//! mute it while it stays open, open a stereo input over the same channel,
-//! be refused a channel past the device or a place when every input is open,
-//! and get the place back by stopping or dropping one. Use headphones, or a
+//! Everything an input does, heard through a device. Use headphones, or a
 //! mic near speakers feeds back.
 //!
 //! Usage: `cargo run --example inputs`. Needs a duplex device with at least
