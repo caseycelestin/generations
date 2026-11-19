@@ -233,7 +233,7 @@ or rejected instead. The history of how a shape was reached is in git.
 
 The two sides speak through `transfer`, a generic channel at the crate
 root that knows nothing of audio. Voices, inputs and recordings are on
-it. `request`, which it replaced, is unused and to be deleted.
+it. It replaced `request`, deleted once nothing used it.
 
 - **A value goes over and comes home whole; nothing else crosses back.**
   The reply is the value itself, with whatever the renderer wrote into
