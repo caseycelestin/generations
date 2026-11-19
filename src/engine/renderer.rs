@@ -11,9 +11,9 @@ use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::RecordingData;
 use crate::engine::recording::realtime::Recorder;
+use crate::engine::transfer;
 use crate::engine::voice::VoiceData;
 use crate::engine::voice::realtime::Voices;
-use crate::transfer;
 
 pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 
@@ -120,10 +120,10 @@ mod tests {
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
     use crate::engine::recording::RecordingState;
+    use crate::engine::transfer::{Transfer, TryWaitError};
     use crate::engine::voice::VoiceState;
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
-    use crate::transfer::{Transfer, TryWaitError};
 
     /// The control ends of the renderer's channels.
     struct Ends {

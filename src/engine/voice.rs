@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
-use crate::transfer::{self, ControlEnd};
+use crate::engine::transfer::{self, ControlEnd};
 
 /// Shared by both sides while the voice plays.
 #[derive(Debug, Default)]
@@ -77,8 +77,8 @@ pub(crate) mod realtime {
 
     use super::VoiceData;
     use crate::engine::renderer::{Frame, Renderer};
+    use crate::engine::transfer::{Completion, RealtimeEnd};
     use crate::layout::ChannelLayout;
-    use crate::transfer::{Completion, RealtimeEnd};
 
     #[derive(Debug)]
     pub(crate) struct Voice {
@@ -185,9 +185,9 @@ pub(crate) mod realtime {
         use std::sync::Arc;
 
         use super::*;
+        use crate::engine::transfer::{self, Transfer};
         use crate::engine::voice::VoiceState;
         use crate::testing::buffer;
-        use crate::transfer::{self, Transfer};
 
         /// Received as the renderer receives it. Tests tell voices apart by
         /// their length.

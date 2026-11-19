@@ -40,7 +40,6 @@ mod layout;
 pub mod project;
 #[cfg(test)]
 mod testing;
-mod transfer;
 
 pub use audio::{Audio, AudioMemory, OverBudgetError};
 pub use layout::{ChannelLayout, ChannelLayoutError};

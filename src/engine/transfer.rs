@@ -4,17 +4,11 @@
 //! everything it owns is freed on the control side. Each transfer brings
 //! its own return ring, whose sending end comes back after the value, so
 //! the ring is freed there as well. Knows nothing of audio.
-//!
-//! Each side's end is its own module, so `realtime.rs` can be held to the
-//! real-time rules alone.
 
-mod control;
-mod realtime;
+use std::ops::{Deref, DerefMut};
 
-pub use control::{ControlEnd, StartError, Transfer, TryWaitError};
-pub use realtime::{Completion, RealtimeEnd};
-
-use rtrb::RingBuffer;
+use rtrb::{Consumer, Producer, RingBuffer};
+use thiserror::Error;
 
 /// `capacity` is how many transfers can be in flight, from started until
 /// their return ring's sending end is back; both rings hold that many, so
@@ -32,6 +26,160 @@ pub fn channel<T>(capacity: usize) -> (ControlEnd<T>, RealtimeEnd<T>) {
         returned: returned_producer,
     };
     (control, realtime)
+}
+
+/// The caller's claim on one value while it is away. Dropping it early is
+/// safe: the value and its ring still come back, and are freed here.
+#[derive(Debug)]
+pub struct Transfer<T> {
+    ring: Consumer<T>,
+    /// Its value was taken back, so an empty ring no longer means not yet.
+    taken: bool,
+}
+
+impl<T> Transfer<T> {
+    /// A value that came back before the ring's other end was freed is
+    /// still taken.
+    pub fn try_wait(&mut self) -> Result<T, TryWaitError> {
+        if self.taken {
+            return Err(TryWaitError::Taken);
+        }
+        // Asked before popping: the other end, if freed by now, pushed any
+        // value first, so an empty ring after it means none is coming.
+        let abandoned = self.ring.is_abandoned();
+        let Ok(value) = self.ring.pop() else {
+            if abandoned {
+                return Err(TryWaitError::Disconnected);
+            }
+            return Err(TryWaitError::Empty);
+        };
+        self.taken = true;
+        Ok(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum TryWaitError {
+    #[error("the value is not back yet")]
+    Empty,
+    #[error("the value was already taken back")]
+    Taken,
+    /// Its completion was dropped without completing, as when the
+    /// real-time side is gone.
+    #[error("the value will not come back")]
+    Disconnected,
+}
+
+#[derive(Debug)]
+pub struct ControlEnd<T> {
+    started: Producer<Completion<T>>,
+    returned: Consumer<Producer<T>>,
+    /// Started and not yet back on `returned`.
+    in_flight: usize,
+}
+
+/// Nothing was started; the value comes back with the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum StartError<T> {
+    /// `capacity` transfers are in flight.
+    #[error("every transfer is in flight")]
+    Full(T),
+    /// Nothing would ever receive it.
+    #[error("the real-time end is gone")]
+    Disconnected(T),
+}
+
+impl<T> ControlEnd<T> {
+    pub fn try_start(&mut self, value: T) -> Result<Transfer<T>, StartError<T>> {
+        if self.started.is_abandoned() {
+            return Err(StartError::Disconnected(value));
+        }
+        self.take_in();
+        if self.in_flight == self.started.buffer().capacity() {
+            return Err(StartError::Full(value));
+        }
+        // One deep: a value comes back once.
+        let (producer, consumer) = RingBuffer::new(1);
+        let transfer = Transfer {
+            ring: consumer,
+            taken: false,
+        };
+        let completion = Completion {
+            value,
+            ring: producer,
+        };
+        let pushed = self.started.push(completion);
+        assert!(pushed.is_ok(), "the ring holds every transfer in flight");
+        self.in_flight += 1;
+        Ok(transfer)
+    }
+
+    /// Rings whose transfer is gone are freed here, with any value in them.
+    pub fn take_in(&mut self) {
+        while let Ok(ring) = self.returned.pop() {
+            drop(ring);
+            self.in_flight -= 1;
+        }
+    }
+}
+
+/// A received value with its way home. Never dropped on the real-time side,
+/// as its value may own memory and its ring may be the last end: `complete`
+/// sends both back.
+#[derive(Debug)]
+pub struct Completion<T> {
+    value: T,
+    ring: Producer<T>,
+}
+
+/// The value is read and written through it, never moved out: it leaves
+/// only through `complete`.
+impl<T> Deref for Completion<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> DerefMut for Completion<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+/// Wait-free and bounded, as is each `Completion`: never allocates, frees,
+/// locks or blocks, except when dropped, at teardown, when no deadline is
+/// left.
+#[derive(Debug)]
+pub struct RealtimeEnd<T> {
+    started: Consumer<Completion<T>>,
+    returned: Producer<Producer<T>>,
+}
+
+/// Drops every value not yet received, so their transfers learn it will not
+/// come back: the ring keeps them while the control end lives.
+impl<T> Drop for RealtimeEnd<T> {
+    fn drop(&mut self) {
+        while self.started.pop().is_ok() {}
+    }
+}
+
+impl<T> RealtimeEnd<T> {
+    pub fn try_recv(&mut self) -> Option<Completion<T>> {
+        self.started.pop().ok()
+    }
+
+    /// Takes the completion, so a transfer completes once and its value and
+    /// ring always go back, to be freed on the control side. Cannot fail:
+    /// each ring has room for it.
+    pub fn complete(&mut self, completion: Completion<T>) {
+        let Completion { value, mut ring } = completion;
+        let sent = ring.push(value);
+        debug_assert!(sent.is_ok(), "a return ring holds its one value");
+        let returned = self.returned.push(ring);
+        debug_assert!(returned.is_ok(), "the ring holds every transfer in flight");
+    }
 }
 
 #[cfg(test)]

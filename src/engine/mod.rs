@@ -6,6 +6,7 @@ mod input;
 mod math;
 mod recording;
 mod renderer;
+mod transfer;
 mod voice;
 
 pub use control::Control;
@@ -42,10 +43,10 @@ pub fn create(
 ) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) =
-        crate::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
+        crate::engine::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
     let (recordings_control, recordings_realtime) =
-        crate::transfer::channel::<RecordingData>(RECORDERS);
-    let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
+        crate::engine::transfer::channel::<RecordingData>(RECORDERS);
+    let (inputs_control, inputs_realtime) = crate::engine::transfer::channel::<InputData>(inputs);
     (
         Control::new(
             voices_control,

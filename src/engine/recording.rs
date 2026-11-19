@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
+use crate::engine::transfer;
 use crate::layout::ChannelLayout;
-use crate::transfer;
 
 /// Shared by both sides while the recording runs.
 #[derive(Debug, Default)]
@@ -159,7 +159,7 @@ pub(crate) mod realtime {
 
     use super::RecordingData;
     use crate::engine::renderer::Frame;
-    use crate::transfer::{self, Completion};
+    use crate::engine::transfer::{self, Completion};
 
     #[derive(Debug)]
     pub(crate) struct Recorder {
@@ -234,8 +234,8 @@ pub(crate) mod realtime {
         use super::*;
         use crate::audio::AudioMemory;
         use crate::engine::recording::RecordingState;
+        use crate::engine::transfer::{ControlEnd, Transfer, TryWaitError};
         use crate::layout::ChannelLayout;
-        use crate::transfer::{ControlEnd, Transfer, TryWaitError};
 
         fn recorder() -> (ControlEnd<RecordingData>, Recorder) {
             let (control, realtime) = transfer::channel(1);

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 
-use crate::transfer::{self, ControlEnd};
+use crate::engine::transfer::{self, ControlEnd};
 
 /// Shared by both sides while the input is open.
 #[derive(Debug, Default)]
@@ -97,7 +97,7 @@ pub(crate) mod realtime {
     use super::{InputChannels, InputData};
     use crate::config::Pcm;
     use crate::engine::renderer::{Frame, Renderer};
-    use crate::transfer::{self, Completion};
+    use crate::engine::transfer::{self, Completion};
 
     #[derive(Debug)]
     pub(crate) struct Input {
@@ -184,7 +184,7 @@ pub(crate) mod realtime {
 
         use super::*;
         use crate::engine::input::InputState;
-        use crate::transfer::Transfer;
+        use crate::engine::transfer::Transfer;
 
         /// Received as the renderer receives it.
         fn input(channels: InputChannels, capture_channels: usize) -> Input {
