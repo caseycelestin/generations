@@ -51,6 +51,24 @@ impl Control {
     /// Records the main out into `audio`, from empty. By value: the
     /// renderer writes it until it comes back. Refused while another
     /// recording runs, or while a voice holds `audio`.
+    ///
+    /// ```no_run
+    /// use generations::{AudioMemory, ChannelLayout, engine};
+    ///
+    /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0);
+    /// // Room for a second of the main out.
+    /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
+    /// let mut recording = control.record(take)?;
+    ///
+    /// // Written from the renderer's next period until stopped or full;
+    /// // back, holding what was heard, at the period after.
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// recording.stop();
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// let recorded = recording.try_take()?;
+    /// assert_eq!(recorded.frames(), 512);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn record(&mut self, audio: Audio) -> Result<Recording, RecordError> {
         self.collect();
         Recording::record(&mut self.recordings, audio)
