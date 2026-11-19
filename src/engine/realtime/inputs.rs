@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 
 use super::{Frame, Renderer};
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::{InputChannels, InputData};
+use crate::engine::input::{InputChannels, InputData};
 use crate::transfer::{self, Completion};
 
 #[derive(Debug)]
@@ -92,7 +92,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::engine::protocol::inputs::InputState;
+    use crate::engine::input::InputState;
     use crate::transfer::Transfer;
 
     /// Received as the renderer receives it.

@@ -1,14 +1,27 @@
 //! A recording: the main out written into audio the renderer holds.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
-use crate::engine::protocol::recording::{RecordingData, RecordingState};
 use crate::layout::ChannelLayout;
 use crate::transfer;
+
+/// Shared by both sides while the recording runs.
+#[derive(Debug, Default)]
+pub(crate) struct RecordingState {
+    pub(crate) stop: AtomicBool,
+}
+
+/// Comes back whole once the recording ends, its audio holding what was
+/// heard until then.
+#[derive(Debug)]
+pub(crate) struct RecordingData {
+    pub(crate) audio: Arc<AudioBuffer>,
+    pub(crate) state: Arc<RecordingState>,
+}
 
 /// Nothing was recorded; the audio comes back in it.
 #[derive(Debug, Error)]

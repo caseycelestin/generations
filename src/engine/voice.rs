@@ -1,13 +1,26 @@
 //! A voice: one playing of some audio.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 
-use crate::audio::Audio;
-use crate::engine::protocol::voice::{VoiceData, VoiceState};
+use crate::audio::{Audio, AudioBuffer};
 use crate::transfer::{self, ControlEnd};
+
+/// Shared by both sides while the voice plays.
+#[derive(Debug, Default)]
+pub(crate) struct VoiceState {
+    pub(crate) stop: AtomicBool,
+}
+
+/// Comes back whole once the voice ends, so its audio and state are freed
+/// on the control side.
+#[derive(Debug)]
+pub(crate) struct VoiceData {
+    pub(crate) audio: Arc<AudioBuffer>,
+    pub(crate) state: Arc<VoiceState>,
+}
 
 /// Nothing was played.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]

@@ -11,9 +11,9 @@ mod voices;
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::InputData;
-use crate::engine::protocol::recording::RecordingData;
-use crate::engine::protocol::voice::VoiceData;
+use crate::engine::input::InputData;
+use crate::engine::recording::RecordingData;
+use crate::engine::voice::VoiceData;
 use crate::transfer;
 use inputs::Inputs;
 use math::{add, hard_clip};
@@ -124,8 +124,8 @@ mod tests {
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
-    use crate::engine::protocol::recording::RecordingState;
-    use crate::engine::protocol::voice::VoiceState;
+    use crate::engine::recording::RecordingState;
+    use crate::engine::voice::VoiceState;
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
     use crate::transfer::{Transfer, TryWaitError};

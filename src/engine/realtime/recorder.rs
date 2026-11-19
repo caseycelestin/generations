@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::Frame;
-use crate::engine::protocol::recording::RecordingData;
+use crate::engine::recording::RecordingData;
 use crate::transfer::{self, Completion};
 
 #[derive(Debug)]
@@ -79,7 +79,7 @@ mod tests {
 
     use super::*;
     use crate::audio::AudioMemory;
-    use crate::engine::protocol::recording::RecordingState;
+    use crate::engine::recording::RecordingState;
     use crate::layout::ChannelLayout;
     use crate::transfer::{ControlEnd, Transfer, TryWaitError};
 

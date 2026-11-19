@@ -2,20 +2,22 @@
 //! no `Engine` type: [`create`] returns the two sides.
 
 mod control;
-mod protocol;
+mod input;
 mod realtime;
+mod recording;
+mod voice;
 
-pub use control::{
-    Control, Input, InputError, RecordError, Recording, TryTakeError, Voice, VoiceError,
-};
-pub use protocol::inputs::InputChannels;
+pub use control::Control;
+pub use input::{Input, InputChannels, InputError};
 pub use realtime::Renderer;
+pub use recording::{RecordError, Recording, TryTakeError};
+pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;
 
-use protocol::inputs::InputData;
-use protocol::recording::RecordingData;
-use protocol::voice::VoiceData;
+use input::InputData;
+use recording::RecordingData;
+use voice::VoiceData;
 
 /// Recordings at once: each holds a place from `record` until it comes
 /// back.
@@ -45,11 +47,9 @@ pub fn create(
     let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
     (
         Control::new(
-            control::Transfers {
-                voices: voices_control,
-                inputs: inputs_control,
-                recordings: recordings_control,
-            },
+            voices_control,
+            inputs_control,
+            recordings_control,
             capture_channels,
         ),
         Renderer::new(

@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 
 use super::{Frame, Renderer};
-use crate::engine::protocol::voice::VoiceData;
+use crate::engine::voice::VoiceData;
 use crate::layout::ChannelLayout;
 use crate::transfer::{Completion, RealtimeEnd};
 
@@ -114,7 +114,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::engine::protocol::voice::VoiceState;
+    use crate::engine::voice::VoiceState;
     use crate::testing::buffer;
     use crate::transfer::{self, Transfer};
 
