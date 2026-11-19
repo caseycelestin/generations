@@ -74,8 +74,15 @@ impl Renderer {
             out_block.fill([0.0; Self::OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
             for voice in self.voices.iter_mut() {
+                let frames_until_start = voice.start_frame().saturating_sub(self.frames_rendered);
+                // Not due in this block: it keeps its place, unheard.
+                if frames_until_start >= out_block.len() as u64 {
+                    continue;
+                }
+                let frames_until_start = frames_until_start as usize;
+                let scratch = &mut scratch[frames_until_start..];
                 voice.render(scratch);
-                add(out_block, scratch);
+                add(&mut out_block[frames_until_start..], scratch);
             }
             for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
