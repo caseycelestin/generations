@@ -124,35 +124,37 @@ mod tests {
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
+    use crate::engine::protocol::recording::RecordingState;
     use crate::engine::protocol::voice::VoiceState;
     use crate::layout::ChannelLayout;
-    use crate::request::{ControlEnd, RequestHandle, TryWaitError};
     use crate::testing::buffer;
-    use crate::transfer::Transfer;
+    use crate::transfer::{Transfer, TryWaitError};
 
     /// The control ends of the renderer's channels.
     struct Ends {
         voices: transfer::ControlEnd<VoiceData>,
-        recording: ControlEnd<RecordingRequest>,
+        recordings: transfer::ControlEnd<RecordingData>,
     }
 
     /// A renderer with `voices` places, and the control ends of its channels.
     fn renderer(voices: usize) -> (Ends, Renderer) {
         let (voices_control, voices_realtime) = transfer::channel(voices + 16);
-        let (recording_control, recording_realtime) = request::channel(1);
+        let (recordings_control, recordings_realtime) = transfer::channel(1);
         let (_, inputs_realtime) = transfer::channel(0);
         let ends = Ends {
             voices: voices_control,
-            recording: recording_control,
-        };
-        let requests = Requests {
-            recording: recording_realtime,
+            recordings: recordings_control,
         };
         let voices = NonZeroUsize::new(voices).unwrap();
-        (
-            ends,
-            Renderer::new(requests, voices_realtime, voices, 0, inputs_realtime, 0),
-        )
+        let renderer = Renderer::new(
+            voices_realtime,
+            voices,
+            0,
+            inputs_realtime,
+            0,
+            recordings_realtime,
+        );
+        (ends, renderer)
     }
 
     /// Starts a mono voice of `samples`, as `Control::play` does, keeping
@@ -172,16 +174,20 @@ mod tests {
         voice.try_wait().is_ok()
     }
 
-    /// Opens a recording into empty stereo audio with room for `frames`, as
-    /// `Control::record` does.
-    fn start(ends: &Ends, frames: usize) -> RequestHandle<RecordingRequest> {
+    /// Starts a recording into empty stereo audio with room for `frames`,
+    /// as `Control::record` does, keeping the state its handle stops it
+    /// through.
+    fn record(ends: &mut Ends, frames: usize) -> (Transfer<RecordingData>, Arc<RecordingState>) {
         let audio = AudioMemory::new()
             .alloc_buffer(ChannelLayout::Stereo, frames)
             .unwrap();
-        ends.recording
-            .try_reserve()
-            .unwrap()
-            .open(RecordingRequest::Start(Arc::new(audio)))
+        let state = Arc::new(RecordingState::default());
+        let data = RecordingData {
+            audio: Arc::new(audio),
+            state: Arc::clone(&state),
+        };
+        let recording = ends.recordings.try_start(data).unwrap();
+        (recording, state)
     }
 
     fn samples(audio: &AudioBuffer) -> Vec<Pcm> {
@@ -264,35 +270,24 @@ mod tests {
     fn a_recording_writes_what_is_heard_until_stopped() {
         let (mut ends, mut renderer) = renderer(1);
         let _voice = play(&mut ends, &[0.25; 64]);
-        let mut recording = start(&ends, 64);
+        let (mut recording, state) = record(&mut ends, 64);
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert_eq!(recording.try_wait().err(), Some(TryWaitError::Empty));
 
-        recording.cancel();
+        state.stop.store(true, Ordering::Relaxed);
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        let (why, audio) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::Stopped);
-        assert_eq!(samples(&audio), vec![0.25; 4 * 2]);
+        let data = recording.try_wait().unwrap();
+        assert_eq!(samples(&data.audio), vec![0.25; 4 * 2]);
     }
 
     #[test]
     fn a_recording_ends_full_when_its_audio_has_no_room() {
-        let (ends, mut renderer) = renderer(1);
-        let mut recording = start(&ends, 3);
+        let (mut ends, mut renderer) = renderer(1);
+        let (mut recording, _) = record(&mut ends, 3);
         renderer.render(&[], &mut [0.0; 8 * 2]);
-        let (why, audio) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::Full);
-        assert_eq!(samples(&audio).len(), 3 * 2);
-    }
-
-    #[test]
-    fn a_held_recording_answers_that_it_records() {
-        let (ends, mut renderer) = renderer(1);
-        let mut recording = start(&ends, 64);
-        let mut status = recording.request_status().unwrap();
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert_eq!(status.try_recv(), Ok(RecordingStatus::Recording));
+        let data = recording.try_wait().unwrap();
+        assert_eq!(samples(&data.audio).len(), 3 * 2);
     }
 
     #[test]
