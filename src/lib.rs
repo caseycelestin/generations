@@ -17,8 +17,8 @@
 //! project          the disk: a directory of WAVs and a manifest
 //! transfer/        owned values handed from control-side callers to a
 //!                  real-time side and back; knows nothing of audio
-//! request/         the same, as requests answered once, for what has
-//!                  not moved onto transfer yet
+//! request/         the same, as requests answered once; nothing uses it
+//!                  since the engine moved onto transfer
 //! engine/          everything heard; create() makes both sides
 //!   protocol/        what crosses between the two sides
 //!   control/         the control side: Control and its handles

@@ -17,8 +17,8 @@ use protocol::inputs::InputData;
 use protocol::recording::RecordingData;
 use protocol::voice::VoiceData;
 
-/// Recordings the renderer holds at once, so the requests its recording
-/// channel needs: each holds one until its reply is taken.
+/// Recordings at once: each holds a place from `record` until it comes
+/// back.
 const RECORDERS: usize = 1;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.

@@ -58,8 +58,7 @@ pub enum TryTakeError {
     Recording,
     #[error("the audio was already taken")]
     Taken,
-    /// The renderer was dropped before it received the recording, and the
-    /// audio went with it.
+    /// Not expected: a dropped renderer hands its recording back.
     #[error("the renderer is gone, and the audio with it")]
     RendererGone,
 }

@@ -5,8 +5,7 @@ use crate::engine::protocol::recording::RecordingData;
 use crate::engine::protocol::voice::VoiceData;
 use crate::transfer;
 
-/// One transfer channel per actor in the renderer, as each moves off its
-/// request channel.
+/// One transfer channel per actor in the renderer.
 #[derive(Debug)]
 pub(crate) struct Transfers {
     pub(crate) voices: transfer::ControlEnd<VoiceData>,
