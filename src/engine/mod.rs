@@ -41,29 +41,26 @@ pub fn create(
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) =
         crate::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
-    let (recording_control, recording_realtime) =
-        crate::request::channel::<RecordingRequest>(RECORDERS);
+    let (recordings_control, recordings_realtime) =
+        crate::transfer::channel::<RecordingData>(RECORDERS);
     let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
     (
         Control::new(
-            control::Requests {
-                recording: recording_control,
-            },
+            control::Requests {},
             control::Transfers {
                 voices: voices_control,
                 inputs: inputs_control,
+                recordings: recordings_control,
             },
             capture_channels,
         ),
         Renderer::new(
-            realtime::Requests {
-                recording: recording_realtime,
-            },
             voices_realtime,
             voices,
             capture_channels,
             inputs_realtime,
             inputs,
+            recordings_realtime,
         ),
     )
 }
