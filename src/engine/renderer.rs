@@ -1,16 +1,10 @@
 //! The audio thread: turns what the control side sends into periods of
 //! output. An offline bounce runs the same code with no deadline.
 
-use std::num::NonZeroUsize;
-
 use crate::config::Pcm;
-use crate::engine::input::InputData;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
-use crate::engine::recording::RecordingData;
 use crate::engine::recording::realtime::Recorder;
-use crate::engine::transfer;
-use crate::engine::voice::VoiceData;
 use crate::engine::voice::realtime::Voices;
 
 pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
@@ -42,18 +36,16 @@ impl Renderer {
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(
-        voice_transfers: transfer::RealtimeEnd<VoiceData>,
-        voices: NonZeroUsize,
+        voices: Voices,
+        inputs: Inputs,
+        recorder: Recorder,
         capture_channels: usize,
-        input_transfers: transfer::RealtimeEnd<InputData>,
-        inputs: usize,
-        recording_transfers: transfer::RealtimeEnd<RecordingData>,
     ) -> Self {
         Self {
-            voices: Voices::new(voices, voice_transfers),
+            voices,
             capture_channels,
-            inputs: Inputs::new(inputs, capture_channels, input_transfers),
-            recorder: Recorder::new(recording_transfers),
+            inputs,
+            recorder,
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -112,14 +104,16 @@ fn blocks<'a>(
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
-    use crate::engine::recording::RecordingState;
-    use crate::engine::transfer::{Transfer, TryWaitError};
-    use crate::engine::voice::VoiceState;
+    use crate::engine::recording::{RecordingData, RecordingState};
+    use crate::engine::transfer::{self, Transfer, TryWaitError};
+    use crate::engine::voice::{VoiceData, VoiceState};
+    use crate::engine::{input, recording, voice};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -131,22 +125,15 @@ mod tests {
 
     /// A renderer with `voices` places, and the control ends of its channels.
     fn renderer(voices: usize) -> (Ends, Renderer) {
-        let (voices_control, voices_realtime) = transfer::channel(voices + 16);
-        let (recordings_control, recordings_realtime) = transfer::channel(1);
-        let (_, inputs_realtime) = transfer::channel(0);
+        let voices = NonZeroUsize::new(voices).unwrap();
+        let (voices_control, voices_realtime) = voice::channel(voices, 16);
+        let (recordings_control, recordings_realtime) = recording::channel();
+        let (_, inputs_realtime) = input::channel(0, 0);
         let ends = Ends {
             voices: voices_control,
             recordings: recordings_control,
         };
-        let voices = NonZeroUsize::new(voices).unwrap();
-        let renderer = Renderer::new(
-            voices_realtime,
-            voices,
-            0,
-            inputs_realtime,
-            0,
-            recordings_realtime,
-        );
+        let renderer = Renderer::new(voices_realtime, inputs_realtime, recordings_realtime, 0);
         (ends, renderer)
     }
 

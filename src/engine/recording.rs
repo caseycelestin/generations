@@ -149,6 +149,15 @@ impl Drop for Recording {
     }
 }
 
+/// Recordings at once: each holds a place from `record` until it comes
+/// back.
+const RECORDERS: usize = 1;
+
+pub(crate) fn channel() -> (transfer::ControlEnd<RecordingData>, realtime::Recorder) {
+    let (control, realtime) = transfer::channel(RECORDERS);
+    (control, realtime::Recorder::new(realtime))
+}
+
 /// The renderer's one recorder: it writes at most one recording at a time.
 pub(crate) mod realtime {
     use std::sync::Arc;
