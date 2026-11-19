@@ -74,9 +74,11 @@ impl Renderer {
                 voice.render(scratch);
                 add(out_block, scratch);
             }
-            // Nothing hears an input yet.
             for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
+                if input.monitoring() {
+                    add(out_block, scratch);
+                }
             }
             hard_clip(out_block);
             self.recorder.write(out_block);

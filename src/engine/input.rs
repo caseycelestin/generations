@@ -10,6 +10,8 @@ use crate::engine::transfer::{self, ControlEnd};
 #[derive(Debug, Default)]
 pub(crate) struct InputState {
     pub(crate) stop: AtomicBool,
+    /// Off when opened, so an open mic is not heard until asked for.
+    pub(crate) monitoring: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -75,6 +77,11 @@ impl Input {
         Ok(Self { state })
     }
 
+    /// Takes effect from the renderer's next block.
+    pub fn set_monitoring(&mut self, on: bool) {
+        self.state.monitoring.store(on, Ordering::Relaxed);
+    }
+
     /// The same as dropping it.
     pub fn stop(self) {}
 }
@@ -135,6 +142,11 @@ pub(crate) mod realtime {
                     InputChannels::Stereo(left, right) => [frame[left], frame[right]],
                 };
             }
+        }
+
+        /// Read each block, so a change is heard within the period.
+        pub(crate) fn monitoring(&self) -> bool {
+            self.data.state.monitoring.load(Ordering::Relaxed)
         }
 
         /// Its handle is gone.
