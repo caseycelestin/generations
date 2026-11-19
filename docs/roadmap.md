@@ -12,7 +12,7 @@ is documented in the crate: `cargo doc --open` and start at the top.
 | 4 | Hear something: load a WAV and play it through the audio device | done |
 | 5 | RAM budget: one figure for all audio in memory | done; now `AudioMemory` |
 | 6 | Recording: audio input as a new root | main out done on `src/engine/`, `take` included; inputs to come |
-| 7 | Input monitoring: hear the input through the output | inputs built on `src/engine/`, on a duplex `render`; hearing them to come |
+| 7 | Input monitoring: hear the input through the output | done on `src/engine/`, on a duplex `render` |
 | 8 | Sequencing and mixing: the real-time side | mixing done on `src/engine/`; sequencing to come |
 | 9 | Arrangement and more effects | |
 
@@ -356,8 +356,6 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
 
 ### Input and monitoring
 
-Inputs are built; monitoring is not.
-
 - **The renderer is duplex.** `render(capture, out)` takes the input
   device's frames for the same period it fills, interleaved,
   `capture_channels` wide. One callback is one clock, and it is how JUCE,
@@ -375,8 +373,7 @@ Inputs are built; monitoring is not.
   it.** `Inputs` holds them with the inputs' end of their channel, as
   `Voices` does, and monitoring adds what one renders. Each period new
   inputs open before stopped ones end, so one stopped before it arrived
-  still gives its place back that period. Until then the copy is what keeps `Input::render` in use, chosen
-  over marking it `expect(dead_code)`.
+  still gives its place back that period.
 - **Opening an input is always on `Control`.** With zero capture channels
   every channel is past the device, so it answers `NoSuchChannel`, as
   Apple's `inputNode` has no channels rather than not existing. A
@@ -391,10 +388,12 @@ Inputs are built; monitoring is not.
   `mpsc::Sender` does. It comes back if `Control` holds what a renderer
   was told, to replay. Keeping the engine across a switch is the
   caller's (Deferred).
-- **Monitoring is state on the input.** `input.set_monitoring(bool)`
-  sets a flag in the input's state, as stop is on a voice, read each block, changeable while the
-  input is open. A second request kind on the input channel was tried and
-  dropped: it forced a shared reply type. Decided, not built.
+- **Monitoring is state on the input**, off when opened, so an open mic
+  is not heard until asked for. `input.set_monitoring(bool)` sets a flag
+  in its state, as stop is on a voice, and the renderer reads it each
+  block. A monitored input is added to the main out before the clip, so a
+  recording of the main out takes it too. A second request kind on the
+  input channel was tried and dropped: it forced a shared reply type.
 
 ### Devices and examples
 
@@ -499,7 +498,6 @@ over the channels (see Transfers, above).
 
 What is left:
 - **Recording inputs** (see Recording, above).
-- **Monitoring** (see Input and monitoring, above).
 - **Sequencing**, decided but not built: it runs on the audio thread,
   reading a fixed-size pattern that requests edit in place, so an edit is
   heard on the next pass whatever the control side is doing. Its voices
