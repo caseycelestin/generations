@@ -339,4 +339,34 @@ mod tests {
 
         assert_eq!(out, [0.5; 4 * 2]);
     }
+
+    #[test]
+    fn a_take_on_an_input_records_it_unmonitored() {
+        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let input = control.open_input(InputChannels::Mono(0)).unwrap();
+        let mut recording = control.record(room(64), Tap::Input(&input)).unwrap();
+        let mut out = [0.0; 4 * 2];
+        renderer.render(&[0.5; 4], &mut out);
+        assert_eq!(out, [0.0; 4 * 2]);
+
+        recording.stop();
+        renderer.render(&[0.5; 4], &mut out);
+
+        let taken = recording.try_take().unwrap();
+        assert_eq!(taken.samples(), [0.5; 4 * 2]);
+    }
+
+    #[test]
+    fn a_take_ends_with_its_input() {
+        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let input = control.open_input(InputChannels::Mono(0)).unwrap();
+        let mut recording = control.record(room(64), Tap::Input(&input)).unwrap();
+        renderer.render(&[0.5; 4], &mut [0.0; 4 * 2]);
+
+        input.stop();
+        renderer.render(&[0.5; 4], &mut [0.0; 4 * 2]);
+
+        let taken = recording.try_take().unwrap();
+        assert_eq!(taken.frames(), 4);
+    }
 }
