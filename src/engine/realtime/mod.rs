@@ -6,7 +6,6 @@
 mod inputs;
 mod math;
 mod recorder;
-mod recording;
 mod voices;
 
 use std::num::NonZeroUsize;
@@ -19,7 +18,6 @@ use crate::transfer;
 use inputs::Inputs;
 use math::{add, hard_clip};
 use recorder::Recorder;
-use recording::Recording;
 use voices::Voices;
 
 type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
