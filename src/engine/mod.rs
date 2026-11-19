@@ -1,21 +1,34 @@
-//! Real-time audio and the code that controls it, split by thread. There is
-//! no `Engine` type: [`create`] returns the two sides.
+//! Real-time audio and the code that controls it. There is no `Engine`
+//! type: [`create`] returns the two sides.
+//!
+//! Code runs on control threads, where it may lock and allocate, unless it
+//! is in the renderer or a `mod realtime`. Those run on the audio thread,
+//! which has a deadline: they never allocate, free, lock, block or make
+//! system calls. A helper they call says so where it is defined.
+//!
+//! Each voice, input or recording is a transfer: its data goes to the
+//! renderer and comes back whole once it ends, so it is freed on the control
+//! side, and its state is shared by both sides until then.
 
 mod control;
-mod protocol;
-mod realtime;
+mod input;
+mod math;
+mod recording;
+mod renderer;
+mod transfer;
+mod voice;
 
-pub use control::{
-    Control, Input, InputError, RecordError, Recording, TryTakeError, Voice, VoiceError,
-};
-pub use protocol::inputs::InputChannels;
-pub use realtime::Renderer;
+pub use control::Control;
+pub use input::{Input, InputChannels, InputError};
+pub use recording::{RecordError, Recording, TryTakeError};
+pub use renderer::Renderer;
+pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;
 
-use protocol::inputs::InputData;
-use protocol::recording::RecordingData;
-use protocol::voice::VoiceData;
+use input::InputData;
+use recording::RecordingData;
+use voice::VoiceData;
 
 /// Recordings at once: each holds a place from `record` until it comes
 /// back.
@@ -39,17 +52,14 @@ pub fn create(
 ) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) =
-        crate::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
-    let (recordings_control, recordings_realtime) =
-        crate::transfer::channel::<RecordingData>(RECORDERS);
-    let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
+        transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
+    let (recordings_control, recordings_realtime) = transfer::channel::<RecordingData>(RECORDERS);
+    let (inputs_control, inputs_realtime) = transfer::channel::<InputData>(inputs);
     (
         Control::new(
-            control::Transfers {
-                voices: voices_control,
-                inputs: inputs_control,
-                recordings: recordings_control,
-            },
+            voices_control,
+            inputs_control,
+            recordings_control,
             capture_channels,
         ),
         Renderer::new(

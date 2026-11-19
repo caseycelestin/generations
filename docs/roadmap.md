@@ -198,10 +198,10 @@ or rejected instead. The history of how a shape was reached is in git.
   on refusal: the only work lost is building it, so a permit for transfers
   was weighed and not added. `open_input` checking channels itself, before
   a reserve that could not fail, came before.
-- **`Control` is the door to one renderer.** It holds one channel per
-  actor in the renderer, all in `Transfers`. Named
-  for what it is to the caller; `RendererHandle`, `Link` and `Remote` were
-  rejected.
+- **`Control` is the door to one renderer.** It holds one channel end per
+  actor in the renderer as its own fields; a `Transfers` struct grouping
+  them was removed as a hop that did nothing. Named for what it is to the
+  caller; `RendererHandle`, `Link` and `Remote` were rejected.
 - **Each handle has its own error, in the engine's terms.** `VoiceError`,
   `InputError` and `RecordError` list only what can happen to theirs, flat,
   and translate the channels', so a caller reads "the renderer is gone",
@@ -225,15 +225,23 @@ or rejected instead. The history of how a shape was reached is in git.
   `voice_queue` may be zero: a play is then refused, not stolen, while
   every voice is held. `capture_channels` may be zero, with no input
   device, and so may `inputs`.
-- **`control/` and `realtime/` never import each other;** both import
-  `protocol/`. The source tree is the architecture, drawn in the crate
-  docs.
+- **One file per feature; only real-time code is marked.** A voice, input
+  or recording keeps what crosses, its handle and its audio-thread part in
+  one file, since a change to a feature touches all three; the
+  audio-thread part sits in a `mod realtime`. Control-side code is the
+  default and goes unmarked; a file that is real-time throughout says so in
+  its doc, and code a name already marks (`RealtimeEnd`) needs no module.
+  A split by thread into `control/`, `protocol/` and `realtime/` came
+  first: each feature spread over three folders, and `protocol/` existed
+  only so the other two could share types. The source tree is the
+  architecture, drawn in the crate docs.
 
 ### Transfers
 
-The two sides speak through `transfer`, a generic channel at the crate
-root that knows nothing of audio. Voices, inputs and recordings are on
-it. It replaced `request`, deleted once nothing used it.
+The two sides speak through `transfer`, a generic channel that knows
+nothing of audio, private to the engine, its only user; it sat at the
+crate root while being generic seemed reason enough. Voices, inputs and
+recordings are on it. It replaced `request`, deleted once nothing used it.
 
 - **A value goes over and comes home whole; nothing else crosses back.**
   The reply is the value itself, with whatever the renderer wrote into

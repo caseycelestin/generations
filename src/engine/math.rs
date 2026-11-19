@@ -1,6 +1,7 @@
-//! Arithmetic on periods: free functions over slices, no state.
+//! Arithmetic on periods, safe on the audio thread: no state, never
+//! allocates.
 
-use super::Frame;
+use crate::engine::renderer::Frame;
 
 /// Adds rather than writes, so sources sum. Stops at whichever runs out
 /// first.

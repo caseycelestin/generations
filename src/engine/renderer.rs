@@ -1,26 +1,19 @@
 //! The audio thread: turns what the control side sends into periods of
-//! output.
-//! Code here has a deadline: no allocating, locking, blocking or system
-//! calls. An offline bounce runs the same code with no deadline.
-
-mod inputs;
-mod math;
-mod recorder;
-mod voices;
+//! output. An offline bounce runs the same code with no deadline.
 
 use std::num::NonZeroUsize;
 
 use crate::config::Pcm;
-use crate::engine::protocol::inputs::InputData;
-use crate::engine::protocol::recording::RecordingData;
-use crate::engine::protocol::voice::VoiceData;
-use crate::transfer;
-use inputs::Inputs;
-use math::{add, hard_clip};
-use recorder::Recorder;
-use voices::Voices;
+use crate::engine::input::InputData;
+use crate::engine::input::realtime::Inputs;
+use crate::engine::math::{add, hard_clip};
+use crate::engine::recording::RecordingData;
+use crate::engine::recording::realtime::Recorder;
+use crate::engine::transfer;
+use crate::engine::voice::VoiceData;
+use crate::engine::voice::realtime::Voices;
 
-type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
+pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
 /// every handle from the same [`create`](crate::engine::create) report the
@@ -124,11 +117,11 @@ mod tests {
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
-    use crate::engine::protocol::recording::RecordingState;
-    use crate::engine::protocol::voice::VoiceState;
+    use crate::engine::recording::RecordingState;
+    use crate::engine::transfer::{Transfer, TryWaitError};
+    use crate::engine::voice::VoiceState;
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
-    use crate::transfer::{Transfer, TryWaitError};
 
     /// The control ends of the renderer's channels.
     struct Ends {
