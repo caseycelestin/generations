@@ -47,11 +47,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     recording.stop();
 
-    // How it ended, with the audio holding what was recorded, here to be
-    // kept; once.
-    match recording.try_wait() {
-        Ok((why, recorded)) => {
-            println!("recording ended: {why:?}");
+    // The audio holding what was recorded, here to be kept; once.
+    match recording.try_take() {
+        Ok(recorded) => {
             project.add_sample(&recorded)?;
         }
         Err(error) => println!("no result: {error}"),
