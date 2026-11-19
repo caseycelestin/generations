@@ -426,8 +426,7 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
   cover them. When the device exists, they move into a binary crate.
 - **A new feature is shown in a doc example on its API**, `no_run`, as
   inputs are on `open_input`: `cargo test` compiles it as surely as an
-  example, and `cargo doc` shows it beside what it uses. Not yet built:
-  one on `record`.
+  example, and `cargo doc` shows it beside what it uses.
 
 ### Recording
 
