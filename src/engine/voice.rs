@@ -209,7 +209,12 @@ pub(crate) mod realtime {
             let (mut control, mut realtime) = transfer::channel(1);
             let audio = Arc::new(buffer(layout, samples));
             let state = Arc::new(VoiceState::default());
-            let _transfer = control.try_start(VoiceData { audio, state }).unwrap();
+            let data = VoiceData {
+                audio,
+                state,
+                start_frame: 0,
+            };
+            let _transfer = control.try_start(data).unwrap();
             Voice::new(realtime.try_recv().unwrap())
         }
 
@@ -234,6 +239,7 @@ pub(crate) mod realtime {
             let data = VoiceData {
                 audio,
                 state: Arc::clone(&state),
+                start_frame: 0,
             };
             (control.try_start(data).unwrap(), state)
         }

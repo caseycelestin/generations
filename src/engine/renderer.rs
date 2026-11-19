@@ -158,11 +158,21 @@ mod tests {
     /// Starts a mono voice of `samples`, as `Control::play` does, keeping
     /// the state its handle stops it through.
     fn play(ends: &mut Ends, samples: &[Pcm]) -> (Transfer<VoiceData>, Arc<VoiceState>) {
+        play_at(ends, samples, 0)
+    }
+
+    /// As `play`, starting on `start_frame`.
+    fn play_at(
+        ends: &mut Ends,
+        samples: &[Pcm],
+        start_frame: u64,
+    ) -> (Transfer<VoiceData>, Arc<VoiceState>) {
         let audio = Arc::new(buffer(ChannelLayout::Mono, samples));
         let state = Arc::new(VoiceState::default());
         let data = VoiceData {
             audio,
             state: Arc::clone(&state),
+            start_frame,
         };
         let voice = ends.voices.try_start(data).unwrap();
         (voice, state)
@@ -244,6 +254,55 @@ mod tests {
         }
         let total: usize = periods.iter().sum();
         assert_eq!(renderer.frames_rendered, total as u64);
+    }
+
+    #[test]
+    fn a_voice_starts_on_its_frame_inside_a_block() {
+        let (mut ends, mut renderer) = renderer(1);
+        let _voice = play_at(&mut ends, &[0.1, 0.2, 0.3, 0.4], 2);
+        let mut out = vec![0.0; 6 * 2];
+        renderer.render(&[], &mut out);
+        let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
+        assert_eq!(heard, [0.0, 0.0, 0.1, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn a_voice_due_in_a_later_block_of_the_period_starts_there() {
+        let frames = Renderer::BLOCK_FRAMES * 2;
+        let start = Renderer::BLOCK_FRAMES + 2;
+        let (mut ends, mut renderer) = renderer(1);
+        let _voice = play_at(&mut ends, &[0.1, 0.2], start as u64);
+        let mut out = vec![0.0; frames * 2];
+        renderer.render(&[], &mut out);
+        let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
+        let mut expected = vec![0.0; frames];
+        expected[start..start + 2].copy_from_slice(&[0.1, 0.2]);
+        assert_eq!(heard, expected);
+    }
+
+    #[test]
+    fn a_voice_due_in_a_later_period_waits_for_it() {
+        let (mut ends, mut renderer) = renderer(1);
+        let _voice = play_at(&mut ends, &[0.1, 0.2], 6);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&[], &mut out);
+        assert_eq!(out, vec![0.0; 4 * 2]);
+
+        renderer.render(&[], &mut out);
+        let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
+        assert_eq!(heard, [0.0, 0.0, 0.1, 0.2]);
+    }
+
+    #[test]
+    fn a_voice_whose_frame_has_passed_plays_from_the_next_frame() {
+        let (mut ends, mut renderer) = renderer(1);
+        let mut out = vec![0.0; 4 * 2];
+        renderer.render(&[], &mut out);
+
+        let _voice = play_at(&mut ends, &[0.1, 0.2], 1);
+        renderer.render(&[], &mut out);
+        let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
+        assert_eq!(heard, [0.1, 0.2, 0.0, 0.0]);
     }
 
     #[test]
