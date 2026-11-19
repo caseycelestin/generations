@@ -340,8 +340,10 @@ recordings are on it. It replaced `request`, deleted once nothing used it.
   levels to come belong in the loop.
 - **A voice, an input or a recording comes home with no reason.** Nothing
   on the control side acts on why one ended yet. A voice's `Finished`,
-  `Stopped` and `Cut`, and an input's `InputEnd::Stopped`, were reported
-  before; a recording's is to come back as state (see Recording).
+  `Stopped` and `Cut`, an input's `InputEnd::Stopped` and a recording's
+  `RecordingEnd` were reported before. A take shows its own: it is full
+  at the length allocated, and otherwise the caller stopped it or the
+  renderer went.
 - **What crosses is a task.** A `VoiceData` is a play and a
   `RecordingData` a take, each handed back when done; meaning
   stays plain, the handles carry the verbs. Operations on what the
@@ -466,10 +468,6 @@ Built for the main out; recording inputs are not built yet.
   had not yet received, so a device failure keeps the take. A cached
   `state()` beside `take()` was replaced: it claimed `Recording` when it
   only meant no reply yet.
-- **Why a take ended is to come back as state; not built.**
-  `RecordingEnd` (`Full`, `Stopped`, `RendererGone`) went with the
-  request, and returns as a field of `RecordingState`; how the enum is
-  stored in an atomic is open. The asked status went with status.
 - **Dropping a recording stops it**, unlike a voice, which plays out: no
   one could take its audio. `stop` keeps the handle (`&mut self`), unlike
   a voice's or an input's, as `try_take` comes after it.
