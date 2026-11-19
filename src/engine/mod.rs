@@ -27,8 +27,11 @@ pub use voice::{Voice, VoiceError};
 use std::num::NonZeroUsize;
 
 use input::InputData;
+use input::realtime::Inputs;
 use recording::RecordingData;
+use recording::realtime::Recorder;
 use voice::VoiceData;
+use voice::realtime::Voices;
 
 /// Recordings at once: each holds a place from `record` until it comes
 /// back.
@@ -63,12 +66,10 @@ pub fn create(
             capture_channels,
         ),
         Renderer::new(
-            voices_realtime,
-            voices,
+            Voices::new(voices, voices_realtime),
+            Inputs::new(inputs, capture_channels, inputs_realtime),
+            Recorder::new(recordings_realtime),
             capture_channels,
-            inputs_realtime,
-            inputs,
-            recordings_realtime,
         ),
     )
 }
