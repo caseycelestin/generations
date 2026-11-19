@@ -76,6 +76,11 @@ impl Input {
         Ok(Self { state })
     }
 
+    /// What a tap on it holds.
+    pub(crate) fn state(&self) -> &Arc<InputState> {
+        &self.state
+    }
+
     /// Off when the input opens, so an open mic is not heard until asked
     /// for. Takes effect from the renderer's next block.
     pub fn set_monitoring(&mut self, on: bool) {
@@ -110,9 +115,10 @@ pub(crate) fn channel(
 /// Which capture channels make each input's stereo frames, and the places
 /// they live. They hold no audio.
 pub(crate) mod realtime {
+    use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use super::{InputChannels, InputData};
+    use super::{InputChannels, InputData, InputState};
     use crate::config::Pcm;
     use crate::engine::renderer::{Frame, Renderer};
     use crate::engine::transfer::{self, Completion};
@@ -146,6 +152,11 @@ pub(crate) mod realtime {
 
         pub(crate) fn monitoring(&self) -> bool {
             self.data.state.monitoring.load(Ordering::Relaxed)
+        }
+
+        /// What a tap on it is matched by.
+        pub(crate) fn state(&self) -> &Arc<InputState> {
+            &self.data.state
         }
 
         /// Its handle is gone.

@@ -4,7 +4,7 @@
 use crate::config::Pcm;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
-use crate::engine::recording::realtime::Recorder;
+use crate::engine::recording::realtime::{Recorder, TapPoint};
 use crate::engine::voice::realtime::Voices;
 
 pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
@@ -79,9 +79,14 @@ impl Renderer {
                 if input.monitoring() {
                     add(out_block, scratch);
                 }
+                if self.recorder.records_from(TapPoint::Input(input)) {
+                    self.recorder.write(scratch);
+                }
             }
             hard_clip(out_block);
-            self.recorder.write(out_block);
+            if self.recorder.records_from(TapPoint::MainOut) {
+                self.recorder.write(out_block);
+            }
         }
         self.voices.end_finished();
     }
@@ -112,7 +117,7 @@ mod tests {
 
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
-    use crate::engine::recording::{RecordingData, RecordingState};
+    use crate::engine::recording::{RecordingData, RecordingState, TapData};
     use crate::engine::transfer::{self, Transfer, TryWaitError};
     use crate::engine::voice::{VoiceData, VoiceState};
     use crate::engine::{input, recording, voice};
@@ -166,6 +171,7 @@ mod tests {
         let state = Arc::new(RecordingState::default());
         let data = RecordingData {
             audio: Arc::new(audio),
+            tap: TapData::MainOut,
             state: Arc::clone(&state),
         };
         let recording = ends.recordings.try_start(data).unwrap();

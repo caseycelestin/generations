@@ -1,6 +1,6 @@
 use crate::audio::Audio;
 use crate::engine::input::{Input, InputChannels, InputData, InputError};
-use crate::engine::recording::{RecordError, Recording, RecordingData};
+use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
 use crate::engine::transfer;
 use crate::engine::voice::{Voice, VoiceData, VoiceError};
 
@@ -48,17 +48,18 @@ impl Control {
         Voice::play(&mut self.voices, audio)
     }
 
-    /// Records the main out into `audio`, from empty. By value: the
+    /// Records what `tap` gives into `audio`, from empty. By value: the
     /// renderer writes it until it comes back. Refused while another
     /// recording runs, or while a voice holds `audio`.
     ///
     /// ```no_run
-    /// use generations::{AudioMemory, ChannelLayout, engine};
+    /// use generations::engine::{self, Tap};
+    /// use generations::{AudioMemory, ChannelLayout};
     ///
     /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0);
     /// // Room for a second of the main out.
     /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
-    /// let mut recording = control.record(take)?;
+    /// let mut recording = control.record(take, Tap::MainOut)?;
     ///
     /// // Written from the renderer's next period until stopped or full;
     /// // back, holding what was heard, at the period after.
@@ -69,9 +70,9 @@ impl Control {
     /// assert_eq!(recorded.frames(), 512);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn record(&mut self, audio: Audio) -> Result<Recording, RecordError> {
+    pub fn record(&mut self, audio: Audio, tap: Tap<'_>) -> Result<Recording, RecordError> {
         self.collect();
-        Recording::record(&mut self.recordings, audio)
+        Recording::record(&mut self.recordings, audio, tap)
     }
 
     /// Inputs may read the same channels; each gets its own copy.

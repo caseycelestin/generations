@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 use crate::audio::{Audio, AudioBuffer};
+use crate::engine::input::{Input, InputState};
 use crate::engine::transfer;
 use crate::layout::ChannelLayout;
 
@@ -18,7 +19,24 @@ pub(crate) struct RecordingState {
 #[derive(Debug)]
 pub(crate) struct RecordingData {
     pub(crate) audio: Arc<AudioBuffer>,
+    pub(crate) tap: TapData,
     pub(crate) state: Arc<RecordingState>,
+}
+
+/// Where a recording takes its frames from, chosen per take.
+#[derive(Debug, Clone, Copy)]
+pub enum Tap<'a> {
+    /// As heard, after clipping.
+    MainOut,
+    /// Whether it is monitored or not.
+    Input(&'a Input),
+}
+
+/// A `Tap` owned, to cross to the renderer.
+#[derive(Debug)]
+pub(crate) enum TapData {
+    MainOut,
+    Input(Arc<InputState>),
 }
 
 /// Nothing was recorded; the audio comes back in it.
@@ -95,12 +113,18 @@ impl Recording {
     pub(crate) fn record(
         transfers: &mut transfer::ControlEnd<RecordingData>,
         audio: Audio,
+        tap: Tap<'_>,
     ) -> Result<Self, RecordError> {
         let audio = Self::validate(audio)?;
         let audio = Self::prepare(audio);
+        let tap = match tap {
+            Tap::MainOut => TapData::MainOut,
+            Tap::Input(input) => TapData::Input(Arc::clone(input.state())),
+        };
         let state = Arc::new(RecordingState::default());
         let data = RecordingData {
             audio,
+            tap,
             state: Arc::clone(&state),
         };
         let transfer = transfers.try_start(data)?;
@@ -163,9 +187,17 @@ pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use super::RecordingData;
+    use super::{RecordingData, TapData};
+    use crate::engine::input::realtime::Input;
     use crate::engine::renderer::Frame;
     use crate::engine::transfer::{self, Completion};
+
+    /// A point in the render loop a take may record from.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum TapPoint<'a> {
+        MainOut,
+        Input(&'a Input),
+    }
 
     #[derive(Debug)]
     pub(crate) struct Recorder {
@@ -193,7 +225,23 @@ pub(crate) mod realtime {
             }
         }
 
-        /// Appends `block`, as heard; a recording that fills ends here.
+        /// Never true with no take.
+        pub(crate) fn records_from(&self, point: TapPoint<'_>) -> bool {
+            let Some(recording) = &self.recording else {
+                return false;
+            };
+            match (point, &recording.tap) {
+                (TapPoint::MainOut, TapData::MainOut) => true,
+                (TapPoint::Input(input), TapData::Input(state)) => {
+                    Arc::ptr_eq(input.state(), state)
+                }
+                (TapPoint::MainOut, TapData::Input(_)) | (TapPoint::Input(_), TapData::MainOut) => {
+                    false
+                }
+            }
+        }
+
+        /// Appends `block`; a recording that fills ends here.
         pub(crate) fn write(&mut self, block: &[Frame]) {
             let Some(recording) = &mut self.recording else {
                 return;
@@ -211,9 +259,14 @@ pub(crate) mod realtime {
             }
         }
 
-        /// Its handle stopped it, or is gone.
+        /// Its handle stopped it or is gone, or its input's did: a take
+        /// ends with its input.
         fn stopped(recording: &Completion<RecordingData>) -> bool {
-            recording.state.stop.load(Ordering::Relaxed)
+            let input_stopped = match &recording.tap {
+                TapData::MainOut => false,
+                TapData::Input(input) => input.stop.load(Ordering::Relaxed),
+            };
+            recording.state.stop.load(Ordering::Relaxed) || input_stopped
         }
 
         /// The one way a recording leaves.
@@ -239,7 +292,7 @@ pub(crate) mod realtime {
 
         use super::*;
         use crate::audio::AudioMemory;
-        use crate::engine::recording::RecordingState;
+        use crate::engine::recording::{RecordingState, TapData};
         use crate::engine::transfer::{ControlEnd, Transfer, TryWaitError};
         use crate::layout::ChannelLayout;
 
@@ -261,6 +314,7 @@ pub(crate) mod realtime {
             let state = Arc::new(RecordingState::default());
             let data = RecordingData {
                 audio: Arc::new(audio),
+                tap: TapData::MainOut,
                 state: Arc::clone(&state),
             };
             let recording = control.try_start(data).unwrap();
