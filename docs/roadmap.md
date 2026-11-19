@@ -12,9 +12,6 @@ crate (`cargo doc --open`); how it got this way is in git.
 - **The engine:** a duplex `Renderer` driven by the caller's device, and a
   `Control` that plays voices, opens inputs and records takes.
   - A fixed voice pool, mixed in blocks to a stereo main out.
-  - A count of frames rendered; a voice starts on a frame of it, placed
-    inside its block. `play` stamps 0, so nothing public names a frame
-    yet.
   - Inputs from capture channels, each heard through the main out when
     monitored.
   - Recording from the main out or one input.
@@ -22,16 +19,17 @@ crate (`cargo doc --open`); how it got this way is in git.
 
 ## Next
 
-1. **A clock shared by both sides.** The renderer publishes which frame
-   was at which time, so the control side can stamp a press or a MIDI note
-   and have it land a fixed delay later, with no jitter; the delay is at
-   least a period. With it, a public `play_at(&audio, frame)` beside a way
-   to read the current frame, the pair miniaudio and FMOD offer. Not
-   built. Open: which clock (`Instant` read in the callback, or cpal's
-   playback timestamp, which differs per host; a MIDI stamp may use
-   another), whether the engine or the caller converts, and whether a
-   delay-locked loop smooths the estimate.
-2. **Sequencing**, once the open questions below are settled.
+1. **Timestamped requests.** The renderer counts frames, and a request can
+   name the frame it lands on, placed inside its block. Every option for
+   sequencing needs this, and so do live triggers and the offline bounce.
+   Not built.
+2. **A clock shared by both sides.** The caller hands `render` the
+   callback's device timestamp; the renderer publishes which frame was at
+   which time, so the control side can stamp a press or a MIDI note and
+   have it land a fixed delay later, with no jitter. Not built. Open:
+   which clock, since cpal's differs per host and a MIDI stamp may use
+   another, and whether the engine or the caller converts.
+3. **Sequencing**, once the open questions below are settled.
 
 ## Open questions
 
@@ -121,17 +119,6 @@ might be tried again.
   taken cuts the oldest, because a press must sound.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
   A master gain or limiter goes before the clip.
-- **A request names an absolute frame** on the renderer's count: a `u64`
-  from creation, since a 32-bit `usize` wraps in about a day. One already
-  passed plays from the top of the next block, so 0 means as soon as
-  possible. A `Now`/`At` enum waits until late requests are reported; a
-  delay counted from arrival was rejected, as it keeps the jitter of the
-  period it arrives in.
-- **The renderer places voices; a voice knows nothing of time.** The block
-  loop skips a voice not yet due, which keeps its place in the pool, and
-  mixes one due mid-block from its frame on. The loop stays in the
-  renderer rather than in `Voices`, so per-voice routing can send each
-  voice to busses and taps the renderer owns.
 - **Inputs name capture channels and own none.** Every open input renders
   each block whether heard or not, so it can be recorded unmonitored;
   monitoring is off until asked for.
@@ -168,7 +155,6 @@ Not planned yet; kept so they are not forgotten.
   stored as a new generation. Replayable recipes as presets after that.
 - Offline bounce: a renderer driven in a loop with timestamped requests,
   its output stored as a new root.
-- Stops and recordings on a frame, as voices start on one.
 - Busses, each a new tap point; master gain and limiter.
 - A mono output device folding the stereo mix at the end (level
   undecided).
