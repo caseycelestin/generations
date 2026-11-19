@@ -10,7 +10,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::config::SAMPLE_RATE;
-use generations::engine::{self, TryWaitError};
+use generations::engine::{self, TryTakeError};
 use generations::{AudioMemory, ChannelLayout};
 
 mod device;
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         plucks.push(pluck);
     }
 
-    // Two seconds of the main out; the take ends Full when they are used.
+    // Two seconds of the main out; the take ends when they are used.
     let take = memory.alloc(ChannelLayout::Stereo, 2 * SAMPLE_RATE as usize)?;
     let mut recording = control.record(take)?;
 
@@ -48,14 +48,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         control.play(pluck)?;
         sleep(Duration::from_millis(400));
     }
-    let (why, recorded) = loop {
-        match recording.try_wait() {
-            Ok(result) => break result,
-            Err(TryWaitError::NotEnded) => sleep(Duration::from_millis(50)),
+    let recorded = loop {
+        match recording.try_take() {
+            Ok(recorded) => break recorded,
+            Err(TryTakeError::Recording) => sleep(Duration::from_millis(50)),
             Err(error) => return Err(error.into()),
         }
     };
-    println!("recording ended: {why:?}");
+    println!("recording ended");
 
     println!("playing back {} frames", recorded.frames());
     control.play(&recorded)?;

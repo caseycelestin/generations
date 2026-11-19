@@ -6,21 +6,19 @@ mod protocol;
 mod realtime;
 
 pub use control::{
-    Control, Input, InputError, PendingRecordingStatus, RecordError, Recording, StatusError,
-    TryRecvStatusError, TryWaitError, Voice, VoiceError,
+    Control, Input, InputError, RecordError, Recording, TryTakeError, Voice, VoiceError,
 };
 pub use protocol::inputs::InputChannels;
-pub use protocol::recording::{RecordingEnd, RecordingStatus};
 pub use realtime::Renderer;
 
 use std::num::NonZeroUsize;
 
 use protocol::inputs::InputData;
-use protocol::recording::RecordingRequest;
+use protocol::recording::RecordingData;
 use protocol::voice::VoiceData;
 
-/// Recordings the renderer holds at once, so the requests its recording
-/// channel needs: each holds one until its reply is taken.
+/// Recordings at once: each holds a place from `record` until it comes
+/// back.
 const RECORDERS: usize = 1;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
@@ -42,29 +40,25 @@ pub fn create(
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) =
         crate::transfer::channel::<VoiceData>(voice_capacity(voice_queue, voices));
-    let (recording_control, recording_realtime) =
-        crate::request::channel::<RecordingRequest>(RECORDERS);
+    let (recordings_control, recordings_realtime) =
+        crate::transfer::channel::<RecordingData>(RECORDERS);
     let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
     (
         Control::new(
-            control::Requests {
-                recording: recording_control,
-            },
             control::Transfers {
                 voices: voices_control,
                 inputs: inputs_control,
+                recordings: recordings_control,
             },
             capture_channels,
         ),
         Renderer::new(
-            realtime::Requests {
-                recording: recording_realtime,
-            },
             voices_realtime,
             voices,
             capture_channels,
             inputs_realtime,
             inputs,
+            recordings_realtime,
         ),
     )
 }
@@ -93,13 +87,6 @@ mod tests {
         AudioMemory::new()
             .alloc(ChannelLayout::Stereo, frames)
             .unwrap()
-    }
-
-    /// Asks, then renders a frame for the renderer to answer in.
-    fn status(recording: &mut Recording, renderer: &mut Renderer) -> RecordingStatus {
-        let mut pending = recording.request_status().unwrap();
-        renderer.render(&[], &mut [0.0; 2]);
-        pending.try_recv().unwrap()
     }
 
     #[test]
@@ -163,16 +150,12 @@ mod tests {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert_eq!(
-            status(&mut recording, &mut renderer),
-            RecordingStatus::Recording
-        );
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
 
         recording.stop();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        let (why, _) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::Stopped);
+        assert!(recording.try_take().is_ok());
     }
 
     #[test]
@@ -215,14 +198,11 @@ mod tests {
         let mut second = control.record(room(64)).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        assert_eq!(
-            status(&mut second, &mut renderer),
-            RecordingStatus::Recording
-        );
+        assert!(matches!(second.try_take(), Err(TryTakeError::Recording)));
     }
 
     #[test]
-    fn try_wait_hands_back_what_was_heard() {
+    fn try_take_hands_back_what_was_heard() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
@@ -232,7 +212,7 @@ mod tests {
         recording.stop();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        let (_, taken) = recording.try_wait().unwrap();
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.samples(), [0.25; 4 * 2]);
     }
 
@@ -246,8 +226,7 @@ mod tests {
 
         drop(renderer);
 
-        let (why, taken) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::RendererGone);
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.samples(), [0.25; 4 * 2]);
     }
 
@@ -258,24 +237,23 @@ mod tests {
 
         drop(renderer);
 
-        let (why, taken) = recording.try_wait().unwrap();
-        assert_eq!(why, RecordingEnd::RendererGone);
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.frames(), 0);
     }
 
     #[test]
-    fn try_wait_is_not_ended_until_the_recording_ends_and_taken_once() {
+    fn try_take_fails_until_the_recording_ends_and_hands_over_once() {
         let (mut control, mut renderer) = create(4, 1, 0, 0);
         let mut recording = control.record(room(64)).unwrap();
-        assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
         renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert!(matches!(recording.try_wait(), Err(TryWaitError::NotEnded)));
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
 
         recording.stop();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        assert!(recording.try_wait().is_ok());
-        assert!(matches!(recording.try_wait(), Err(TryWaitError::Taken)));
+        assert!(recording.try_take().is_ok());
+        assert!(matches!(recording.try_take(), Err(TryTakeError::Taken)));
     }
 
     #[test]
@@ -289,7 +267,7 @@ mod tests {
         recording.stop();
         renderer.render(&[], &mut [0.0; 2 * 2]);
 
-        let (_, taken) = recording.try_wait().unwrap();
+        let taken = recording.try_take().unwrap();
         assert_eq!(taken.samples(), [0.0; 2 * 2]);
     }
 

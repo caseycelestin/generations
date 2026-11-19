@@ -1,32 +1,31 @@
 //! A recording: the main out written into audio the renderer holds.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use thiserror::Error;
 
-use super::{StatusError, TryRecvStatusError, TryWaitError};
 use crate::audio::{Audio, AudioBuffer};
-use crate::engine::protocol::recording::{RecordingEnd, RecordingRequest, RecordingStatus};
+use crate::engine::protocol::recording::{RecordingData, RecordingState};
 use crate::layout::ChannelLayout;
-use crate::request::{self, ControlEnd, RequestHandle, ReserveError};
+use crate::transfer;
 
-/// A refused `record`, holding the audio it was given.
+/// Nothing was recorded; the audio comes back in it.
 #[derive(Debug, Error)]
 pub enum RecordError {
     /// The main out is stereo, so mono audio cannot hold it.
     #[error("recording needs stereo audio")]
     NotStereo(Audio),
-    /// Stop its voices, then wait on or drop their handles, which hold it
-    /// until then.
+    /// A voice holds its audio until it ends; stop it, or wait for it to
+    /// end.
     #[error("a voice still holds the audio")]
     AudioInUse(Audio),
-    /// Another recording holds the recorder until its reply is taken;
-    /// nothing was sent.
-    #[error("another recording holds the recorder")]
+    /// A stopped recording gives its place back at the renderer's next
+    /// period.
+    #[error("another recording is running")]
     Full(Audio),
-    /// The renderer is gone; nothing was sent.
     #[error("the renderer is gone")]
-    Disconnected(Audio),
+    RendererGone(Audio),
 }
 
 impl RecordError {
@@ -35,53 +34,76 @@ impl RecordError {
             Self::NotStereo(audio)
             | Self::AudioInUse(audio)
             | Self::Full(audio)
-            | Self::Disconnected(audio) => audio,
-        }
-    }
-
-    fn refused(error: ReserveError, audio: Audio) -> Self {
-        match error {
-            ReserveError::Full => Self::Full(audio),
-            ReserveError::Disconnected => Self::Disconnected(audio),
+            | Self::RendererGone(audio) => audio,
         }
     }
 }
 
-/// Holds the recorder until `try_wait` returns `Ok` or it is dropped.
+impl From<transfer::StartError<RecordingData>> for RecordError {
+    fn from(error: transfer::StartError<RecordingData>) -> Self {
+        match error {
+            transfer::StartError::Full(data) => Self::Full(Audio::from_shared(data.audio)),
+            transfer::StartError::Disconnected(data) => {
+                Self::RendererGone(Audio::from_shared(data.audio))
+            }
+        }
+    }
+}
+
+/// The audio was not taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum TryTakeError {
+    /// Still recording, or its audio is on the way back.
+    #[error("still recording")]
+    Recording,
+    #[error("the audio was already taken")]
+    Taken,
+    /// Not expected: a dropped renderer hands its recording back.
+    #[error("the renderer is gone, and the audio with it")]
+    RendererGone,
+}
+
+impl From<transfer::TryWaitError> for TryTakeError {
+    fn from(error: transfer::TryWaitError) -> Self {
+        match error {
+            transfer::TryWaitError::Empty => Self::Recording,
+            transfer::TryWaitError::Taken => Self::Taken,
+            transfer::TryWaitError::Disconnected => Self::RendererGone,
+        }
+    }
+}
+
+/// Holds the recorder until the recording ends.
 #[derive(Debug)]
 pub struct Recording {
-    handle: RequestHandle<RecordingRequest>,
+    transfer: transfer::Transfer<RecordingData>,
+    state: Arc<RecordingState>,
 }
 
 impl Recording {
     pub(crate) fn record(
-        requests: &ControlEnd<RecordingRequest>,
+        transfers: &mut transfer::ControlEnd<RecordingData>,
         audio: Audio,
     ) -> Result<Self, RecordError> {
         let audio = Self::validate(audio)?;
         let audio = Self::prepare(audio);
-        let permit = match requests.try_reserve() {
-            Ok(permit) => permit,
-            Err(error) => return Err(RecordError::refused(error, Audio::from_shared(audio))),
+        let state = Arc::new(RecordingState::default());
+        let data = RecordingData {
+            audio,
+            state: Arc::clone(&state),
         };
-        let handle = permit.open(RecordingRequest::Start(audio));
-        Ok(Self { handle })
+        let transfer = transfers.try_start(data)?;
+        Ok(Self { transfer, state })
     }
 
     pub fn stop(&mut self) {
-        self.handle.cancel();
+        self.state.stop.store(true, Ordering::Relaxed);
     }
 
-    /// Asks the renderer, which answers at its next period.
-    pub fn request_status(&mut self) -> Result<PendingRecordingStatus, StatusError> {
-        let pending = self.handle.request_status()?;
-        Ok(PendingRecordingStatus(pending))
-    }
-
-    /// How it ended, with the audio holding what was recorded; once.
-    pub fn try_wait(&mut self) -> Result<(RecordingEnd, Audio), TryWaitError> {
-        let (why, audio) = self.handle.try_wait()?;
-        Ok((why, Audio::from_shared(audio)))
+    /// Tries to take the audio out, once it is back.
+    pub fn try_take(&mut self) -> Result<Audio, TryTakeError> {
+        let data = self.transfer.try_wait()?;
+        Ok(Audio::from_shared(data.audio))
     }
 
     /// Ended voices must have been collected first, or they still count as
@@ -112,17 +134,6 @@ impl Recording {
 /// once the handle is gone.
 impl Drop for Recording {
     fn drop(&mut self) {
-        self.handle.cancel();
-    }
-}
-
-/// The renderer's answer to one status question about a recording.
-#[derive(Debug)]
-pub struct PendingRecordingStatus(request::PendingStatus<RecordingRequest>);
-
-impl PendingRecordingStatus {
-    pub fn try_recv(&mut self) -> Result<RecordingStatus, TryRecvStatusError> {
-        let status = self.0.try_recv()?;
-        Ok(status)
+        self.stop();
     }
 }

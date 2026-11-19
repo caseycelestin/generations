@@ -171,8 +171,8 @@ or rejected instead. The history of how a shape was reached is in git.
   since no method needed both sides, and a joint constructor was rejected
   as the same thing again.
 - **A verb lives on the thing it acts on.** `voice.stop()` acts on one
-  playing. A handle holds its state or request, never a `Control`, so the
-  dependency runs one way. Audio carrying a
+  playing. A handle holds its state (a recording also its `Transfer`),
+  never a `Control`, so the dependency runs one way. Audio carrying a
   handle and sending its removal from `Drop` was tried and rejected as
   the wrong coupling.
 - **A voice is stopped by its handle.** A caller keeps the handle of
@@ -192,15 +192,14 @@ or rejected instead. The history of how a shape was reached is in git.
   stopped. `try_wait` on them told only "ended", a period late; a status
   field in the state is the way once a caller needs it.
 - **A handle's constructor does its checks.** `Voice::play`,
-  `Input::open` and `Recording::record` check first, then start or
-  reserve; `Control`'s methods only pass through, so each feature's
+  `Input::open` and `Recording::record` check first, then start;
+  `Control`'s methods only pass through, so each feature's
   refusals sit beside the data it builds. `try_start` hands the value back
   on refusal: the only work lost is building it, so a permit for transfers
   was weighed and not added. `open_input` checking channels itself, before
   a reserve that could not fail, came before.
 - **`Control` is the door to one renderer.** It holds one channel per
-  actor in the renderer: voices and inputs in `Transfers`, recording in
-  `Requests` until it moves onto `transfer`. Named
+  actor in the renderer, all in `Transfers`. Named
   for what it is to the caller; `RendererHandle`, `Link` and `Remote` were
   rejected.
 - **Each handle has its own error, in the engine's terms.** `VoiceError`,
@@ -233,8 +232,8 @@ or rejected instead. The history of how a shape was reached is in git.
 ### Transfers
 
 The two sides speak through `transfer`, a generic channel at the crate
-root that knows nothing of audio. Voices and inputs are on it; recording
-is still on `request`, which it replaces once it moves.
+root that knows nothing of audio. Voices, inputs and recordings are on
+it. `request`, which it replaced, is unused and to be deleted.
 
 - **A value goes over and comes home whole; nothing else crosses back.**
   The reply is the value itself, with whatever the renderer wrote into
@@ -248,10 +247,10 @@ is still on `request`, which it replaces once it moves.
   the buffer while the hardware works and `wait` hands it back; io_uring
   runtimes call it ownership passing. `request` stopped fitting once
   nothing was asked for; "loan" was weighed and collides with Rust's
-  lending iterators. Payloads are named for what they hold: `VoiceData`
-  and `InputData`, as Kira plays a `StaticSoundData`.
+  lending iterators. Payloads are named for what they hold: `VoiceData`,
+  `InputData` and `RecordingData`, as Kira plays a `StaticSoundData`.
 - **What changes while running is state beside the value.** A
-  `VoiceState` or `InputState` (`stop`) rides in its data behind an `Arc`
+  `VoiceState`, `InputState` or `RecordingState` (`stop`) rides in its data behind an `Arc`
   and the handle keeps a clone: the handle writes, the renderer reads once a
   period. Lock-free atomics of 64 bits or less, each read alone; a
   snapshot type waits for fields that must agree. The engine defines the
@@ -326,11 +325,17 @@ is still on `request`, which it replaces once it moves.
   the voices' end of their channel, so every way a voice arrives or
   leaves is in `voices.rs`: received, cut, stopped at the start of a
   period, finished at its end.
-- **A voice or an input comes home with no reason.** Nothing on the
-  control side acts on why one ended. A voice's `Finished`, `Stopped` and
-  `Cut`, and an input's `InputEnd::Stopped`, were reported before.
+- **The render loop chooses what happens to each voice.** It iterates
+  the voices and mixes each itself, and `end_finished` ends the finished
+  ones after the loop. A `Voices::render` that mixed them, or took the
+  per-voice step as a callback, was weighed and rejected: routing and
+  levels to come belong in the loop.
+- **A voice, an input or a recording comes home with no reason.** Nothing
+  on the control side acts on why one ended yet. A voice's `Finished`,
+  `Stopped` and `Cut`, and an input's `InputEnd::Stopped`, were reported
+  before; a recording's is to come back as state (see Recording).
 - **What crosses is a task.** A `VoiceData` is a play and a
-  `RecordingRequest` a `Start`, each handed back when done; meaning
+  `RecordingData` a take, each handed back when done; meaning
   stays plain, the handles carry the verbs. Operations on what the
   renderer held (`Add`, `Remove`) came while replies were events.
 - **One concept, one name; the module says the side.** `Voice` is both
@@ -416,34 +421,50 @@ Built for the main out; recording inputs are not built yet.
 
 - **A recording is a handle, as a voice is, and one handle is one take.**
   `control.record(audio)` returns a `Recording` with `stop` and
-  `try_wait`. Recording again is a new `record`, so a late stop can never
+  `try_take`. Recording again is a new `record`, so a late stop can never
   reach a newer take.
 - **The caller pays for the take.** `memory.alloc(Stereo, frames)`; the
-  length is a maximum, and reaching it ends the take `Full`, which is not
-  an error. Only stereo audio is taken: the main out is stereo.
+  length is a maximum, and reaching it ends the take, which is not an
+  error. Only stereo audio is taken: the main out is stereo.
 - **The renderer holds the only reference while it writes**, through
   `Arc::get_mut`. Only the control side clones or drops audio and the
   caller gives theirs up, so `record` knows exactly whether a voice still
   holds it and refuses at once. Every refusal hands the audio back in a
-  `RecordError`, as `TrySendError` does, and reserving comes before
-  sending, as tokio's `try_reserve`: the audio is given up only once the
-  send cannot fail.
+  `RecordError`, as `TrySendError` does; a refused `try_start` returns
+  the data, and the error takes the audio out of it.
 - **One recorder, sized into its channel.** The recording channel holds
-  `RECORDERS` (one) requests, so a second `record` while one is out is
-  refused at once with `RecordError::Full` and never reaches the
-  renderer. A refusal by the renderer, ending `Refused`, came before.
+  `RECORDERS` (one) transfers, so a second `record` before the first
+  comes back is refused at once with `RecordError::Full` and never
+  reaches the renderer. The place frees when the recording ends, not
+  when its audio is taken. A refusal by the renderer, ending `Refused`,
+  came before.
+- **The render side has a `Recorder`, not a recording.** It lives as long
+  as the renderer and holds one recording's `Completion` at a time; with
+  several, they become `Recorders`. Named as audio libraries name the
+  thing that records (Tone.js, `MediaRecorder`, `AVAudioRecorder`); the
+  recording is what travels, `RecordingData` and the handle. A
+  render-side `Recording` beside it was removed: a recording needs
+  nothing beyond its data.
 - **The main out is written as heard**, after each block is clipped, and
-  the end-of-period clean-up ends a take whose audio is full. `record`
-  clears the audio and prefaults it first.
-- **`try_wait` gives how it ended and the audio, once.** It polls, as
-  `Child::try_wait` does, and is the only way the take comes back:
-  `(RecordingEnd, Audio)`, `Full`, `Stopped` or `RendererGone`: a dropped
-  renderer still hands back what was heard, as nothing else holds the
-  audio, so a device failure keeps the take. A cached `state()` beside
-  `take()` was replaced: it claimed `Recording` when it only meant no
-  reply yet.
+  a take ends in the block that fills it: `write` checks where it becomes
+  true, and nothing after the loop has to remember. `record` clears the
+  audio and prefaults it first.
+- **`try_take` hands over the audio, once.** It polls, and is the only
+  way the take comes back: `TryTakeError` says `Recording` until then,
+  `Taken` after. Named for what the caller gets, as audio libraries hand
+  back the recording and Rust's `take` moves a thing out once; `try_wait`,
+  after `Child::try_wait`, came before. A dropped renderer still hands
+  back what was heard, through `Recorder`'s `Drop`, even a recording it
+  had not yet received, so a device failure keeps the take. A cached
+  `state()` beside `take()` was replaced: it claimed `Recording` when it
+  only meant no reply yet.
+- **Why a take ended is to come back as state; not built.**
+  `RecordingEnd` (`Full`, `Stopped`, `RendererGone`) went with the
+  request, and returns as a field of `RecordingState`; how the enum is
+  stored in an atomic is open. The asked status went with status.
 - **Dropping a recording stops it**, unlike a voice, which plays out: no
-  one could take its audio.
+  one could take its audio. `stop` keeps the handle (`&mut self`), unlike
+  a voice's or an input's, as `try_take` comes after it.
 - **Arming comes later, with the features that need it.** An armed
   recording is held by the renderer, which starts it itself: at the frame
   the input crosses a level (threshold start), on the next beat or bar
