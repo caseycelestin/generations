@@ -45,7 +45,6 @@ pub fn create(
     let (inputs_control, inputs_realtime) = crate::transfer::channel::<InputData>(inputs);
     (
         Control::new(
-            control::Requests {},
             control::Transfers {
                 voices: voices_control,
                 inputs: inputs_control,

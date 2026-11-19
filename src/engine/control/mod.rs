@@ -2,14 +2,11 @@
 
 mod input;
 mod recording;
-mod requests;
 mod transfers;
 mod voice;
 
 pub use input::{Input, InputError};
 pub use recording::{RecordError, Recording, TryTakeError};
-pub(crate) use requests::Requests;
-pub use requests::{StatusError, TryRecvStatusError, TryWaitError};
 pub(crate) use transfers::Transfers;
 pub use voice::{Voice, VoiceError};
 
@@ -20,16 +17,14 @@ use crate::engine::protocol::inputs::InputChannels;
 /// on a handle takes effect at the renderer's next period.
 #[derive(Debug)]
 pub struct Control {
-    requests: Requests,
     transfers: Transfers,
     /// The capture device's, or zero without one.
     capture_channels: usize,
 }
 
 impl Control {
-    pub(crate) fn new(requests: Requests, transfers: Transfers, capture_channels: usize) -> Self {
+    pub(crate) fn new(transfers: Transfers, capture_channels: usize) -> Self {
         Self {
-            requests,
             transfers,
             capture_channels,
         }
@@ -87,7 +82,6 @@ impl Control {
     /// handles are gone, returning it to `AudioMemory`. `record` does this first; call it when
     /// the app goes quiet, or before a load that needs the memory.
     pub fn collect(&mut self) {
-        self.requests.take_in();
         self.transfers.take_in();
     }
 }

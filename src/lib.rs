@@ -43,7 +43,6 @@ pub mod project;
 pub mod request;
 #[cfg(test)]
 mod testing;
-#[allow(dead_code, unused_imports, reason = "the engine moves onto it next")]
 mod transfer;
 
 pub use audio::{Audio, AudioMemory, OverBudgetError};
