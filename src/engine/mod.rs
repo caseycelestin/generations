@@ -6,9 +6,11 @@
 //! which has a deadline: they never allocate, free, lock, block or make
 //! system calls. A helper they call says so where it is defined.
 //!
-//! Each voice, input or recording is a transfer: its data goes to the
-//! renderer and comes back whole once it ends, so it is freed on the control
-//! side, and its state is shared by both sides until then.
+//! Nothing the renderer holds is freed there. Loaded audio and inputs are
+//! states made at `create` in pools the control side keeps a clone of, sent
+//! one way and reused; voices are started and stopped through atomics in
+//! their audio's state; a recording is a transfer, its take coming back
+//! whole to be freed on the control side.
 
 mod audio;
 mod control;
