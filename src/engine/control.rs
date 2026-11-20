@@ -69,7 +69,7 @@ impl Control {
         samples: Vec<f32>,
         layout: ChannelLayout,
     ) -> Result<audio::Audio, LoadError> {
-        if samples.len() % layout.count() != 0 {
+        if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
         }
         let value = AudioState {
