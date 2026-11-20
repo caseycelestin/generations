@@ -64,6 +64,7 @@ impl VoiceSlot {
 }
 
 /// One voice played from a loaded audio.
+#[derive(Debug)]
 #[must_use = "dropping it stops the voice"]
 pub struct Voice<const VOICES: usize> {
     state: Arc<AudioState<VOICES>>,

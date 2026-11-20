@@ -55,6 +55,7 @@ impl LoadError {
     }
 }
 
+#[derive(Debug)]
 #[must_use = "dropping it unloads the audio"]
 pub struct Audio<const VOICES: usize> {
     state: Arc<AudioState<VOICES>>,

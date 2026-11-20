@@ -17,7 +17,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // Room to load one audio, with eight voices of its own.
-    let (mut control, mut renderer) = engine::create::<8>(1, 1, device.capture_channels(), 0, 1);
+    let (mut control, mut renderer) = engine::create::<8>(device.capture_channels(), 0, 1);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Half a second of A440, decaying from a third of full scale.

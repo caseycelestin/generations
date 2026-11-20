@@ -42,6 +42,23 @@ impl<const VOICES: usize> Control<VOICES> {
         }
     }
 
+    /// The engine holds `samples` until the audio is unloaded; a refused
+    /// load hands them back.
+    ///
+    /// ```no_run
+    /// use generations::{ChannelLayout, engine};
+    ///
+    /// // Room to load one audio, with eight voices of its own.
+    /// let (mut control, mut renderer) = engine::create::<8>(0, 0, 1);
+    /// let mut pluck = control.load(vec![0.5; 48_000], ChannelLayout::Mono)?;
+    /// let voice = pluck.play();
+    ///
+    /// // Heard from the renderer's next block until its handle drops.
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// drop(voice);
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn load(
         &mut self,
         samples: Vec<f32>,
@@ -73,13 +90,13 @@ impl<const VOICES: usize> Control<VOICES> {
 
     /// Records what `tap` gives into `audio`, from empty. By value: the
     /// renderer writes it until it comes back. Refused while another
-    /// recording runs, or while a voice holds `audio`.
+    /// recording runs.
     ///
     /// ```no_run
     /// use generations::engine::{self, Tap};
     /// use generations::{AudioMemory, ChannelLayout};
     ///
-    /// let (mut control, mut renderer) = engine::create::<8>(64, 16, 0, 0, 0);
+    /// let (mut control, mut renderer) = engine::create::<8>(0, 0, 0);
     /// // Room for a second of the main out.
     /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
     /// let mut recording = control.record(take, Tap::MainOut)?;
@@ -103,8 +120,8 @@ impl<const VOICES: usize> Control<VOICES> {
     /// ```no_run
     /// use generations::engine::{self, InputChannels};
     ///
-    /// // 16 voices, room for 64 plays, and a mono device with one input.
-    /// let (mut control, mut renderer) = engine::create::<8>(64, 16, 1, 1, 0);
+    /// // A mono device, with one input.
+    /// let (mut control, mut renderer) = engine::create::<8>(1, 1, 0);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     /// // Heard through the main out until stopped.
     /// input.set_monitoring(true);
@@ -145,9 +162,8 @@ impl<const VOICES: usize> Control<VOICES> {
     }
 
     /// Frees the audio of recordings whose handles are gone, returning it to
-    /// `AudioMemory`. `record` does this
-    /// first; call it when the app goes quiet, or before a load that needs
-    /// the memory.
+    /// `AudioMemory`. `record` does this first; call it when the app goes
+    /// quiet, or before a load that needs the memory.
     pub fn collect(&mut self) {
         self.recordings.take_in();
     }

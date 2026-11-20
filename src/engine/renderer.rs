@@ -105,61 +105,60 @@ fn blocks<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
+    use rtrb::Producer;
+
     use super::*;
     use crate::audio::{AudioBuffer, AudioMemory};
+    use crate::engine::audio::{self, Audio, AudioState};
     use crate::engine::recording::{RecordingData, RecordingState, TapData};
     use crate::engine::transfer::{self, Transfer, TryWaitError};
-    use crate::engine::voice::{VoiceData, VoiceState};
-    use crate::engine::{audio, input, recording, voice};
+    use crate::engine::voice::Voice;
+    use crate::engine::{input, recording};
     use crate::layout::ChannelLayout;
-    use crate::testing::buffer;
 
     /// The control ends of the renderer's channels.
     struct Ends {
-        voices: transfer::ControlEnd<VoiceData>,
+        audio: Producer<Arc<AudioState<1>>>,
         recordings: transfer::ControlEnd<RecordingData>,
     }
 
-    /// A renderer with `voices` places, and the control ends of its channels.
-    fn renderer(voices: usize) -> (Ends, Renderer<8>) {
-        let voices = NonZeroUsize::new(voices).unwrap();
-        let (voices_control, voices_realtime) = voice::channel(voices, 16);
+    /// A renderer with room for `places` loaded audio of one voice each, and
+    /// the control ends of its channels.
+    fn renderer(places: usize) -> (Ends, Renderer<1>) {
+        let (audio_control, audio_realtime) = audio::channel(places);
         let (recordings_control, recordings_realtime) = recording::channel();
         let (_, inputs_realtime) = input::channel(0, 0);
-        let (_, audio_realtime) = audio::channel(0);
         let ends = Ends {
-            voices: voices_control,
+            audio: audio_control,
             recordings: recordings_control,
         };
-        let renderer = Renderer::new(
-            voices_realtime,
-            inputs_realtime,
-            audio_realtime,
-            recordings_realtime,
-            0,
-        );
+        let renderer = Renderer::new(inputs_realtime, audio_realtime, recordings_realtime, 0);
         (ends, renderer)
     }
 
-    /// Starts a mono voice of `samples`, as `Control::play` does, keeping
-    /// the state its handle stops it through.
-    fn play(ends: &mut Ends, samples: &[Pcm]) -> (Transfer<VoiceData>, Arc<VoiceState>) {
-        let audio = Arc::new(buffer(ChannelLayout::Mono, samples));
-        let state = Arc::new(VoiceState::default());
-        let data = VoiceData {
-            audio,
-            state: Arc::clone(&state),
-        };
-        let voice = ends.voices.try_start(data).unwrap();
-        (voice, state)
+    /// Loads mono `samples` as `Control::load` does, then plays them; the
+    /// state stands in for the pool's clone.
+    fn play(ends: &mut Ends, samples: &[Pcm]) -> (Arc<AudioState<1>>, Audio<1>, Voice<1>) {
+        let state = Arc::new(AudioState {
+            buffer: Some(audio::AudioBuffer {
+                samples: samples.to_vec(),
+                layout: ChannelLayout::Mono,
+            }),
+            ..AudioState::default()
+        });
+        ends.audio.push(Arc::clone(&state)).unwrap();
+        let mut audio = Audio::load(Arc::clone(&state));
+        let voice = audio.play();
+        (state, audio, voice)
     }
 
-    fn ended(voice: &mut Transfer<VoiceData>) -> bool {
-        voice.try_wait().is_ok()
+    /// The renderer finished the first voice played: it played out or was
+    /// stopped.
+    fn ended(state: &AudioState<1>) -> bool {
+        state.voices[0].finished(1)
     }
 
     /// Starts a recording into empty stereo audio with room for `frames`,
@@ -228,31 +227,34 @@ mod tests {
     #[test]
     fn a_voice_that_plays_out_ends() {
         let (mut ends, mut renderer) = renderer(1);
-        let (mut voice, _) = play(&mut ends, &[0.5; 4]);
+        let (state, _audio, _voice) = play(&mut ends, &[0.5; 4]);
         renderer.render(&[], &mut [0.0; 8 * 2]);
-        assert!(ended(&mut voice));
+        assert!(ended(&state));
     }
 
     #[test]
     fn a_stopped_voice_ends_and_falls_silent() {
         let (mut ends, mut renderer) = renderer(1);
-        let (mut voice, state) = play(&mut ends, &[0.5; 64]);
+        let (state, _audio, voice) = play(&mut ends, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&[], &mut out);
-        state.stop.store(true, Ordering::Relaxed);
+        drop(voice);
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
-        assert!(ended(&mut voice));
+        assert!(ended(&state));
     }
 
     #[test]
-    fn a_new_voice_in_a_full_pool_cuts_the_oldest() {
+    fn a_play_with_every_voice_busy_starts_again_from_the_top() {
         let (mut ends, mut renderer) = renderer(1);
-        let (mut oldest, _) = play(&mut ends, &[0.5; 64]);
-        let (mut newest, _) = play(&mut ends, &[0.5; 64]);
-        renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert!(ended(&mut oldest));
-        assert!(!ended(&mut newest));
+        let (_state, mut audio, _first) = play(&mut ends, &[0.1, 0.2, 0.3, 0.4]);
+        let mut out = vec![0.0; 2 * 2];
+        renderer.render(&[], &mut out);
+
+        let _second = audio.play();
+        renderer.render(&[], &mut out);
+
+        assert_eq!(out, vec![0.1, 0.1, 0.2, 0.2]);
     }
 
     #[test]
