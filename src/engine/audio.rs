@@ -32,11 +32,14 @@ impl<const VOICES: usize> Default for AudioState<VOICES> {
 pub(crate) struct VoiceSlot {
     /// The number of a voice waiting to start, or 0. The renderer takes it,
     /// leaving 0, so a request is seen once.
-    pub(crate) incoming_voice: AtomicU32,
+    incoming_voice: AtomicU32,
     /// Raised to a stopped voice's number, never lowered, so an older
     /// voice's handle cannot stop a newer one; the playing voice stops once
     /// this reaches its number.
-    pub(crate) stop: AtomicU32,
+    stop: AtomicU32,
+    /// The number of the last voice the renderer finished here, played to
+    /// its end or stopped; the slot is free once this is the last one sent.
+    done: AtomicU32,
 }
 
 impl VoiceSlot {
@@ -55,6 +58,17 @@ impl VoiceSlot {
     /// The renderer's: voice `number` has been asked to stop.
     pub(crate) fn stopped(&self, number: u32) -> bool {
         self.stop.load(Ordering::Acquire) >= number
+    }
+
+    /// The renderer's: voice `number` has ended here, played out or stopped.
+    pub(crate) fn finish(&self, number: u32) {
+        self.done.store(number, Ordering::Release);
+    }
+
+    /// The control side's: voice `number` has ended; when it is the last one
+    /// sent, the slot is free.
+    pub(crate) fn finished(&self, number: u32) -> bool {
+        self.done.load(Ordering::Acquire) == number
     }
 
     /// The renderer's: the number of the voice waiting to start, if any.
@@ -101,20 +115,33 @@ impl LoadError {
 pub struct Audio<const VOICES: usize> {
     state: Arc<AudioState<VOICES>>,
     /// Voices asked for so far; the next one's number is this plus one, so
-    /// none is 0, and its slot is this modulo `VOICES`.
+    /// none is 0.
     played: u32,
+    /// The number last sent to each slot, or 0; a slot is free once the
+    /// renderer has finished that voice.
+    sent: [u32; VOICES],
 }
 
 impl<const VOICES: usize> Audio<VOICES> {
     pub(crate) fn load(state: Arc<AudioState<VOICES>>) -> Self {
-        Self { state, played: 0 }
+        Self {
+            state,
+            played: 0,
+            sent: [0; VOICES],
+        }
     }
 
-    /// Heard from the renderer's next block, from the top. Slots are used in
-    /// turn, cutting whatever the next one is playing.
+    /// Heard from the renderer's next block, from the top, in a free slot;
+    /// with none free, it cuts the oldest voice, since a press must sound.
     pub fn play(&mut self) -> Voice<VOICES> {
-        let slot = self.played as usize % VOICES;
+        let free = (0..VOICES).find(|&slot| self.state.voices[slot].finished(self.sent[slot]));
+        // Numbers only grow, so the smallest sent is the oldest voice.
+        let oldest = || (0..VOICES).min_by_key(|&slot| self.sent[slot]);
+        let slot = free
+            .or_else(oldest)
+            .expect("an audio has at least one voice");
         self.played += 1;
+        self.sent[slot] = self.played;
         self.state.voices[slot].send_voice(self.played);
         Voice {
             state: Arc::clone(&self.state),
@@ -260,16 +287,17 @@ pub(crate) mod realtime {
                         playhead: 0,
                     });
                 }
-                if voice
-                    .as_ref()
-                    .is_some_and(|playing| slot.stopped(playing.number))
+                if let Some(playing) = voice
+                    && slot.stopped(playing.number)
                 {
+                    slot.finish(playing.number);
                     *voice = None;
                 }
                 if let Some(playing) = voice {
                     playing.render(buffer, scratch);
                     add(out, scratch);
                     if playing.finished(buffer) {
+                        slot.finish(playing.number);
                         *voice = None;
                     }
                 }
