@@ -40,6 +40,7 @@ pub enum InputError {
 }
 
 #[derive(Debug)]
+#[must_use = "dropping it stops the input"]
 pub struct Input {
     state: Arc<InputState>,
 }
@@ -95,7 +96,7 @@ pub(crate) mod realtime {
 
     use super::{InputChannels, InputData, InputState};
     use crate::config::Pcm;
-    use crate::engine::renderer::{Frame, Renderer};
+    use crate::engine::renderer::{Frame, OUTPUT_CHANNELS};
 
     #[derive(Debug)]
     pub(crate) struct Input {
@@ -118,7 +119,7 @@ pub(crate) mod realtime {
             let frames = input.chunks_exact(self.capture_channels);
             for (into, frame) in scratch.iter_mut().zip(frames) {
                 *into = match self.data.channels {
-                    InputChannels::Mono(channel) => [frame[channel]; Renderer::OUTPUT_CHANNELS],
+                    InputChannels::Mono(channel) => [frame[channel]; OUTPUT_CHANNELS],
                     InputChannels::Stereo(left, right) => [frame[left], frame[right]],
                 };
             }

@@ -17,30 +17,29 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::new();
     let device = Device::default_duplex()?;
-    // Two voices, as the plucks overlap; no inputs.
-    let (mut control, mut renderer) = engine::create(1, 2, device.capture_channels(), 0);
+    // Room for the three plucks and the take played back; no inputs.
+    let (mut control, mut renderer) = engine::create::<8>(device.capture_channels(), 0, 4);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Half a second of each note, decaying from half scale.
     let frames = SAMPLE_RATE as usize / 2;
     let mut plucks = Vec::new();
     for pitch in [440.0, 554.4, 659.3] {
-        let mut pluck = memory.alloc(ChannelLayout::Mono, frames)?;
-        pluck
-            .extend((0..frames).map(|i| {
+        let pluck = (0..frames)
+            .map(|i| {
                 let t = i as f32 / SAMPLE_RATE as f32;
                 0.5 * (TAU * pitch * t).sin() * (-6.0 * t).exp()
-            }))
-            .ok_or("the engine holds the audio")?;
-        plucks.push(pluck);
+            })
+            .collect();
+        plucks.push(control.load(pluck, ChannelLayout::Mono)?);
     }
 
     // Two seconds of the main out; the take ends when they are used.
     let take = memory.alloc(ChannelLayout::Stereo, 2 * SAMPLE_RATE as usize)?;
     let mut recording = control.record(take, Tap::MainOut)?;
     println!("recording the plucks");
-    for pluck in &plucks {
-        control.play(pluck)?;
+    for pluck in &mut plucks {
+        pluck.play().detach();
         sleep(Duration::from_millis(400));
     }
 
@@ -52,7 +51,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     println!("playing back {} frames", take.frames());
-    control.play(&take)?;
+    let mut take = control.load(take.samples().to_vec(), take.layout())?;
+    take.play().detach();
     sleep(Duration::from_millis(2200));
 
     // The audio thread queues its complaints; this is where they are read.

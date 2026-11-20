@@ -6,15 +6,13 @@ crate (`cargo doc --open`); how it got this way is in git.
 
 ## Built
 
-- **The project on disk:** samples stored as WAVs under a manifest, ids
-  minted by the project, every change durable when the call returns.
-- **One audio memory figure** (`AudioMemory`) for all audio in RAM.
 - **The engine:** a duplex `Renderer` driven by the caller's device, and a
-  `Control` that plays voices, opens inputs and records takes.
-  - A fixed voice pool, mixed in blocks to a stereo main out.
+  `Control` that loads audio, opens inputs and records takes.
+  - Loaded audio, each with voices of its own, mixed in blocks to a stereo
+    main out.
   - Inputs from capture channels, each heard through the main out when
     monitored.
-  - Recording from the main out or one input.
+  - Recording from the main out or one input, into `AudioMemory`.
 - **Examples:** one per feature, over cpal, in `examples/`.
 
 ## Next
@@ -33,12 +31,10 @@ crate (`cargo doc --open`); how it got this way is in git.
 
 ## Open questions
 
-- **What lives on the audio thread.** Today it carries out tasks the
-  control side hands it, and holds nothing of its own beyond them. The
-  alternative is that it owns what is playable (pads, patterns, the
-  transport, mixer and effect settings) and the control side edits that
-  state and supplies its memory, so a press is "trigger pad 3" rather than
-  a transfer carrying audio.
+- **What else lives on the audio thread.** Loaded audio now does, and a
+  press is a voice number written into it. Open: whether pads, patterns,
+  the transport, mixer and effect settings follow, the control side
+  editing that state and supplying its memory.
 - **Where the sequencer runs.** On the control side it schedules ahead by
   a lookahead and stamps each event: sample-accurate unless that thread
   stalls past the lookahead, and an edit is heard only after it. On the
@@ -61,35 +57,20 @@ might be tried again.
   Raspberry Pi CM4); the Roland SP-404 MK2 is the reference. Devices that
   change while running, run at other rates or clock input and output apart
   are normal cases.
-- **One format: 48 kHz `f32`,** on disk, in RAM and on the render path;
+- **One format: 48 kHz `f32`,** in RAM and on the render path;
   each buffer is mono or stereo. `i16` storage was rejected: it loses
   24-bit sources at every generation, and the render path should read
   samples, not convert them.
 
-### The project
-
-- **The project is the disk.** A directory with no in-memory copy; every
-  write is fsynced before the call returns, in an order that leaves the
-  old manifest or the new one after a power cut, so there is no save step.
-- **A sample exists once it is stored.** The project mints its
-  `SampleId` from a counter that never reuses one; callers keep the id
-  (in a parent pointer, a pad, a pattern) and `load` turns it into
-  `Audio`.
-- **Generation is a relationship, not a type.** A sample will carry an
-  optional parent id, and lineage is the tree of parent pointers. Not
-  built; it returns with prints, in the manifest's per-sample entry, with
-  every parent minted before its child.
-- **A project is validated whole on open** and refused if anything is
-  off; the directory belongs to the engine. The manifest is a private
-  struct, versioned apart from the model; samples are WAVs so any tool can
-  open them.
-
 ### Memory
 
-- **All audio-length memory comes from one `AudioMemory`,** made once per
-  machine and lent by the caller; a buffer repays it on drop. What does
-  not scale with audio (rings, the voice pool, input states, scratch) is
-  sized once by the caller and not counted.
+- **The engine keeps no memory budget.** Loaded audio is the caller's
+  samples, moved in rather than copied, held until unloaded and handed
+  back on any refusal. `AudioMemory` remains only for takes, until
+  recording changes.
+- **Nothing is allocated after `create`.** Places for inputs and loaded
+  audio, with each audio's voice slots, rings and scratch are sized there
+  by the caller and reused; a load replaces a free place's state whole.
 - **The render side never allocates.** What it needs is allocated on the
   control side and handed over: live effects will be too.
 - **Memory the audio thread writes first is prefaulted** on the control
@@ -98,8 +79,6 @@ might be tried again.
 
 ### The engine
 
-- **The project and the engine never name each other;** the caller
-  carries `Audio` between them.
 - **The device is the caller's.** The crate has no audio dependency and
   `render(capture, out)` is handed one duplex period; a caller with
   separate input and output clocks bridges them before `render`. A device
@@ -107,25 +86,43 @@ might be tried again.
 - **The render side never waits:** no disk, lock, allocation or error
   path, and frame counts rather than a clock, so the same `render` runs
   offline.
-- **A voice or a take goes over as a transfer and comes home whole,** so
-  everything it owns is freed on the control side. What changes while it
-  runs (stop, monitoring) is lock-free state shared beside it, not further
-  messages. Each feature has its own channel, sized by how many of it can
-  be in flight.
+- **A take goes over as a transfer and comes home whole,** so everything
+  it owns is freed on the control side. What changes while it runs (stop)
+  is lock-free state shared beside it, not further messages; its channel
+  is sized by how many can be in flight.
 - **Inputs are opened over a one-way ring, from states made at `create`.**
   `Control` keeps a clone of every input state in a pool, so the
   renderer's is never the last and a stopped input is simply dropped; a
   place is free again once the pool's clone is the only one left. A
   transfer brought each input home only to free it.
-- **Dropping `Control` leaves the renderer as it was:** inputs still held
-  keep sounding. So the renderer's drop of a state is never the last,
-  `Control`'s drop is to leak the pool's clones while the renderer exists;
-  handing the pool over on one more ring would avoid the leak. Not built.
-- **A verb lives on the thing it acts on.** Handles (`Voice`, `Input`,
-  `Recording`) carry their own verbs and errors and never hold a
-  `Control`; every check comes before anything is sent.
-- **Voices are a fixed pool** sized by the caller; a play with every voice
-  taken cuts the oldest, because a press must sound.
+- **Loaded audio lives in a pool too.** Its samples and layout sit in the
+  pooled state, so the renderer's clone is never their last owner;
+  `load` checks for whole frames, a renderer, then a free place, and sends
+  the state over a one-way ring. Rejected: samples in the message, which
+  would have to come home to be freed.
+- **Dropping `Control` leaves the renderer as it was:** inputs and loaded
+  audio still held keep sounding. So the renderer's drop of a state is
+  never the last, `Control`'s drop is to leak the pools' clones while the
+  renderer exists; handing the pools over on one more ring would avoid the
+  leak. Not built.
+- **A verb lives on the thing it acts on.** Handles (`Audio`, `Voice`,
+  `Input`, `Recording`) carry their own verbs and errors and never hold a
+  `Control`; every check comes before anything is sent. Dropping one ends
+  what it holds, so each is `must_use`; a voice can be detached to play
+  out.
+- **Voices belong to loaded audio,** `VOICES` each, a const generic chosen
+  at `create`: a runtime count would allocate on every load, and a build
+  setting is global and unseen. A play takes a free voice and, with none
+  free, cuts that audio's oldest, because a press must sound; one audio
+  never cuts another's. A global voice pool was dropped.
+- **A voice is started and stopped through atomics in its slot,** with no
+  ring: a ring per audio could not be shared by its handles nor returned
+  to its place. Each play gets the next number, sent in one atomic that
+  the renderer takes, leaving 0. A stop raises the slot's stop to the
+  voice's number and never lowers it, so a stolen voice's handle cannot
+  stop its successor; the renderer marks each voice done, and a slot is
+  free once its last voice is. A flag beside the number was rejected for
+  a double-start race; plain flags would forbid stealing held voices.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
   A master gain or limiter goes before the clip.
 - **Inputs name capture channels and own none.** Every open input renders
@@ -174,16 +171,18 @@ Not planned yet; kept so they are not forgotten.
   nothing.
 - A level meter and progress on a take; saving a take straight into
   loaded audio.
-- Streaming long recordings rather than holding them in RAM.
+- Recording into plain samples or streamed out, so `AudioMemory` and
+  `src/audio.rs` can go.
 
-**Project**
-- Content-hash dedup, also matching a renamed WAV back to its sample.
-- Removing a whole lineage.
-- Projects stored in another format, converted on load.
+**Storage**
+- The project on disk, removed for now and in git: WAVs under a manifest,
+  ids minted by the project, every write durable when the call returns,
+  lineage as parent pointers. It returns, built on samples and a layout,
+  when storage is needed.
 
 **Hardware**
 - Storage tiers: the active project on eMMC, kept projects on the SD
-  card, audio in RAM under `AudioMemory`; the project does not know.
+  card; the project does not know.
 - An `i16` build, chosen at build time.
 - The memory budget read from the device's configuration.
 - `mlockall`, a cgroup reservation and no swap, set by the caller.

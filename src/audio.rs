@@ -10,7 +10,6 @@
 use std::fmt;
 use std::hint;
 use std::mem::size_of;
-use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -139,7 +138,8 @@ impl AudioBuffer {
     }
 
     /// Panics if the range runs past the filled audio.
-    pub(crate) fn frames_in(&self, frames: Range<usize>) -> &[Pcm] {
+    #[cfg(test)]
+    pub(crate) fn frames_in(&self, frames: std::ops::Range<usize>) -> &[Pcm] {
         let c = self.layout.count();
         &self.data[frames.start * c..frames.end * c]
     }

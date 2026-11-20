@@ -15,14 +15,18 @@ impl<T: Default> Pool<T> {
         let places = (0..places).map(|_| Arc::new(T::default())).collect();
         Self { places }
     }
+}
 
-    /// Reset whole, so nothing from its last use carries over. `None` while
-    /// every place is held.
-    pub fn take(&mut self) -> Option<Arc<T>> {
-        self.places.iter_mut().find_map(|place| {
-            let free = Arc::get_mut(place)?;
-            *free = T::default();
-            Some(Arc::clone(place))
-        })
+impl<T> Pool<T> {
+    /// `value` replaces the place whole, so nothing from its last use carries
+    /// over. It comes back while every place is held.
+    pub fn take(&mut self, value: T) -> Result<Arc<T>, T> {
+        for place in &mut self.places {
+            if let Some(free) = Arc::get_mut(place) {
+                *free = value;
+                return Ok(Arc::clone(place));
+            }
+        }
+        Err(value)
     }
 }

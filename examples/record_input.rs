@@ -16,8 +16,8 @@ use device::Device;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
-    // One voice for the playback, one input.
-    let (mut control, mut renderer) = engine::create(1, 1, device.capture_channels(), 1);
+    // One input, and room to load the take for playback.
+    let (mut control, mut renderer) = engine::create::<8>(device.capture_channels(), 1, 1);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     let input = control.open_input(InputChannels::Mono(0))?;
@@ -36,7 +36,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     println!("playing back {} frames", take.frames());
-    control.play(&take)?;
+    let mut take = control.load(take.samples().to_vec(), take.layout())?;
+    take.play().detach();
     sleep(Duration::from_millis(3200));
 
     // The audio thread queues its complaints; this is where they are read.

@@ -12,7 +12,7 @@ use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
 use generations::config::SAMPLE_RATE;
-use generations::engine::Renderer;
+use generations::engine::OUTPUT_CHANNELS;
 
 /// Stream errors kept for the control side before the oldest is dropped.
 const ERROR_CAPACITY: usize = 8;
@@ -50,7 +50,7 @@ impl Device {
             .ok_or(DeviceError::NoDuplexDevice)?;
         let mut config = device.default_duplex_config()?;
         config.sample_rate = SAMPLE_RATE;
-        config.output_channels = Renderer::OUTPUT_CHANNELS as u16;
+        config.output_channels = OUTPUT_CHANNELS as u16;
         Ok(Self { device, config })
     }
 
