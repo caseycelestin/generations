@@ -22,6 +22,13 @@ pub(crate) struct VoiceSlot {
 }
 
 impl VoiceSlot {
+    /// Back to a slot that has never played. Taking `&mut self` means
+    /// nothing else holds it; replacing the whole value means no field is
+    /// missed.
+    pub(crate) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     /// The control side's: asks for voice `number` to start at the
     /// renderer's next block, replacing any request not yet taken.
     pub(crate) fn send_voice(&self, number: u32) {
