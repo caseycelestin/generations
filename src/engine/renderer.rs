@@ -2,6 +2,7 @@
 //! output. An offline bounce runs the same code with no deadline.
 
 use crate::config::Pcm;
+use crate::engine::audio::realtime::LoadedAudio;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::{Recorder, TapPoint};
@@ -20,6 +21,7 @@ pub struct Renderer {
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
+    audio: LoadedAudio,
     recorder: Recorder,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
@@ -38,6 +40,7 @@ impl Renderer {
     pub(crate) fn new(
         voices: Voices,
         inputs: Inputs,
+        audio: LoadedAudio,
         recorder: Recorder,
         capture_channels: usize,
     ) -> Self {
@@ -45,6 +48,7 @@ impl Renderer {
             voices,
             capture_channels,
             inputs,
+            audio,
             recorder,
             scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
         }
@@ -66,6 +70,7 @@ impl Renderer {
         );
         self.voices.receive();
         self.inputs.receive();
+        self.audio.receive();
         self.recorder.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; Self::OUTPUT_CHANNELS]);

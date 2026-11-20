@@ -50,8 +50,7 @@ pub fn create(
     let (voices_control, voices_realtime) = voice::channel(voices, voice_queue);
     let (recordings_control, recordings_realtime) = recording::channel();
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
-    // Dropped until the renderer holds loaded audio.
-    let (audio_control, _) = audio::channel(audio);
+    let (audio_control, audio_realtime) = audio::channel(audio);
     (
         Control::new(
             voices_control,
@@ -65,6 +64,7 @@ pub fn create(
         Renderer::new(
             voices_realtime,
             inputs_realtime,
+            audio_realtime,
             recordings_realtime,
             capture_channels,
         ),
