@@ -72,6 +72,9 @@ impl Control {
         if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
         }
+        if self.audio.is_abandoned() {
+            return Err(LoadError::RendererGone(samples));
+        }
         let value = AudioState {
             buffer: Some(AudioBuffer { samples, layout }),
             ..AudioState::default()

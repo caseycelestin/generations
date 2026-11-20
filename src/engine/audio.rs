@@ -28,12 +28,14 @@ pub enum LoadError {
     PartFrame(Vec<f32>),
     #[error("every place for loaded audio is held")]
     Full(Vec<f32>),
+    #[error("the renderer is gone")]
+    RendererGone(Vec<f32>),
 }
 
 impl LoadError {
     pub fn into_samples(self) -> Vec<f32> {
         match self {
-            Self::PartFrame(samples) | Self::Full(samples) => samples,
+            Self::PartFrame(samples) | Self::Full(samples) | Self::RendererGone(samples) => samples,
         }
     }
 }
