@@ -70,17 +70,16 @@ impl<const VOICES: usize> Control<VOICES> {
         if self.audio.is_abandoned() {
             return Err(LoadError::RendererGone(samples));
         }
-        let value = AudioState {
-            buffer: Some(AudioBuffer { samples, layout }),
-            ..AudioState::default()
-        };
-        let state = match self.audio_places.take(value) {
-            Ok(state) => state,
-            Err(value) => {
-                let buffer = value.buffer.expect("the buffer was just put in");
-                return Err(LoadError::Full(buffer.samples));
-            }
-        };
+        let buffer = AudioBuffer { samples, layout };
+        let state = self
+            .audio_places
+            .take(buffer, |state, buffer| {
+                *state = AudioState {
+                    buffer: Some(buffer),
+                    ..AudioState::default()
+                }
+            })
+            .map_err(|buffer| LoadError::Full(buffer.samples))?;
         // Each message holds a place, so the ring never has more than places.
         self.audio
             .push(Arc::clone(&state))
@@ -148,7 +147,7 @@ impl<const VOICES: usize> Control<VOICES> {
         }
         let state = self
             .input_places
-            .take(InputState::default())
+            .take(InputState::default(), |state, fresh| *state = fresh)
             .map_err(|_| InputError::Full)?;
         let data = InputData {
             channels,

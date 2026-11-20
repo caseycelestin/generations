@@ -45,9 +45,9 @@ pub fn create<const VOICES: usize>(
     (
         Control::new(
             inputs_control,
-            pool::Pool::new(inputs),
+            pool::Pool::new(inputs, input::InputState::default),
             audio_control,
-            pool::Pool::new(audio),
+            pool::Pool::new(audio, audio::AudioState::default),
             recordings_control,
             capture_channels,
         ),
