@@ -153,7 +153,7 @@ pub(crate) mod realtime {
             };
             for (voice, slot) in self.voices.iter_mut().zip(&self.state.voices) {
                 if let Some(number) = slot.take_incoming_voice() {
-                    *voice = Some(Voice::start(number));
+                    *voice = Some(Voice::start(number, slot));
                 }
                 if let Some(playing) = voice
                     && slot.stopped(playing.number())
@@ -162,9 +162,9 @@ pub(crate) mod realtime {
                     *voice = None;
                 }
                 if let Some(playing) = voice {
-                    playing.render(buffer, scratch);
+                    playing.render(slot, buffer, scratch);
                     add(out, scratch);
-                    if playing.finished(buffer) {
+                    if playing.finished(slot, buffer) {
                         slot.finish(playing.number());
                         *voice = None;
                     }

@@ -2,7 +2,7 @@
 //! started and stopped through atomics alone.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::engine::audio::AudioState;
 
@@ -19,6 +19,10 @@ pub(crate) struct VoiceSlot {
     /// The number of the last voice the renderer finished here, played to
     /// its end or stopped; the slot is free once this is the last one sent.
     done: AtomicU32,
+    /// The playing voice's next frame, from the start of the buffer. The
+    /// renderer alone writes it, so the control side can read where a voice
+    /// is.
+    playhead: AtomicUsize,
 }
 
 impl VoiceSlot {
@@ -55,6 +59,16 @@ impl VoiceSlot {
     /// sent, the slot is free.
     pub(crate) fn finished(&self, number: u32) -> bool {
         self.done.load(Ordering::Acquire) == number
+    }
+
+    /// The renderer's: where the playing voice is.
+    pub(crate) fn playhead(&self) -> usize {
+        self.playhead.load(Ordering::Relaxed)
+    }
+
+    /// The renderer's: the playing voice has reached `frame`.
+    pub(crate) fn set_playhead(&self, frame: usize) {
+        self.playhead.store(frame, Ordering::Relaxed);
     }
 
     /// The renderer's: the number of the voice waiting to start, if any.
@@ -110,6 +124,7 @@ impl<const VOICES: usize> Drop for Voice<VOICES> {
 }
 
 pub(crate) mod realtime {
+    use super::VoiceSlot;
     use crate::engine::audio::AudioBuffer;
     use crate::engine::renderer::{Frame, OUTPUT_CHANNELS};
     use crate::layout::ChannelLayout;
@@ -120,16 +135,13 @@ pub(crate) mod realtime {
         /// Which voice of its slot this is, so a stop for an older one is
         /// told apart.
         number: u32,
-        /// The next frame to play, counted from the start of the buffer.
-        playhead: usize,
     }
 
     impl Voice {
-        pub(crate) fn start(number: u32) -> Self {
-            Self {
-                number,
-                playhead: 0,
-            }
+        /// From the top of the buffer.
+        pub(crate) fn start(number: u32, slot: &VoiceSlot) -> Self {
+            slot.set_playhead(0);
+            Self { number }
         }
 
         pub(crate) fn number(&self) -> u32 {
@@ -138,12 +150,13 @@ pub(crate) mod realtime {
 
         /// Silence once the buffer runs out. Mono goes to both sides at full
         /// level.
-        pub(crate) fn render(&mut self, buffer: &AudioBuffer, scratch: &mut [Frame]) {
+        pub(crate) fn render(&self, slot: &VoiceSlot, buffer: &AudioBuffer, scratch: &mut [Frame]) {
+            let playhead = slot.playhead();
             let channels = buffer.layout.count();
             let frames = buffer.samples.len() / channels;
-            let end = (self.playhead + scratch.len()).min(frames);
-            let samples = &buffer.samples[self.playhead * channels..end * channels];
-            let (sound, silence) = scratch.split_at_mut(end - self.playhead);
+            let end = (playhead + scratch.len()).min(frames);
+            let samples = &buffer.samples[playhead * channels..end * channels];
+            let (sound, silence) = scratch.split_at_mut(end - playhead);
             match buffer.layout {
                 ChannelLayout::Mono => {
                     for (frame, &sample) in sound.iter_mut().zip(samples) {
@@ -156,12 +169,12 @@ pub(crate) mod realtime {
                 }
             }
             silence.fill([0.0; OUTPUT_CHANNELS]);
-            self.playhead = end;
+            slot.set_playhead(end);
         }
 
         /// Its last frame has been rendered.
-        pub(crate) fn finished(&self, buffer: &AudioBuffer) -> bool {
-            self.playhead == buffer.samples.len() / buffer.layout.count()
+        pub(crate) fn finished(&self, slot: &VoiceSlot, buffer: &AudioBuffer) -> bool {
+            slot.playhead() == buffer.samples.len() / buffer.layout.count()
         }
     }
 }
