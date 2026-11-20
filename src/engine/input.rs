@@ -3,9 +3,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
-
-use crate::engine::transfer::{self, ControlEnd};
 
 #[derive(Debug, Default)]
 pub(crate) struct InputState {
@@ -40,40 +39,14 @@ pub enum InputError {
     RendererGone,
 }
 
-impl From<transfer::StartError<InputData>> for InputError {
-    fn from(error: transfer::StartError<InputData>) -> Self {
-        match error {
-            transfer::StartError::Full(_) => Self::Full,
-            transfer::StartError::Disconnected(_) => Self::RendererGone,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Input {
     state: Arc<InputState>,
 }
 
 impl Input {
-    pub(crate) fn open(
-        transfers: &mut ControlEnd<InputData>,
-        channels: InputChannels,
-        capture_channels: usize,
-    ) -> Result<Self, InputError> {
-        let highest = match channels {
-            InputChannels::Mono(channel) => channel,
-            InputChannels::Stereo(left, right) => left.max(right),
-        };
-        if highest >= capture_channels {
-            return Err(InputError::NoSuchChannel);
-        }
-        let state = Arc::new(InputState::default());
-        let data = InputData {
-            channels,
-            state: Arc::clone(&state),
-        };
-        transfers.try_start(data)?;
-        Ok(Self { state })
+    pub(crate) fn open(state: Arc<InputState>) -> Self {
+        Self { state }
     }
 
     /// What a tap on it holds.
@@ -104,11 +77,11 @@ impl Drop for Input {
 pub(crate) fn channel(
     inputs: usize,
     capture_channels: usize,
-) -> (ControlEnd<InputData>, realtime::Inputs) {
-    let (control, realtime) = transfer::channel(inputs);
+) -> (Producer<InputData>, realtime::Inputs) {
+    let (producer, consumer) = RingBuffer::new(inputs);
     (
-        control,
-        realtime::Inputs::new(inputs, capture_channels, realtime),
+        producer,
+        realtime::Inputs::new(inputs, capture_channels, consumer),
     )
 }
 
@@ -118,20 +91,21 @@ pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
+    use rtrb::Consumer;
+
     use super::{InputChannels, InputData, InputState};
     use crate::config::Pcm;
     use crate::engine::renderer::{Frame, Renderer};
-    use crate::engine::transfer::{self, Completion};
 
     #[derive(Debug)]
     pub(crate) struct Input {
-        data: Completion<InputData>,
+        data: InputData,
         /// Samples per capture frame.
         capture_channels: usize,
     }
 
     impl Input {
-        fn open(data: Completion<InputData>, capture_channels: usize) -> Self {
+        fn open(data: InputData, capture_channels: usize) -> Self {
             Self {
                 data,
                 capture_channels,
@@ -163,11 +137,6 @@ pub(crate) mod realtime {
         fn stopped(&self) -> bool {
             self.data.state.stop.load(Ordering::Relaxed)
         }
-
-        /// The one way an input leaves.
-        fn end(self, transfers: &mut transfer::RealtimeEnd<InputData>) {
-            transfers.complete(self.data);
-        }
     }
 
     #[derive(Debug)]
@@ -175,34 +144,34 @@ pub(crate) mod realtime {
         /// Never past its capacity, so opening one never allocates.
         open: Vec<Input>,
         capture_channels: usize,
-        /// The only way inputs arrive or leave.
-        transfers: transfer::RealtimeEnd<InputData>,
+        /// The only way inputs arrive.
+        opened: Consumer<InputData>,
     }
 
     impl Inputs {
         pub(crate) fn new(
             places: usize,
             capture_channels: usize,
-            transfers: transfer::RealtimeEnd<InputData>,
+            opened: Consumer<InputData>,
         ) -> Self {
             Self {
                 open: Vec::with_capacity(places),
                 capture_channels,
-                transfers,
+                opened,
             }
         }
 
         /// New inputs open, then stopped ones end, including any stopped before
         /// they arrived.
         pub(crate) fn receive(&mut self) {
-            while let Some(data) = self.transfers.try_recv() {
+            while let Ok(data) = self.opened.pop() {
                 let room = self.open.len() < self.open.capacity();
-                debug_assert!(room, "one transfer per place");
+                debug_assert!(room, "one message per place");
                 self.open.push(Input::open(data, self.capture_channels));
             }
-            for input in self.open.extract_if(.., |input| input.stopped()) {
-                input.end(&mut self.transfers);
-            }
+            // Never the last clone of a state: the control side's pool keeps
+            // one, so nothing is freed here.
+            self.open.retain(|input| !input.stopped());
         }
 
         pub(crate) fn iter(&self) -> impl Iterator<Item = &Input> {
@@ -214,16 +183,14 @@ pub(crate) mod realtime {
     mod tests {
         use std::sync::Arc;
 
-        use super::*;
-        use crate::engine::input::InputState;
-        use crate::engine::transfer::Transfer;
+        use rtrb::Producer;
 
-        /// Received as the renderer receives it.
+        use super::*;
+        use crate::engine::input::{self, InputState};
+
         fn input(channels: InputChannels, capture_channels: usize) -> Input {
-            let (mut control, mut realtime) = transfer::channel(1);
             let state = Arc::new(InputState::default());
-            let _transfer = control.try_start(InputData { channels, state }).unwrap();
-            Input::open(realtime.try_recv().unwrap(), capture_channels)
+            Input::open(InputData { channels, state }, capture_channels)
         }
 
         #[test]
@@ -242,82 +209,78 @@ pub(crate) mod realtime {
             assert_eq!(scratch, [[0.3, 0.1]]);
         }
 
-        /// `places` inputs on a stereo device, and the control end that starts
-        /// theirs, sized as `create` sizes it.
-        fn inputs(places: usize) -> (transfer::ControlEnd<InputData>, Inputs) {
-            let (control, realtime) = transfer::channel(places);
-            (control, Inputs::new(places, 2, realtime))
+        /// `places` inputs on a stereo device, and the ring that opens them,
+        /// sized as `create` sizes it.
+        fn inputs(places: usize) -> (Producer<InputData>, Inputs) {
+            input::channel(places, 2)
         }
 
-        /// Started as `Control::open_input` does.
-        fn start(
-            control: &mut transfer::ControlEnd<InputData>,
-            channels: InputChannels,
-        ) -> (Transfer<InputData>, Arc<InputState>) {
+        /// Sent as `Control::open_input` sends it; the state returned stands in
+        /// for the pool's clone.
+        fn start(control: &mut Producer<InputData>, channels: InputChannels) -> Arc<InputState> {
             let state = Arc::new(InputState::default());
             let data = InputData {
                 channels,
                 state: Arc::clone(&state),
             };
-            (control.try_start(data).unwrap(), state)
+            control.push(data).unwrap();
+            state
         }
 
         fn open(inputs: &Inputs) -> Vec<InputChannels> {
             inputs.iter().map(|input| input.data.channels).collect()
         }
 
-        fn ended(transfer: &mut Transfer<InputData>) -> bool {
-            transfer.try_wait().is_ok()
+        /// The renderer has let go of its clone.
+        fn ended(state: &Arc<InputState>) -> bool {
+            Arc::strong_count(state) == 1
         }
 
         #[test]
         fn received_inputs_open_in_the_order_sent() {
             let (mut control, mut inputs) = inputs(2);
-            let (mut left, _) = start(&mut control, InputChannels::Mono(0));
-            let (mut right, _) = start(&mut control, InputChannels::Mono(1));
+            let left = start(&mut control, InputChannels::Mono(0));
+            let right = start(&mut control, InputChannels::Mono(1));
             inputs.receive();
             assert_eq!(
                 open(&inputs),
                 [InputChannels::Mono(0), InputChannels::Mono(1)]
             );
-            assert!(!ended(&mut left));
-            assert!(!ended(&mut right));
+            assert!(!ended(&left));
+            assert!(!ended(&right));
         }
 
         #[test]
         fn a_stopped_input_ends_on_the_next_receive() {
             let (mut control, mut inputs) = inputs(1);
-            let (mut input, state) = start(&mut control, InputChannels::Mono(0));
+            let state = start(&mut control, InputChannels::Mono(0));
             inputs.receive();
             state.stop.store(true, Ordering::Relaxed);
             inputs.receive();
             assert!(open(&inputs).is_empty());
-            assert!(ended(&mut input));
+            assert!(ended(&state));
         }
 
         #[test]
         fn an_input_stopped_before_it_arrives_ends_on_arrival() {
             let (mut control, mut inputs) = inputs(1);
-            let (mut input, state) = start(&mut control, InputChannels::Mono(0));
+            let state = start(&mut control, InputChannels::Mono(0));
             state.stop.store(true, Ordering::Relaxed);
             inputs.receive();
             assert!(open(&inputs).is_empty());
-            assert!(ended(&mut input));
+            assert!(ended(&state));
         }
 
         #[test]
         fn an_ended_input_gives_its_place_back() {
             let (mut control, mut inputs) = inputs(1);
-            let (_input, state) = start(&mut control, InputChannels::Mono(0));
+            let state = start(&mut control, InputChannels::Mono(0));
             inputs.receive();
             state.stop.store(true, Ordering::Relaxed);
             inputs.receive();
-            let state = Arc::new(InputState::default());
-            let data = InputData {
-                channels: InputChannels::Mono(1),
-                state,
-            };
-            assert!(control.try_start(data).is_ok());
+            start(&mut control, InputChannels::Mono(1));
+            inputs.receive();
+            assert_eq!(open(&inputs), [InputChannels::Mono(1)]);
         }
     }
 }
