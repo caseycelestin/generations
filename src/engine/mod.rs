@@ -25,6 +25,7 @@ pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
 pub use recording::{RecordError, Recording, Tap, TryTakeError};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
+pub use voice::Voice;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `capture_channels` is the width of the capture `render` is handed each
