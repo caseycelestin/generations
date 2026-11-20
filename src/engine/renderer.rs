@@ -6,7 +6,6 @@ use crate::engine::audio::realtime::LoadedAudio;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::{Recorder, TapPoint};
-use crate::engine::voice::realtime::Voices;
 
 /// Always stereo.
 pub const OUTPUT_CHANNELS: usize = 2;
@@ -24,7 +23,6 @@ pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
 /// callback must hand it back when dropped.
 #[derive(Debug)]
 pub struct Renderer<const VOICES: usize> {
-    voices: Voices,
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
@@ -38,14 +36,12 @@ impl<const VOICES: usize> Renderer<VOICES> {
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(
-        voices: Voices,
         inputs: Inputs,
         audio: LoadedAudio<VOICES>,
         recorder: Recorder,
         capture_channels: usize,
     ) -> Self {
         Self {
-            voices,
             capture_channels,
             inputs,
             audio,
@@ -64,17 +60,12 @@ impl<const VOICES: usize> Renderer<VOICES> {
             (out.len() / OUTPUT_CHANNELS) * self.capture_channels,
             "capture and output are not the same frames"
         );
-        self.voices.receive();
         self.inputs.receive();
         self.audio.receive();
         self.recorder.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
-            for voice in self.voices.iter_mut() {
-                voice.render(scratch);
-                add(out_block, scratch);
-            }
             for audio in self.audio.iter_mut() {
                 audio.render(out_block, scratch);
             }
@@ -92,7 +83,6 @@ impl<const VOICES: usize> Renderer<VOICES> {
                 self.recorder.write(out_block);
             }
         }
-        self.voices.end_finished();
     }
 }
 

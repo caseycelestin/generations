@@ -18,43 +18,28 @@ mod pool;
 mod recording;
 mod renderer;
 mod transfer;
-mod voice;
 
 pub use audio::{Audio, LoadError};
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
 pub use recording::{RecordError, Recording, Tap, TryTakeError};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
-pub use voice::{Voice, VoiceError};
-
-use std::num::NonZeroUsize;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
-/// `voices` is how many play at once, sized by the caller for its hardware.
-/// `voice_queue` is how many plays can be on their way beyond them: the
-/// room a new play has to take the oldest voice's place. Zero refuses a
-/// play while every voice is held. `capture_channels` is the width of the
-/// capture `render` is handed each period, zero without an input device;
-/// `inputs` is how many can be open at once; `audio`, how many can be
-/// loaded at once, each with `VOICES` voices of its own.
-///
-/// # Panics
-/// If `voices` is zero.
+/// `capture_channels` is the width of the capture `render` is handed each
+/// period, zero without an input device; `inputs` is how many can be open
+/// at once; `audio`, how many can be loaded at once, each with `VOICES`
+/// voices of its own.
 pub fn create<const VOICES: usize>(
-    voice_queue: usize,
-    voices: usize,
     capture_channels: usize,
     inputs: usize,
     audio: usize,
 ) -> (Control<VOICES>, Renderer<VOICES>) {
-    let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
-    let (voices_control, voices_realtime) = voice::channel(voices, voice_queue);
     let (recordings_control, recordings_realtime) = recording::channel();
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
     let (audio_control, audio_realtime) = audio::channel(audio);
     (
         Control::new(
-            voices_control,
             inputs_control,
             pool::Pool::new(inputs),
             audio_control,
@@ -63,7 +48,6 @@ pub fn create<const VOICES: usize>(
             capture_channels,
         ),
         Renderer::new(
-            voices_realtime,
             inputs_realtime,
             audio_realtime,
             recordings_realtime,

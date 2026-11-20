@@ -8,14 +8,12 @@ use crate::engine::input::{Input, InputChannels, InputData, InputError, InputSta
 use crate::engine::pool::Pool;
 use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
 use crate::engine::transfer;
-use crate::engine::voice::{Voice, VoiceData, VoiceError};
 use crate::layout::ChannelLayout;
 
 /// One per renderer; an app shares it its own way. Everything done here or
 /// on a handle takes effect at the renderer's next period.
 #[derive(Debug)]
 pub struct Control<const VOICES: usize> {
-    voices: transfer::ControlEnd<VoiceData>,
     inputs: Producer<InputData>,
     input_places: Pool<InputState>,
     audio: Producer<Arc<AudioState<VOICES>>>,
@@ -27,7 +25,6 @@ pub struct Control<const VOICES: usize> {
 
 impl<const VOICES: usize> Control<VOICES> {
     pub(crate) fn new(
-        voices: transfer::ControlEnd<VoiceData>,
         inputs: Producer<InputData>,
         input_places: Pool<InputState>,
         audio: Producer<Arc<AudioState<VOICES>>>,
@@ -36,7 +33,6 @@ impl<const VOICES: usize> Control<VOICES> {
         capture_channels: usize,
     ) -> Self {
         Self {
-            voices,
             inputs,
             input_places,
             audio,
@@ -44,24 +40,6 @@ impl<const VOICES: usize> Control<VOICES> {
             recordings,
             capture_channels,
         }
-    }
-
-    /// ```no_run
-    /// use generations::{AudioMemory, ChannelLayout, engine};
-    ///
-    /// let (mut control, mut renderer) = engine::create::<8>(64, 16, 0, 0, 0);
-    /// let audio = AudioMemory::new().alloc(ChannelLayout::Mono, 48_000)?;
-    /// let voice = control.play(&audio)?;
-    ///
-    /// // Heard from the renderer's next period until stopped; silent from
-    /// // the one after.
-    /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// voice.stop();
-    /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn play(&mut self, audio: &Audio) -> Result<Voice, VoiceError> {
-        Voice::play(&mut self.voices, audio)
     }
 
     pub fn load(
@@ -166,12 +144,11 @@ impl<const VOICES: usize> Control<VOICES> {
         Ok(Input::open(state))
     }
 
-    /// Frees the audio of voices that have ended and of recordings whose
-    /// handles are gone, returning it to `AudioMemory`. `record` does this
+    /// Frees the audio of recordings whose handles are gone, returning it to
+    /// `AudioMemory`. `record` does this
     /// first; call it when the app goes quiet, or before a load that needs
     /// the memory.
     pub fn collect(&mut self) {
-        self.voices.take_in();
         self.recordings.take_in();
     }
 }
