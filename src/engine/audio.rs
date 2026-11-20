@@ -46,3 +46,62 @@ impl Audio {
         Self { state }
     }
 }
+
+pub(crate) mod realtime {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+
+    use rtrb::Consumer;
+
+    use super::AudioState;
+
+    #[derive(Debug)]
+    pub(crate) struct Audio {
+        state: Arc<AudioState>,
+    }
+
+    impl Audio {
+        fn load(state: Arc<AudioState>) -> Self {
+            Self { state }
+        }
+
+        /// Its handle unloaded it or is gone.
+        fn unloaded(&self) -> bool {
+            self.state.unload.load(Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct LoadedAudio {
+        /// Never past its capacity, so loading one never allocates.
+        audio: Vec<Audio>,
+        /// The only way audio arrives.
+        loaded: Consumer<Arc<AudioState>>,
+    }
+
+    impl LoadedAudio {
+        pub(crate) fn new(places: usize, loaded: Consumer<Arc<AudioState>>) -> Self {
+            Self {
+                audio: Vec::with_capacity(places),
+                loaded,
+            }
+        }
+
+        /// New audio arrives, then unloaded audio leaves, including any
+        /// unloaded before it arrived.
+        pub(crate) fn receive(&mut self) {
+            while let Ok(state) = self.loaded.pop() {
+                let room = self.audio.len() < self.audio.capacity();
+                debug_assert!(room, "one message per place");
+                self.audio.push(Audio::load(state));
+            }
+            // Never the last clone of a state: the control side's pool keeps
+            // one, so no samples are freed here.
+            self.audio.retain(|audio| !audio.unloaded());
+        }
+
+        pub(crate) fn iter(&self) -> impl Iterator<Item = &Audio> {
+            self.audio.iter()
+        }
+    }
+}
