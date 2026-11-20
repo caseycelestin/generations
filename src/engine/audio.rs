@@ -36,6 +36,12 @@ pub(crate) struct VoiceSlot {
 }
 
 impl VoiceSlot {
+    /// The control side's: asks for voice `number` to start at the
+    /// renderer's next block, replacing any request not yet taken.
+    pub(crate) fn request(&self, number: u32) {
+        self.pending.store(number, Ordering::Release);
+    }
+
     /// The renderer's: the number of the voice waiting to start, if any.
     pub(crate) fn take_pending(&self) -> Option<u32> {
         // Read first, so a slot with nothing waiting is never written.
@@ -78,11 +84,22 @@ impl LoadError {
 
 pub struct Audio<const VOICES: usize> {
     state: Arc<AudioState<VOICES>>,
+    /// Voices asked for so far; the next one's number is this plus one, so
+    /// none is 0, and its slot is this modulo `VOICES`.
+    played: u32,
 }
 
 impl<const VOICES: usize> Audio<VOICES> {
     pub(crate) fn load(state: Arc<AudioState<VOICES>>) -> Self {
-        Self { state }
+        Self { state, played: 0 }
+    }
+
+    /// Heard from the renderer's next block, from the top. Slots are used in
+    /// turn, cutting whatever the next one is playing.
+    pub fn play(&mut self) {
+        let slot = &self.state.voices[self.played as usize % VOICES];
+        self.played += 1;
+        slot.request(self.played);
     }
 
     /// The same as dropping it.
