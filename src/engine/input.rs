@@ -3,9 +3,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
-
-use crate::engine::transfer::{self, ControlEnd};
 
 #[derive(Debug, Default)]
 pub(crate) struct InputState {
@@ -40,40 +39,14 @@ pub enum InputError {
     RendererGone,
 }
 
-impl From<transfer::StartError<InputData>> for InputError {
-    fn from(error: transfer::StartError<InputData>) -> Self {
-        match error {
-            transfer::StartError::Full(_) => Self::Full,
-            transfer::StartError::Disconnected(_) => Self::RendererGone,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Input {
     state: Arc<InputState>,
 }
 
 impl Input {
-    pub(crate) fn open(
-        transfers: &mut ControlEnd<InputData>,
-        channels: InputChannels,
-        capture_channels: usize,
-    ) -> Result<Self, InputError> {
-        let highest = match channels {
-            InputChannels::Mono(channel) => channel,
-            InputChannels::Stereo(left, right) => left.max(right),
-        };
-        if highest >= capture_channels {
-            return Err(InputError::NoSuchChannel);
-        }
-        let state = Arc::new(InputState::default());
-        let data = InputData {
-            channels,
-            state: Arc::clone(&state),
-        };
-        transfers.try_start(data)?;
-        Ok(Self { state })
+    pub(crate) fn open(state: Arc<InputState>) -> Self {
+        Self { state }
     }
 
     /// What a tap on it holds.
@@ -104,11 +77,11 @@ impl Drop for Input {
 pub(crate) fn channel(
     inputs: usize,
     capture_channels: usize,
-) -> (ControlEnd<InputData>, realtime::Inputs) {
-    let (control, realtime) = transfer::channel(inputs);
+) -> (Producer<InputData>, realtime::Inputs) {
+    let (producer, consumer) = RingBuffer::new(inputs);
     (
-        control,
-        realtime::Inputs::new(inputs, capture_channels, realtime),
+        producer,
+        realtime::Inputs::new(inputs, capture_channels, consumer),
     )
 }
 
@@ -118,20 +91,21 @@ pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
+    use rtrb::Consumer;
+
     use super::{InputChannels, InputData, InputState};
     use crate::config::Pcm;
     use crate::engine::renderer::{Frame, Renderer};
-    use crate::engine::transfer::{self, Completion};
 
     #[derive(Debug)]
     pub(crate) struct Input {
-        data: Completion<InputData>,
+        data: InputData,
         /// Samples per capture frame.
         capture_channels: usize,
     }
 
     impl Input {
-        fn open(data: Completion<InputData>, capture_channels: usize) -> Self {
+        fn open(data: InputData, capture_channels: usize) -> Self {
             Self {
                 data,
                 capture_channels,
@@ -163,11 +137,6 @@ pub(crate) mod realtime {
         fn stopped(&self) -> bool {
             self.data.state.stop.load(Ordering::Relaxed)
         }
-
-        /// The one way an input leaves.
-        fn end(self, transfers: &mut transfer::RealtimeEnd<InputData>) {
-            transfers.complete(self.data);
-        }
     }
 
     #[derive(Debug)]
@@ -175,34 +144,34 @@ pub(crate) mod realtime {
         /// Never past its capacity, so opening one never allocates.
         open: Vec<Input>,
         capture_channels: usize,
-        /// The only way inputs arrive or leave.
-        transfers: transfer::RealtimeEnd<InputData>,
+        /// The only way inputs arrive.
+        opened: Consumer<InputData>,
     }
 
     impl Inputs {
         pub(crate) fn new(
             places: usize,
             capture_channels: usize,
-            transfers: transfer::RealtimeEnd<InputData>,
+            opened: Consumer<InputData>,
         ) -> Self {
             Self {
                 open: Vec::with_capacity(places),
                 capture_channels,
-                transfers,
+                opened,
             }
         }
 
         /// New inputs open, then stopped ones end, including any stopped before
         /// they arrived.
         pub(crate) fn receive(&mut self) {
-            while let Some(data) = self.transfers.try_recv() {
+            while let Ok(data) = self.opened.pop() {
                 let room = self.open.len() < self.open.capacity();
-                debug_assert!(room, "one transfer per place");
+                debug_assert!(room, "one message per place");
                 self.open.push(Input::open(data, self.capture_channels));
             }
-            for input in self.open.extract_if(.., |input| input.stopped()) {
-                input.end(&mut self.transfers);
-            }
+            // Never the last clone of a state: the control side's pool keeps
+            // one, so nothing is freed here.
+            self.open.retain(|input| !input.stopped());
         }
 
         pub(crate) fn iter(&self) -> impl Iterator<Item = &Input> {

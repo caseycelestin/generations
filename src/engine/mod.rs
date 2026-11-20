@@ -13,6 +13,7 @@
 mod control;
 mod input;
 mod math;
+mod pool;
 mod recording;
 mod renderer;
 mod transfer;
@@ -50,6 +51,7 @@ pub fn create(
         Control::new(
             voices_control,
             inputs_control,
+            pool::Pool::new(inputs),
             recordings_control,
             capture_channels,
         ),

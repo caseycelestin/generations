@@ -1,5 +1,10 @@
+use std::sync::Arc;
+
+use rtrb::Producer;
+
 use crate::audio::Audio;
-use crate::engine::input::{Input, InputChannels, InputData, InputError};
+use crate::engine::input::{Input, InputChannels, InputData, InputError, InputState};
+use crate::engine::pool::Pool;
 use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
 use crate::engine::transfer;
 use crate::engine::voice::{Voice, VoiceData, VoiceError};
@@ -9,7 +14,8 @@ use crate::engine::voice::{Voice, VoiceData, VoiceError};
 #[derive(Debug)]
 pub struct Control {
     voices: transfer::ControlEnd<VoiceData>,
-    inputs: transfer::ControlEnd<InputData>,
+    inputs: Producer<InputData>,
+    input_places: Pool<InputState>,
     recordings: transfer::ControlEnd<RecordingData>,
     /// The capture device's, or zero without one.
     capture_channels: usize,
@@ -18,13 +24,15 @@ pub struct Control {
 impl Control {
     pub(crate) fn new(
         voices: transfer::ControlEnd<VoiceData>,
-        inputs: transfer::ControlEnd<InputData>,
+        inputs: Producer<InputData>,
+        input_places: Pool<InputState>,
         recordings: transfer::ControlEnd<RecordingData>,
         capture_channels: usize,
     ) -> Self {
         Self {
             voices,
             inputs,
+            input_places,
             recordings,
             capture_channels,
         }
@@ -96,7 +104,26 @@ impl Control {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn open_input(&mut self, channels: InputChannels) -> Result<Input, InputError> {
-        Input::open(&mut self.inputs, channels, self.capture_channels)
+        let highest = match channels {
+            InputChannels::Mono(channel) => channel,
+            InputChannels::Stereo(left, right) => left.max(right),
+        };
+        if highest >= self.capture_channels {
+            return Err(InputError::NoSuchChannel);
+        }
+        if self.inputs.is_abandoned() {
+            return Err(InputError::RendererGone);
+        }
+        let state = self.input_places.take().ok_or(InputError::Full)?;
+        let data = InputData {
+            channels,
+            state: Arc::clone(&state),
+        };
+        // Each message holds a place, so the ring never has more than places.
+        self.inputs
+            .push(data)
+            .expect("the ring holds one message per place");
+        Ok(Input::open(state))
     }
 
     /// Frees the audio of voices that have ended and of recordings whose
@@ -105,7 +132,6 @@ impl Control {
     /// the memory.
     pub fn collect(&mut self) {
         self.voices.take_in();
-        self.inputs.take_in();
         self.recordings.take_in();
     }
 }
