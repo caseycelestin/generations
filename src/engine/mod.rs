@@ -20,6 +20,7 @@ mod renderer;
 mod transfer;
 mod voice;
 
+pub use audio::{Audio, LoadError};
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
 pub use recording::{RecordError, Recording, Tap, TryTakeError};
