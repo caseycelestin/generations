@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::new();
     let device = Device::default_duplex()?;
     // Two voices at once, and room for one play on its way; no inputs.
-    let (mut control, mut renderer) = engine::create(1, 2, device.capture_channels(), 0);
+    let (mut control, mut renderer) = engine::create(1, 2, device.capture_channels(), 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Four seconds of each, at a third of full scale.

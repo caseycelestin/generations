@@ -16,7 +16,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // No voices are played; one input.
-    let (mut control, mut renderer) = engine::create(1, 1, device.capture_channels(), 1);
+    let (mut control, mut renderer) = engine::create(1, 1, device.capture_channels(), 1, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     let mut input = control.open_input(InputChannels::Mono(0))?;

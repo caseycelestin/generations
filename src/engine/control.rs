@@ -49,7 +49,7 @@ impl Control {
     /// ```no_run
     /// use generations::{AudioMemory, ChannelLayout, engine};
     ///
-    /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0);
+    /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0, 0);
     /// let audio = AudioMemory::new().alloc(ChannelLayout::Mono, 48_000)?;
     /// let voice = control.play(&audio)?;
     ///
@@ -98,7 +98,7 @@ impl Control {
     /// use generations::engine::{self, Tap};
     /// use generations::{AudioMemory, ChannelLayout};
     ///
-    /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0);
+    /// let (mut control, mut renderer) = engine::create(64, 16, 0, 0, 0);
     /// // Room for a second of the main out.
     /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
     /// let mut recording = control.record(take, Tap::MainOut)?;
@@ -123,7 +123,7 @@ impl Control {
     /// use generations::engine::{self, InputChannels};
     ///
     /// // 16 voices, room for 64 plays, and a mono device with one input.
-    /// let (mut control, mut renderer) = engine::create(64, 16, 1, 1);
+    /// let (mut control, mut renderer) = engine::create(64, 16, 1, 1, 0);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     /// // Heard through the main out until stopped.
     /// input.set_monitoring(true);

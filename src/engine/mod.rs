@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn a_played_voice_is_heard_then_gives_its_audio_back() {
-        let (mut control, mut renderer) = create(4, 2, 0, 0);
+        let (mut control, mut renderer) = create(4, 2, 0, 0, 0);
         let audio = audio(&[0.5; 2]);
         let _voice = control.play(&audio).unwrap();
 
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn a_stopped_voice_falls_silent_and_gives_its_audio_back() {
-        let (mut control, mut renderer) = create(4, 2, 0, 0);
+        let (mut control, mut renderer) = create(4, 2, 0, 0, 0);
         let audio = audio(&[0.5; 64]);
         let voice = control.play(&audio).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn collect_frees_the_audio_of_a_dropped_voice() {
-        let (mut control, mut renderer) = create(4, 2, 0, 0);
+        let (mut control, mut renderer) = create(4, 2, 0, 0, 0);
         let audio = audio(&[0.5; 2]);
         let voice = control.play(&audio).unwrap();
         drop(voice);
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn with_no_queue_a_play_is_refused_while_every_voice_is_held() {
-        let (mut control, _renderer) = create(0, 1, 0, 0);
+        let (mut control, _renderer) = create(0, 1, 0, 0, 0);
         let audio = audio(&[0.5; 2]);
         let _voice = control.play(&audio).unwrap();
         assert!(matches!(control.play(&audio), Err(VoiceError::Full)));
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn a_recording_runs_until_stopped() {
-        let (mut control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0, 0);
         let mut recording = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
         assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn record_refuses_mono_audio_and_hands_it_back() {
-        let (mut control, _renderer) = create(4, 1, 0, 0);
+        let (mut control, _renderer) = create(4, 1, 0, 0, 0);
         let mono = AudioMemory::new().alloc(ChannelLayout::Mono, 4).unwrap();
         let error = control.record(mono, Tap::MainOut).unwrap_err();
         assert!(matches!(error, RecordError::NotStereo(_)));
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn record_refuses_audio_a_voice_holds() {
-        let (mut control, _renderer) = create(4, 1, 0, 0);
+        let (mut control, _renderer) = create(4, 1, 0, 0, 0);
         let audio = room(4);
         let _voice = control.play(&audio).unwrap();
         assert!(matches!(
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn record_refuses_while_another_recording_holds_the_recorder() {
-        let (mut control, _renderer) = create(4, 1, 0, 0);
+        let (mut control, _renderer) = create(4, 1, 0, 0, 0);
         let _first = control.record(room(64), Tap::MainOut).unwrap();
         let error = control.record(room(8), Tap::MainOut).unwrap_err();
         assert!(matches!(error, RecordError::Full(_)));
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn dropping_a_recording_frees_the_recorder() {
-        let (mut control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0, 0);
         let first = control.record(room(64), Tap::MainOut).unwrap();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn try_take_hands_back_what_was_heard() {
-        let (mut control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
         let mut recording = control.record(room(64), Tap::MainOut).unwrap();
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn dropping_the_renderer_hands_back_what_was_heard() {
-        let (mut control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0, 0);
         let heard = audio(&[0.25; 64]);
         let _voice = control.play(&heard).unwrap();
         let mut recording = control.record(room(64), Tap::MainOut).unwrap();
@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn dropping_the_renderer_hands_back_a_recording_it_never_started() {
-        let (mut control, renderer) = create(4, 1, 0, 0);
+        let (mut control, renderer) = create(4, 1, 0, 0, 0);
         let mut recording = control.record(room(64), Tap::MainOut).unwrap();
 
         drop(renderer);
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn try_take_fails_until_the_recording_ends_and_hands_over_once() {
-        let (mut control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0, 0);
         let mut recording = control.record(room(64), Tap::MainOut).unwrap();
         assert!(matches!(recording.try_take(), Err(TryTakeError::Recording)));
         renderer.render(&[], &mut [0.0; 4 * 2]);
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn a_recording_starts_from_empty() {
-        let (mut control, mut renderer) = create(4, 1, 0, 0);
+        let (mut control, mut renderer) = create(4, 1, 0, 0, 0);
         let mut used = room(4);
         used.extend([0.9; 4 * 2]);
         let mut recording = control.record(used, Tap::MainOut).unwrap();
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn an_open_is_refused_while_every_input_is_open() {
-        let (mut control, _renderer) = create(4, 1, 1, 1);
+        let (mut control, _renderer) = create(4, 1, 1, 1, 0);
         let _open = control.open_input(InputChannels::Mono(0)).unwrap();
         assert!(matches!(
             control.open_input(InputChannels::Mono(0)),
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn without_capture_channels_every_open_is_refused() {
-        let (mut control, _renderer) = create(4, 1, 0, 1);
+        let (mut control, _renderer) = create(4, 1, 0, 1, 0);
         assert!(matches!(
             control.open_input(InputChannels::Mono(0)),
             Err(InputError::NoSuchChannel)
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn a_channel_past_the_device_is_refused() {
-        let (mut control, _renderer) = create(4, 1, 2, 2);
+        let (mut control, _renderer) = create(4, 1, 2, 2, 0);
         assert!(matches!(
             control.open_input(InputChannels::Mono(2)),
             Err(InputError::NoSuchChannel)
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn inputs_switch_from_two_stereo_to_four_mono_on_one_device() {
-        let (mut control, mut renderer) = create(4, 1, 4, 4);
+        let (mut control, mut renderer) = create(4, 1, 4, 4, 0);
         let stereo = [
             control.open_input(InputChannels::Stereo(0, 1)).unwrap(),
             control.open_input(InputChannels::Stereo(2, 3)).unwrap(),
@@ -328,7 +328,7 @@ mod tests {
 
     #[test]
     fn a_dropped_input_gives_its_place_back() {
-        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let (mut control, mut renderer) = create(4, 1, 1, 1, 0);
         let open = control.open_input(InputChannels::Mono(0)).unwrap();
         drop(open);
         renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn an_input_is_heard_only_once_monitored() {
-        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let (mut control, mut renderer) = create(4, 1, 1, 1, 0);
         let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
         let mut out = [0.0; 4 * 2];
         renderer.render(&[0.5; 4], &mut out);
@@ -351,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_take_on_an_input_records_it_unmonitored() {
-        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let (mut control, mut renderer) = create(4, 1, 1, 1, 0);
         let input = control.open_input(InputChannels::Mono(0)).unwrap();
         let mut recording = control.record(room(64), Tap::Input(&input)).unwrap();
         let mut out = [0.0; 4 * 2];
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn a_take_ends_with_its_input() {
-        let (mut control, mut renderer) = create(4, 1, 1, 1);
+        let (mut control, mut renderer) = create(4, 1, 1, 1, 0);
         let input = control.open_input(InputChannels::Mono(0)).unwrap();
         let mut recording = control.record(room(64), Tap::Input(&input)).unwrap();
         renderer.render(&[0.5; 4], &mut [0.0; 4 * 2]);

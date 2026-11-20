@@ -125,7 +125,7 @@ mod tests {
     use crate::engine::recording::{RecordingData, RecordingState, TapData};
     use crate::engine::transfer::{self, Transfer, TryWaitError};
     use crate::engine::voice::{VoiceData, VoiceState};
-    use crate::engine::{input, recording, voice};
+    use crate::engine::{audio, input, recording, voice};
     use crate::layout::ChannelLayout;
     use crate::testing::buffer;
 
@@ -141,11 +141,18 @@ mod tests {
         let (voices_control, voices_realtime) = voice::channel(voices, 16);
         let (recordings_control, recordings_realtime) = recording::channel();
         let (_, inputs_realtime) = input::channel(0, 0);
+        let (_, audio_realtime) = audio::channel(0);
         let ends = Ends {
             voices: voices_control,
             recordings: recordings_control,
         };
-        let renderer = Renderer::new(voices_realtime, inputs_realtime, recordings_realtime, 0);
+        let renderer = Renderer::new(
+            voices_realtime,
+            inputs_realtime,
+            audio_realtime,
+            recordings_realtime,
+            0,
+        );
         (ends, renderer)
     }
 
