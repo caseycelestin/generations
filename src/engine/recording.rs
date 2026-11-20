@@ -104,6 +104,7 @@ impl From<transfer::TryWaitError> for TryTakeError {
 
 /// Holds the recorder until the recording ends.
 #[derive(Debug)]
+#[must_use = "dropping it stops the recording"]
 pub struct Recording {
     transfer: transfer::Transfer<RecordingData>,
     state: Arc<RecordingState>,

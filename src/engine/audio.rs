@@ -97,6 +97,7 @@ impl LoadError {
     }
 }
 
+#[must_use = "dropping it unloads the audio"]
 pub struct Audio<const VOICES: usize> {
     state: Arc<AudioState<VOICES>>,
     /// Voices asked for so far; the next one's number is this plus one, so
@@ -111,10 +112,16 @@ impl<const VOICES: usize> Audio<VOICES> {
 
     /// Heard from the renderer's next block, from the top. Slots are used in
     /// turn, cutting whatever the next one is playing.
-    pub fn play(&mut self) {
-        let slot = &self.state.voices[self.played as usize % VOICES];
+    pub fn play(&mut self) -> Voice<VOICES> {
+        let slot = self.played as usize % VOICES;
         self.played += 1;
-        slot.send_voice(self.played);
+        self.state.voices[slot].send_voice(self.played);
+        Voice {
+            state: Arc::clone(&self.state),
+            slot,
+            number: self.played,
+            detached: false,
+        }
     }
 
     /// The same as dropping it.
@@ -125,6 +132,35 @@ impl<const VOICES: usize> Audio<VOICES> {
 impl<const VOICES: usize> Drop for Audio<VOICES> {
     fn drop(&mut self) {
         self.state.unload.store(true, Ordering::Relaxed);
+    }
+}
+
+/// One voice played from a loaded audio.
+#[must_use = "dropping it stops the voice"]
+pub struct Voice<const VOICES: usize> {
+    state: Arc<AudioState<VOICES>>,
+    /// Which of the audio's voice slots it plays in.
+    slot: usize,
+    /// Which voice of that slot it is.
+    number: u32,
+    /// Let go without stopping; the voice plays out.
+    detached: bool,
+}
+
+impl<const VOICES: usize> Voice<VOICES> {
+    /// Gives up the handle without stopping the voice, so it plays to its
+    /// end; nothing can stop it after.
+    pub fn detach(mut self) {
+        self.detached = true;
+    }
+}
+
+/// A voice plays while its handle is held, unless detached.
+impl<const VOICES: usize> Drop for Voice<VOICES> {
+    fn drop(&mut self) {
+        if !self.detached {
+            self.state.voices[self.slot].request_stop(self.number);
+        }
     }
 }
 

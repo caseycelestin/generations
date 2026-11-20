@@ -31,7 +31,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut audio = control.load(pluck, ChannelLayout::Mono)?;
     println!("a pluck, in the middle");
-    audio.play();
+    // Detached, so it plays to its end without its handle.
+    audio.play().detach();
     sleep(Duration::from_millis(700));
 
     // The audio thread queues its complaints; this is where they are read.

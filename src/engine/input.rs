@@ -40,6 +40,7 @@ pub enum InputError {
 }
 
 #[derive(Debug)]
+#[must_use = "dropping it stops the input"]
 pub struct Input {
     state: Arc<InputState>,
 }
