@@ -88,8 +88,8 @@ might be tried again.
 
 - **All audio-length memory comes from one `AudioMemory`,** made once per
   machine and lent by the caller; a buffer repays it on drop. What does
-  not scale with audio (rings, the voice pool, scratch) is sized once by
-  the caller and not counted.
+  not scale with audio (rings, the voice pool, input states, scratch) is
+  sized once by the caller and not counted.
 - **The render side never allocates.** What it needs is allocated on the
   control side and handed over: live effects will be too.
 - **Memory the audio thread writes first is prefaulted** on the control
@@ -107,14 +107,23 @@ might be tried again.
 - **The render side never waits:** no disk, lock, allocation or error
   path, and frame counts rather than a clock, so the same `render` runs
   offline.
-- **A transfer goes over and comes home whole,** so everything it owns is
-  freed on the control side. What changes while it runs (stop,
-  monitoring) is lock-free state shared beside it, not further messages.
-  Each feature has its own channel, sized by how many of it can be in
-  flight.
+- **A voice or a take goes over as a transfer and comes home whole,** so
+  everything it owns is freed on the control side. What changes while it
+  runs (stop, monitoring) is lock-free state shared beside it, not further
+  messages. Each feature has its own channel, sized by how many of it can
+  be in flight.
+- **Inputs are opened over a one-way ring, from states made at `create`.**
+  `Control` keeps a clone of every input state in a pool, so the
+  renderer's is never the last and a stopped input is simply dropped; a
+  place is free again once the pool's clone is the only one left. A
+  transfer brought each input home only to free it.
+- **Dropping `Control` leaves the renderer as it was:** inputs still held
+  keep sounding. So the renderer's drop of a state is never the last,
+  `Control`'s drop is to leak the pool's clones while the renderer exists;
+  handing the pool over on one more ring would avoid the leak. Not built.
 - **A verb lives on the thing it acts on.** Handles (`Voice`, `Input`,
-  `Recording`) carry their own verbs and errors, check before they start,
-  and never hold a `Control`.
+  `Recording`) carry their own verbs and errors and never hold a
+  `Control`; every check comes before anything is sent.
 - **Voices are a fixed pool** sized by the caller; a play with every voice
   taken cuts the oldest, because a press must sound.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
