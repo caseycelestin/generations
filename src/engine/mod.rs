@@ -28,8 +28,6 @@ pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;
 
-use rtrb::RingBuffer;
-
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
 /// `voice_queue` is how many plays can be on their way beyond them: the
@@ -53,7 +51,7 @@ pub fn create(
     let (recordings_control, recordings_realtime) = recording::channel();
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
     // Dropped until the renderer holds loaded audio.
-    let (audio_control, _) = RingBuffer::new(audio);
+    let (audio_control, _) = audio::channel(audio);
     (
         Control::new(
             voices_control,

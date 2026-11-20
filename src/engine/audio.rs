@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::layout::ChannelLayout;
@@ -55,6 +56,12 @@ impl Drop for Audio {
     fn drop(&mut self) {
         self.state.unload.store(true, Ordering::Relaxed);
     }
+}
+
+/// `places` is how many can be loaded at once.
+pub(crate) fn channel(places: usize) -> (Producer<Arc<AudioState>>, realtime::LoadedAudio) {
+    let (producer, consumer) = RingBuffer::new(places);
+    (producer, realtime::LoadedAudio::new(places, consumer))
 }
 
 pub(crate) mod realtime {
