@@ -10,6 +10,7 @@
 //! renderer and comes back whole once it ends, so it is freed on the control
 //! side, and its state is shared by both sides until then.
 
+mod audio;
 mod control;
 mod input;
 mod math;
@@ -27,13 +28,16 @@ pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;
 
+use rtrb::RingBuffer;
+
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `voices` is how many play at once, sized by the caller for its hardware.
 /// `voice_queue` is how many plays can be on their way beyond them: the
 /// room a new play has to take the oldest voice's place. Zero refuses a
 /// play while every voice is held. `capture_channels` is the width of the
 /// capture `render` is handed each period, zero without an input device;
-/// `inputs` is how many can be open at once.
+/// `inputs` is how many can be open at once; `audio`, how many can be
+/// loaded at once.
 ///
 /// # Panics
 /// If `voices` is zero.
@@ -42,16 +46,21 @@ pub fn create(
     voices: usize,
     capture_channels: usize,
     inputs: usize,
+    audio: usize,
 ) -> (Control, Renderer) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) = voice::channel(voices, voice_queue);
     let (recordings_control, recordings_realtime) = recording::channel();
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
+    // Dropped until the renderer holds loaded audio.
+    let (audio_control, _) = RingBuffer::new(audio);
     (
         Control::new(
             voices_control,
             inputs_control,
             pool::Pool::new(inputs),
+            audio_control,
+            pool::Pool::new(audio),
             recordings_control,
             capture_channels,
         ),

@@ -3,11 +3,13 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use crate::audio::Audio;
+use crate::engine::audio::{self, AudioBuffer, AudioState, LoadError};
 use crate::engine::input::{Input, InputChannels, InputData, InputError, InputState};
 use crate::engine::pool::Pool;
 use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
 use crate::engine::transfer;
 use crate::engine::voice::{Voice, VoiceData, VoiceError};
+use crate::layout::ChannelLayout;
 
 /// One per renderer; an app shares it its own way. Everything done here or
 /// on a handle takes effect at the renderer's next period.
@@ -16,6 +18,8 @@ pub struct Control {
     voices: transfer::ControlEnd<VoiceData>,
     inputs: Producer<InputData>,
     input_places: Pool<InputState>,
+    audio: Producer<Arc<AudioState>>,
+    audio_places: Pool<AudioState>,
     recordings: transfer::ControlEnd<RecordingData>,
     /// The capture device's, or zero without one.
     capture_channels: usize,
@@ -26,6 +30,8 @@ impl Control {
         voices: transfer::ControlEnd<VoiceData>,
         inputs: Producer<InputData>,
         input_places: Pool<InputState>,
+        audio: Producer<Arc<AudioState>>,
+        audio_places: Pool<AudioState>,
         recordings: transfer::ControlEnd<RecordingData>,
         capture_channels: usize,
     ) -> Self {
@@ -33,6 +39,8 @@ impl Control {
             voices,
             inputs,
             input_places,
+            audio,
+            audio_places,
             recordings,
             capture_channels,
         }
@@ -54,6 +62,32 @@ impl Control {
     /// ```
     pub fn play(&mut self, audio: &Audio) -> Result<Voice, VoiceError> {
         Voice::play(&mut self.voices, audio)
+    }
+
+    pub fn load(
+        &mut self,
+        samples: Vec<f32>,
+        layout: ChannelLayout,
+    ) -> Result<audio::Audio, LoadError> {
+        if samples.len() % layout.count() != 0 {
+            return Err(LoadError::PartFrame(samples));
+        }
+        let value = AudioState {
+            buffer: Some(AudioBuffer { samples, layout }),
+            ..AudioState::default()
+        };
+        let state = match self.audio_places.take(value) {
+            Ok(state) => state,
+            Err(value) => {
+                let buffer = value.buffer.expect("the buffer was just put in");
+                return Err(LoadError::Full(buffer.samples));
+            }
+        };
+        // Each message holds a place, so the ring never has more than places.
+        self.audio
+            .push(Arc::clone(&state))
+            .expect("the ring holds one message per place");
+        Ok(audio::Audio::load(state))
     }
 
     /// Records what `tap` gives into `audio`, from empty. By value: the
@@ -114,7 +148,10 @@ impl Control {
         if self.inputs.is_abandoned() {
             return Err(InputError::RendererGone);
         }
-        let state = self.input_places.take().ok_or(InputError::Full)?;
+        let state = self
+            .input_places
+            .take(InputState::default())
+            .map_err(|_| InputError::Full)?;
         let data = InputData {
             channels,
             state: Arc::clone(&state),
