@@ -83,7 +83,7 @@ pub(crate) mod realtime {
     use std::sync::atomic::Ordering;
 
     use super::VoiceData;
-    use crate::engine::renderer::{Frame, Renderer};
+    use crate::engine::renderer::{Frame, OUTPUT_CHANNELS};
     use crate::engine::transfer::{Completion, RealtimeEnd};
     use crate::layout::ChannelLayout;
 
@@ -117,7 +117,7 @@ pub(crate) mod realtime {
                     sound.copy_from_slice(pairs);
                 }
             }
-            silence.fill([0.0; Renderer::OUTPUT_CHANNELS]);
+            silence.fill([0.0; OUTPUT_CHANNELS]);
             self.position = end;
         }
 

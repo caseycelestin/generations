@@ -6,12 +6,30 @@ use thiserror::Error;
 
 use crate::layout::ChannelLayout;
 
-#[derive(Debug, Default)]
-pub(crate) struct AudioState {
+/// `VOICES` is how many voices each loaded audio has; fixed in the type, so
+/// replacing a place's state never allocates.
+#[derive(Debug)]
+pub(crate) struct AudioState<const VOICES: usize> {
     /// `None` while its place is free.
     pub(crate) buffer: Option<AudioBuffer>,
     pub(crate) unload: AtomicBool,
+    pub(crate) voices: [VoiceSlot; VOICES],
 }
+
+/// By hand: std's `Default` for arrays stops at 32.
+impl<const VOICES: usize> Default for AudioState<VOICES> {
+    fn default() -> Self {
+        Self {
+            buffer: None,
+            unload: AtomicBool::default(),
+            voices: std::array::from_fn(|_| VoiceSlot::default()),
+        }
+    }
+}
+
+/// One voice of a loaded audio, driven by atomics alone.
+#[derive(Debug, Default)]
+pub(crate) struct VoiceSlot {}
 
 /// Lives in the state, so the control side's pool holds it until the
 /// place is reused and the renderer never frees it.
@@ -40,12 +58,12 @@ impl LoadError {
     }
 }
 
-pub struct Audio {
-    state: Arc<AudioState>,
+pub struct Audio<const VOICES: usize> {
+    state: Arc<AudioState<VOICES>>,
 }
 
-impl Audio {
-    pub(crate) fn load(state: Arc<AudioState>) -> Self {
+impl<const VOICES: usize> Audio<VOICES> {
+    pub(crate) fn load(state: Arc<AudioState<VOICES>>) -> Self {
         Self { state }
     }
 
@@ -54,14 +72,19 @@ impl Audio {
 }
 
 /// Loaded audio stays loaded while its handle is held.
-impl Drop for Audio {
+impl<const VOICES: usize> Drop for Audio<VOICES> {
     fn drop(&mut self) {
         self.state.unload.store(true, Ordering::Relaxed);
     }
 }
 
 /// `places` is how many can be loaded at once.
-pub(crate) fn channel(places: usize) -> (Producer<Arc<AudioState>>, realtime::LoadedAudio) {
+pub(crate) fn channel<const VOICES: usize>(
+    places: usize,
+) -> (
+    Producer<Arc<AudioState<VOICES>>>,
+    realtime::LoadedAudio<VOICES>,
+) {
     let (producer, consumer) = RingBuffer::new(places);
     (producer, realtime::LoadedAudio::new(places, consumer))
 }
@@ -75,12 +98,12 @@ pub(crate) mod realtime {
     use super::AudioState;
 
     #[derive(Debug)]
-    pub(crate) struct Audio {
-        state: Arc<AudioState>,
+    pub(crate) struct Audio<const VOICES: usize> {
+        state: Arc<AudioState<VOICES>>,
     }
 
-    impl Audio {
-        fn load(state: Arc<AudioState>) -> Self {
+    impl<const VOICES: usize> Audio<VOICES> {
+        fn load(state: Arc<AudioState<VOICES>>) -> Self {
             Self { state }
         }
 
@@ -91,15 +114,15 @@ pub(crate) mod realtime {
     }
 
     #[derive(Debug)]
-    pub(crate) struct LoadedAudio {
+    pub(crate) struct LoadedAudio<const VOICES: usize> {
         /// Never past its capacity, so loading one never allocates.
-        audio: Vec<Audio>,
+        audio: Vec<Audio<VOICES>>,
         /// The only way audio arrives.
-        loaded: Consumer<Arc<AudioState>>,
+        loaded: Consumer<Arc<AudioState<VOICES>>>,
     }
 
-    impl LoadedAudio {
-        pub(crate) fn new(places: usize, loaded: Consumer<Arc<AudioState>>) -> Self {
+    impl<const VOICES: usize> LoadedAudio<VOICES> {
+        pub(crate) fn new(places: usize, loaded: Consumer<Arc<AudioState<VOICES>>>) -> Self {
             Self {
                 audio: Vec::with_capacity(places),
                 loaded,
@@ -119,7 +142,7 @@ pub(crate) mod realtime {
             self.audio.retain(|audio| !audio.unloaded());
         }
 
-        pub(crate) fn iter(&self) -> impl Iterator<Item = &Audio> {
+        pub(crate) fn iter(&self) -> impl Iterator<Item = &Audio<VOICES>> {
             self.audio.iter()
         }
     }

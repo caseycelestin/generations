@@ -23,7 +23,7 @@ mod voice;
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
 pub use recording::{RecordError, Recording, Tap, TryTakeError};
-pub use renderer::Renderer;
+pub use renderer::{OUTPUT_CHANNELS, Renderer};
 pub use voice::{Voice, VoiceError};
 
 use std::num::NonZeroUsize;
@@ -35,17 +35,17 @@ use std::num::NonZeroUsize;
 /// play while every voice is held. `capture_channels` is the width of the
 /// capture `render` is handed each period, zero without an input device;
 /// `inputs` is how many can be open at once; `audio`, how many can be
-/// loaded at once.
+/// loaded at once, each with `VOICES` voices of its own.
 ///
 /// # Panics
 /// If `voices` is zero.
-pub fn create(
+pub fn create<const VOICES: usize>(
     voice_queue: usize,
     voices: usize,
     capture_channels: usize,
     inputs: usize,
     audio: usize,
-) -> (Control, Renderer) {
+) -> (Control<VOICES>, Renderer<VOICES>) {
     let voices = NonZeroUsize::new(voices).expect("voices must not be zero");
     let (voices_control, voices_realtime) = voice::channel(voices, voice_queue);
     let (recordings_control, recordings_realtime) = recording::channel();

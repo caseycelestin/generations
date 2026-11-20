@@ -8,7 +8,14 @@ use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::{Recorder, TapPoint};
 use crate::engine::voice::realtime::Voices;
 
-pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
+/// Always stereo.
+pub const OUTPUT_CHANNELS: usize = 2;
+
+/// A period of any length is mixed in blocks this long, so scratch never
+/// grows.
+const BLOCK_FRAMES: usize = 64;
+
+pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
 /// every handle from the same [`create`](crate::engine::create) report the
@@ -16,31 +23,24 @@ pub(crate) type Frame = [Pcm; Renderer::OUTPUT_CHANNELS];
 /// drops the callback that owns it, so to survive a stream restart the
 /// callback must hand it back when dropped.
 #[derive(Debug)]
-pub struct Renderer {
+pub struct Renderer<const VOICES: usize> {
     voices: Voices,
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
-    audio: LoadedAudio,
+    audio: LoadedAudio<VOICES>,
     recorder: Recorder,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
 
-impl Renderer {
-    /// Always stereo.
-    pub const OUTPUT_CHANNELS: usize = 2;
-
-    /// A period of any length is mixed in blocks this long, so scratch
-    /// never grows.
-    const BLOCK_FRAMES: usize = 64;
-
+impl<const VOICES: usize> Renderer<VOICES> {
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(
         voices: Voices,
         inputs: Inputs,
-        audio: LoadedAudio,
+        audio: LoadedAudio<VOICES>,
         recorder: Recorder,
         capture_channels: usize,
     ) -> Self {
@@ -50,7 +50,7 @@ impl Renderer {
             inputs,
             audio,
             recorder,
-            scratch: vec![[0.0; Self::OUTPUT_CHANNELS]; Self::BLOCK_FRAMES].into_boxed_slice(),
+            scratch: vec![[0.0; OUTPUT_CHANNELS]; BLOCK_FRAMES].into_boxed_slice(),
         }
     }
 
@@ -58,14 +58,10 @@ impl Renderer {
     /// playing voice and monitored input, summed and clipped. `capture` is
     /// the input device's frames for the same period, interleaved.
     pub fn render(&mut self, capture: &[Pcm], out: &mut [Pcm]) {
-        debug_assert_eq!(
-            out.len() % Self::OUTPUT_CHANNELS,
-            0,
-            "output is not whole frames"
-        );
+        debug_assert_eq!(out.len() % OUTPUT_CHANNELS, 0, "output is not whole frames");
         debug_assert_eq!(
             capture.len(),
-            (out.len() / Self::OUTPUT_CHANNELS) * self.capture_channels,
+            (out.len() / OUTPUT_CHANNELS) * self.capture_channels,
             "capture and output are not the same frames"
         );
         self.voices.receive();
@@ -73,7 +69,7 @@ impl Renderer {
         self.audio.receive();
         self.recorder.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
-            out_block.fill([0.0; Self::OUTPUT_CHANNELS]);
+            out_block.fill([0.0; OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
             for voice in self.voices.iter_mut() {
                 voice.render(scratch);
@@ -103,12 +99,12 @@ fn blocks<'a>(
     capture: &'a [Pcm],
     capture_channels: usize,
 ) -> impl Iterator<Item = (&'a mut [Frame], &'a [Pcm])> {
-    let (frames, _) = out.as_chunks_mut::<{ Renderer::OUTPUT_CHANNELS }>();
+    let (frames, _) = out.as_chunks_mut::<{ OUTPUT_CHANNELS }>();
     frames
-        .chunks_mut(Renderer::BLOCK_FRAMES)
+        .chunks_mut(BLOCK_FRAMES)
         .enumerate()
         .map(move |(index, out_block)| {
-            let start = index * Renderer::BLOCK_FRAMES * capture_channels;
+            let start = index * BLOCK_FRAMES * capture_channels;
             let end = start + out_block.len() * capture_channels;
             (out_block, &capture[start..end])
         })
@@ -216,7 +212,7 @@ mod tests {
 
     #[test]
     fn a_period_longer_than_a_block_plays_on_without_a_gap() {
-        let frames = Renderer::BLOCK_FRAMES * 2 + 10;
+        let frames = BLOCK_FRAMES * 2 + 10;
         let ramp: Vec<Pcm> = (0..frames).map(|i| i as Pcm / 1000.0).collect();
         let (mut ends, mut renderer) = renderer(1);
         let _voice = play(&mut ends, &ramp);
@@ -292,17 +288,17 @@ mod tests {
 
     #[test]
     fn blocks_cut_the_capture_at_the_same_frames_as_the_output() {
-        let frames = Renderer::BLOCK_FRAMES + 3;
+        let frames = BLOCK_FRAMES + 3;
         let mut out = vec![0.0; frames * 2];
         let capture: Vec<Pcm> = (0..frames * 3).map(|i| i as Pcm).collect();
         let cut: Vec<(usize, Vec<Pcm>)> = blocks(&mut out, &capture, 3)
             .map(|(out_block, capture_block)| (out_block.len(), capture_block.to_vec()))
             .collect();
-        let split = Renderer::BLOCK_FRAMES * 3;
+        let split = BLOCK_FRAMES * 3;
         assert_eq!(
             cut,
             [
-                (Renderer::BLOCK_FRAMES, capture[..split].to_vec()),
+                (BLOCK_FRAMES, capture[..split].to_vec()),
                 (3, capture[split..].to_vec()),
             ]
         );
@@ -310,10 +306,10 @@ mod tests {
 
     #[test]
     fn without_capture_channels_every_block_has_an_empty_capture() {
-        let mut out = vec![0.0; (Renderer::BLOCK_FRAMES + 3) * 2];
+        let mut out = vec![0.0; (BLOCK_FRAMES + 3) * 2];
         let cut: Vec<(usize, usize)> = blocks(&mut out, &[], 0)
             .map(|(out_block, capture_block)| (out_block.len(), capture_block.len()))
             .collect();
-        assert_eq!(cut, [(Renderer::BLOCK_FRAMES, 0), (3, 0)]);
+        assert_eq!(cut, [(BLOCK_FRAMES, 0), (3, 0)]);
     }
 }

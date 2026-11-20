@@ -14,24 +14,24 @@ use crate::layout::ChannelLayout;
 /// One per renderer; an app shares it its own way. Everything done here or
 /// on a handle takes effect at the renderer's next period.
 #[derive(Debug)]
-pub struct Control {
+pub struct Control<const VOICES: usize> {
     voices: transfer::ControlEnd<VoiceData>,
     inputs: Producer<InputData>,
     input_places: Pool<InputState>,
-    audio: Producer<Arc<AudioState>>,
-    audio_places: Pool<AudioState>,
+    audio: Producer<Arc<AudioState<VOICES>>>,
+    audio_places: Pool<AudioState<VOICES>>,
     recordings: transfer::ControlEnd<RecordingData>,
     /// The capture device's, or zero without one.
     capture_channels: usize,
 }
 
-impl Control {
+impl<const VOICES: usize> Control<VOICES> {
     pub(crate) fn new(
         voices: transfer::ControlEnd<VoiceData>,
         inputs: Producer<InputData>,
         input_places: Pool<InputState>,
-        audio: Producer<Arc<AudioState>>,
-        audio_places: Pool<AudioState>,
+        audio: Producer<Arc<AudioState<VOICES>>>,
+        audio_places: Pool<AudioState<VOICES>>,
         recordings: transfer::ControlEnd<RecordingData>,
         capture_channels: usize,
     ) -> Self {
@@ -68,7 +68,7 @@ impl Control {
         &mut self,
         samples: Vec<f32>,
         layout: ChannelLayout,
-    ) -> Result<audio::Audio, LoadError> {
+    ) -> Result<audio::Audio<VOICES>, LoadError> {
         if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
         }
