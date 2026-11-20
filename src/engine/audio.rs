@@ -32,23 +32,38 @@ impl<const VOICES: usize> Default for AudioState<VOICES> {
 pub(crate) struct VoiceSlot {
     /// The number of a voice waiting to start, or 0. The renderer takes it,
     /// leaving 0, so a request is seen once.
-    pub(crate) pending: AtomicU32,
+    pub(crate) incoming_voice: AtomicU32,
+    /// Raised to a stopped voice's number, never lowered, so an older
+    /// voice's handle cannot stop a newer one; the playing voice stops once
+    /// this reaches its number.
+    pub(crate) stop: AtomicU32,
 }
 
 impl VoiceSlot {
     /// The control side's: asks for voice `number` to start at the
     /// renderer's next block, replacing any request not yet taken.
-    pub(crate) fn request(&self, number: u32) {
-        self.pending.store(number, Ordering::Release);
+    pub(crate) fn send_voice(&self, number: u32) {
+        self.incoming_voice.store(number, Ordering::Release);
+    }
+
+    /// The control side's: asks for voice `number` to stop at the renderer's
+    /// next block, if it is still the one in this slot.
+    pub(crate) fn request_stop(&self, number: u32) {
+        self.stop.fetch_max(number, Ordering::Release);
+    }
+
+    /// The renderer's: voice `number` has been asked to stop.
+    pub(crate) fn stopped(&self, number: u32) -> bool {
+        self.stop.load(Ordering::Acquire) >= number
     }
 
     /// The renderer's: the number of the voice waiting to start, if any.
-    pub(crate) fn take_pending(&self) -> Option<u32> {
+    pub(crate) fn take_incoming_voice(&self) -> Option<u32> {
         // Read first, so a slot with nothing waiting is never written.
-        if self.pending.load(Ordering::Relaxed) == 0 {
+        if self.incoming_voice.load(Ordering::Relaxed) == 0 {
             return None;
         }
-        match self.pending.swap(0, Ordering::Acquire) {
+        match self.incoming_voice.swap(0, Ordering::Acquire) {
             0 => None,
             number => Some(number),
         }
@@ -99,7 +114,7 @@ impl<const VOICES: usize> Audio<VOICES> {
     pub fn play(&mut self) {
         let slot = &self.state.voices[self.played as usize % VOICES];
         self.played += 1;
-        slot.request(self.played);
+        slot.send_voice(self.played);
     }
 
     /// The same as dropping it.
@@ -200,7 +215,7 @@ pub(crate) mod realtime {
                 return;
             };
             for (voice, slot) in self.voices.iter_mut().zip(&self.state.voices) {
-                if slot.take_pending().is_some() {
+                if slot.take_incoming_voice().is_some() {
                     *voice = Some(Voice { playhead: 0 });
                 }
                 if let Some(playing) = voice {
