@@ -132,7 +132,7 @@ mod tests {
     }
 
     /// A renderer with `voices` places, and the control ends of its channels.
-    fn renderer(voices: usize) -> (Ends, Renderer) {
+    fn renderer(voices: usize) -> (Ends, Renderer<8>) {
         let voices = NonZeroUsize::new(voices).unwrap();
         let (voices_control, voices_realtime) = voice::channel(voices, 16);
         let (recordings_control, recordings_realtime) = recording::channel();

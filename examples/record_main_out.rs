@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::new();
     let device = Device::default_duplex()?;
     // Two voices, as the plucks overlap; no inputs.
-    let (mut control, mut renderer) = engine::create(1, 2, device.capture_channels(), 0, 0);
+    let (mut control, mut renderer) = engine::create::<8>(1, 2, device.capture_channels(), 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Half a second of each note, decaying from half scale.

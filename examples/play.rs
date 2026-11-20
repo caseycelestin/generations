@@ -17,7 +17,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // One voice, no inputs.
-    let (mut control, mut renderer) = engine::create(1, 1, device.capture_channels(), 0, 0);
+    let (mut control, mut renderer) = engine::create::<8>(1, 1, device.capture_channels(), 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Half a second of A440, decaying from a third of full scale.
