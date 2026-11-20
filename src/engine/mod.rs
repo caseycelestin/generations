@@ -32,13 +32,14 @@ pub use voice::Voice;
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `capture_channels` is the width of the capture `render` is handed each
 /// period, zero without an input device; `inputs` is how many can be open
-/// at once; `audio`, how many can be loaded at once, each with `VOICES`
+/// at once; `audio`, how many can be loaded at once, each with `voices`
 /// voices of its own.
-pub fn create<const VOICES: usize>(
+pub fn create(
     capture_channels: usize,
     inputs: usize,
     audio: usize,
-) -> (Control<VOICES>, Renderer<VOICES>) {
+    voices: usize,
+) -> (Control, Renderer) {
     let (recordings_control, recordings_realtime) = recording::channel();
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
     let (audio_control, audio_realtime) = audio::channel(audio);
@@ -47,7 +48,7 @@ pub fn create<const VOICES: usize>(
             inputs_control,
             pool::Pool::new(inputs, input::InputState::default),
             audio_control,
-            pool::Pool::new(audio, audio::AudioState::default),
+            pool::Pool::new(audio, || audio::AudioState::new(voices)),
             recordings_control,
             capture_channels,
         ),

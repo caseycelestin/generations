@@ -22,22 +22,22 @@ pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
 /// drops the callback that owns it, so to survive a stream restart the
 /// callback must hand it back when dropped.
 #[derive(Debug)]
-pub struct Renderer<const VOICES: usize> {
+pub struct Renderer {
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
-    audio: LoadedAudio<VOICES>,
+    audio: LoadedAudio,
     recorder: Recorder,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
 
-impl<const VOICES: usize> Renderer<VOICES> {
+impl Renderer {
     /// Allocates everything the renderer holds for its life, here, on the
     /// control side.
     pub(crate) fn new(
         inputs: Inputs,
-        audio: LoadedAudio<VOICES>,
+        audio: LoadedAudio,
         recorder: Recorder,
         capture_channels: usize,
     ) -> Self {

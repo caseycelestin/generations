@@ -22,6 +22,9 @@ pub(crate) struct VoiceSlot {
     /// The number of the voice the renderer is playing here, or 0. The
     /// renderer alone writes it.
     playing: AtomicU32,
+    /// The number the control side last sent here, or 0; only it reads or
+    /// writes this.
+    sent: AtomicU32,
     /// The playing voice's next frame, from the start of the buffer. The
     /// renderer alone writes it, so the control side can read where a voice
     /// is.
@@ -39,6 +42,7 @@ impl VoiceSlot {
     /// The control side's: asks for voice `number` to start at the
     /// renderer's next block, replacing any request not yet taken.
     pub(crate) fn send_voice(&self, number: u32) {
+        self.sent.store(number, Ordering::Relaxed);
         self.incoming_voice.store(number, Ordering::Release);
     }
 
@@ -74,10 +78,16 @@ impl VoiceSlot {
         self.done.store(number, Ordering::Release);
     }
 
-    /// The control side's: voice `number` has ended; when it is the last one
-    /// sent, the slot is free.
-    pub(crate) fn finished(&self, number: u32) -> bool {
-        self.done.load(Ordering::Acquire) == number
+    /// The control side's: the last voice sent here has ended, so the slot
+    /// can take another.
+    pub(crate) fn is_free(&self) -> bool {
+        self.done.load(Ordering::Acquire) == self.sent.load(Ordering::Relaxed)
+    }
+
+    /// The control side's: the number last sent here, or 0; numbers only
+    /// grow, so the smallest is the oldest voice.
+    pub(crate) fn last_sent(&self) -> u32 {
+        self.sent.load(Ordering::Relaxed)
     }
 
     /// The renderer's: where the playing voice is.
@@ -106,8 +116,8 @@ impl VoiceSlot {
 /// One voice played from a loaded audio.
 #[derive(Debug)]
 #[must_use = "dropping it stops the voice"]
-pub struct Voice<const VOICES: usize> {
-    state: Arc<AudioState<VOICES>>,
+pub struct Voice {
+    state: Arc<AudioState>,
     /// Which of the audio's voice slots it plays in.
     slot: usize,
     /// Which voice of that slot it is.
@@ -116,8 +126,8 @@ pub struct Voice<const VOICES: usize> {
     detached: bool,
 }
 
-impl<const VOICES: usize> Voice<VOICES> {
-    pub(crate) fn play(state: Arc<AudioState<VOICES>>, slot: usize, number: u32) -> Self {
+impl Voice {
+    pub(crate) fn play(state: Arc<AudioState>, slot: usize, number: u32) -> Self {
         Self {
             state,
             slot,
@@ -134,7 +144,7 @@ impl<const VOICES: usize> Voice<VOICES> {
 }
 
 /// A voice plays while its handle is held, unless detached.
-impl<const VOICES: usize> Drop for Voice<VOICES> {
+impl Drop for Voice {
     fn drop(&mut self) {
         if !self.detached {
             self.state.voices[self.slot].request_stop(self.number);
