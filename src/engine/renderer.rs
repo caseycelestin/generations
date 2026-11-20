@@ -75,6 +75,9 @@ impl<const VOICES: usize> Renderer<VOICES> {
                 voice.render(scratch);
                 add(out_block, scratch);
             }
+            for audio in self.audio.iter_mut() {
+                audio.render(out_block, scratch);
+            }
             for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
                 if input.monitoring() {
