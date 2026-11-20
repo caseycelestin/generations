@@ -19,6 +19,9 @@ pub(crate) struct VoiceSlot {
     /// The number of the last voice the renderer finished here, played to
     /// its end or stopped; the slot is free once this is the last one sent.
     done: AtomicU32,
+    /// The number of the voice the renderer is playing here, or 0. The
+    /// renderer alone writes it.
+    playing: AtomicU32,
     /// The playing voice's next frame, from the start of the buffer. The
     /// renderer alone writes it, so the control side can read where a voice
     /// is.
@@ -50,8 +53,24 @@ impl VoiceSlot {
         self.stop.load(Ordering::Acquire) >= number
     }
 
+    /// The renderer's: starts voice `number` from the top, cutting whatever
+    /// was playing.
+    pub(crate) fn start(&self, number: u32) {
+        self.playing.store(number, Ordering::Relaxed);
+        self.playhead.store(0, Ordering::Relaxed);
+    }
+
+    /// The renderer's: the voice playing here, if any.
+    pub(crate) fn playing(&self) -> Option<u32> {
+        match self.playing.load(Ordering::Relaxed) {
+            0 => None,
+            number => Some(number),
+        }
+    }
+
     /// The renderer's: voice `number` has ended here, played out or stopped.
     pub(crate) fn finish(&self, number: u32) {
+        self.playing.store(0, Ordering::Relaxed);
         self.done.store(number, Ordering::Release);
     }
 
@@ -129,52 +148,32 @@ pub(crate) mod realtime {
     use crate::engine::renderer::{Frame, OUTPUT_CHANNELS};
     use crate::layout::ChannelLayout;
 
-    /// One playing voice of a loaded audio; only the renderer holds it.
-    #[derive(Debug)]
-    pub(crate) struct Voice {
-        /// Which voice of its slot this is, so a stop for an older one is
-        /// told apart.
-        number: u32,
-    }
-
-    impl Voice {
-        /// From the top of the buffer.
-        pub(crate) fn start(number: u32, slot: &VoiceSlot) -> Self {
-            slot.set_playhead(0);
-            Self { number }
-        }
-
-        pub(crate) fn number(&self) -> u32 {
-            self.number
-        }
-
-        /// Silence once the buffer runs out. Mono goes to both sides at full
-        /// level.
-        pub(crate) fn render(&self, slot: &VoiceSlot, buffer: &AudioBuffer, scratch: &mut [Frame]) {
-            let playhead = slot.playhead();
-            let channels = buffer.layout.count();
-            let frames = buffer.samples.len() / channels;
-            let end = (playhead + scratch.len()).min(frames);
-            let samples = &buffer.samples[playhead * channels..end * channels];
-            let (sound, silence) = scratch.split_at_mut(end - playhead);
-            match buffer.layout {
-                ChannelLayout::Mono => {
-                    for (frame, &sample) in sound.iter_mut().zip(samples) {
-                        *frame = [sample, sample];
-                    }
-                }
-                ChannelLayout::Stereo => {
-                    let (pairs, _) = samples.as_chunks::<2>();
-                    sound.copy_from_slice(pairs);
+    /// The slot's playing voice for one block, from its playhead. Silence
+    /// once the buffer runs out; mono goes to both sides at full level.
+    pub(crate) fn render(slot: &VoiceSlot, buffer: &AudioBuffer, scratch: &mut [Frame]) {
+        let playhead = slot.playhead();
+        let channels = buffer.layout.count();
+        let frames = buffer.samples.len() / channels;
+        let end = (playhead + scratch.len()).min(frames);
+        let samples = &buffer.samples[playhead * channels..end * channels];
+        let (sound, silence) = scratch.split_at_mut(end - playhead);
+        match buffer.layout {
+            ChannelLayout::Mono => {
+                for (frame, &sample) in sound.iter_mut().zip(samples) {
+                    *frame = [sample, sample];
                 }
             }
-            silence.fill([0.0; OUTPUT_CHANNELS]);
-            slot.set_playhead(end);
+            ChannelLayout::Stereo => {
+                let (pairs, _) = samples.as_chunks::<2>();
+                sound.copy_from_slice(pairs);
+            }
         }
+        silence.fill([0.0; OUTPUT_CHANNELS]);
+        slot.set_playhead(end);
+    }
 
-        /// Its last frame has been rendered.
-        pub(crate) fn finished(&self, slot: &VoiceSlot, buffer: &AudioBuffer) -> bool {
-            slot.playhead() == buffer.samples.len() / buffer.layout.count()
-        }
+    /// The slot's playing voice has rendered its last frame.
+    pub(crate) fn finished(slot: &VoiceSlot, buffer: &AudioBuffer) -> bool {
+        slot.playhead() == buffer.samples.len() / buffer.layout.count()
     }
 }

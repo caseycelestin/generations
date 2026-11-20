@@ -122,21 +122,16 @@ pub(crate) mod realtime {
     use super::AudioState;
     use crate::engine::math::add;
     use crate::engine::renderer::Frame;
-    use crate::engine::voice::realtime::Voice;
+    use crate::engine::voice::realtime as voice;
 
     #[derive(Debug)]
     pub(crate) struct Audio<const VOICES: usize> {
         state: Arc<AudioState<VOICES>>,
-        /// One per voice slot, `None` while it is silent.
-        voices: [Option<Voice>; VOICES],
     }
 
     impl<const VOICES: usize> Audio<VOICES> {
         fn load(state: Arc<AudioState<VOICES>>) -> Self {
-            Self {
-                state,
-                voices: [const { None }; VOICES],
-            }
+            Self { state }
         }
 
         /// Its handle unloaded it or is gone.
@@ -151,22 +146,20 @@ pub(crate) mod realtime {
             let Some(buffer) = &self.state.buffer else {
                 return;
             };
-            for (voice, slot) in self.voices.iter_mut().zip(&self.state.voices) {
+            for slot in &self.state.voices {
                 if let Some(number) = slot.take_incoming_voice() {
-                    *voice = Some(Voice::start(number, slot));
+                    slot.start(number);
                 }
-                if let Some(playing) = voice
-                    && slot.stopped(playing.number())
+                if let Some(number) = slot.playing()
+                    && slot.stopped(number)
                 {
-                    slot.finish(playing.number());
-                    *voice = None;
+                    slot.finish(number);
                 }
-                if let Some(playing) = voice {
-                    playing.render(slot, buffer, scratch);
+                if let Some(number) = slot.playing() {
+                    voice::render(slot, buffer, scratch);
                     add(out, scratch);
-                    if playing.finished(slot, buffer) {
-                        slot.finish(playing.number());
-                        *voice = None;
+                    if voice::finished(slot, buffer) {
+                        slot.finish(number);
                     }
                 }
             }
