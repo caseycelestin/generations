@@ -121,13 +121,13 @@ mod tests {
 
     /// The control ends of the renderer's channels.
     struct Ends {
-        audio: Producer<Arc<AudioState<1>>>,
+        audio: Producer<Arc<AudioState>>,
         recordings: transfer::ControlEnd<RecordingData>,
     }
 
     /// A renderer with room for `places` loaded audio of one voice each, and
     /// the control ends of its channels.
-    fn renderer(places: usize) -> (Ends, Renderer<1>) {
+    fn renderer(places: usize) -> (Ends, Renderer) {
         let (audio_control, audio_realtime) = audio::channel(places);
         let (recordings_control, recordings_realtime) = recording::channel();
         let (_, inputs_realtime) = input::channel(0, 0);
@@ -141,14 +141,13 @@ mod tests {
 
     /// Loads mono `samples` as `Control::load` does, then plays them; the
     /// state stands in for the pool's clone.
-    fn play(ends: &mut Ends, samples: &[Pcm]) -> (Arc<AudioState<1>>, Audio<1>, Voice<1>) {
-        let state = Arc::new(AudioState {
-            buffer: Some(audio::AudioBuffer {
-                samples: samples.to_vec(),
-                layout: ChannelLayout::Mono,
-            }),
-            ..AudioState::default()
+    fn play(ends: &mut Ends, samples: &[Pcm]) -> (Arc<AudioState>, Audio, Voice) {
+        let mut state = AudioState::new(1);
+        state.refill(audio::AudioBuffer {
+            samples: samples.to_vec(),
+            layout: ChannelLayout::Mono,
         });
+        let state = Arc::new(state);
         ends.audio.push(Arc::clone(&state)).unwrap();
         let mut audio = Audio::load(Arc::clone(&state));
         let voice = audio.play();
@@ -157,8 +156,8 @@ mod tests {
 
     /// The renderer finished the first voice played: it played out or was
     /// stopped.
-    fn ended(state: &AudioState<1>) -> bool {
-        state.voices[0].finished(1)
+    fn ended(state: &AudioState) -> bool {
+        state.voices[0].is_free()
     }
 
     /// Starts a recording into empty stereo audio with room for `frames`,

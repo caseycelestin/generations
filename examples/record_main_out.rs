@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let memory = AudioMemory::new();
     let device = Device::default_duplex()?;
     // Room for the three plucks and the take played back; no inputs.
-    let (mut control, mut renderer) = engine::create::<8>(device.capture_channels(), 0, 4);
+    let (mut control, mut renderer) = engine::create(device.capture_channels(), 0, 4, 8);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Half a second of each note, decaying from half scale.

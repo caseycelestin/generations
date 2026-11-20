@@ -17,7 +17,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // Room to load one audio; no inputs.
-    let (mut control, mut renderer) = engine::create::<8>(device.capture_channels(), 0, 1);
+    let (mut control, mut renderer) = engine::create(device.capture_channels(), 0, 1, 8);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Four seconds of A220 at a third of full scale, so the stop is heard.
