@@ -153,6 +153,9 @@ pub(crate) mod realtime {
     /// One playing voice of a loaded audio; only the renderer holds it.
     #[derive(Debug)]
     pub(crate) struct Voice {
+        /// Which voice of its slot this is, so a stop for an older one is
+        /// told apart.
+        number: u32,
         /// The next frame to play, counted from the start of the buffer.
         playhead: usize,
     }
@@ -215,8 +218,17 @@ pub(crate) mod realtime {
                 return;
             };
             for (voice, slot) in self.voices.iter_mut().zip(&self.state.voices) {
-                if slot.take_incoming_voice().is_some() {
-                    *voice = Some(Voice { playhead: 0 });
+                if let Some(number) = slot.take_incoming_voice() {
+                    *voice = Some(Voice {
+                        number,
+                        playhead: 0,
+                    });
+                }
+                if voice
+                    .as_ref()
+                    .is_some_and(|playing| slot.stopped(playing.number))
+                {
+                    *voice = None;
                 }
                 if let Some(playing) = voice {
                     playing.render(buffer, scratch);
