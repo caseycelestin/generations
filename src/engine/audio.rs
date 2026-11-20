@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 
@@ -44,6 +44,16 @@ pub struct Audio {
 impl Audio {
     pub(crate) fn load(state: Arc<AudioState>) -> Self {
         Self { state }
+    }
+
+    /// The same as dropping it.
+    pub fn unload(self) {}
+}
+
+/// Loaded audio stays loaded while its handle is held.
+impl Drop for Audio {
+    fn drop(&mut self) {
+        self.state.unload.store(true, Ordering::Relaxed);
     }
 }
 
