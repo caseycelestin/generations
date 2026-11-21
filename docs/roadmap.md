@@ -69,8 +69,10 @@ might be tried again.
   back on any refusal. `AudioMemory` remains only for takes, until
   recording changes.
 - **Nothing is allocated after `create`.** Places for inputs and loaded
-  audio, with each audio's voice slots, rings and scratch are sized there
-  by the caller and reused; a load replaces a free place's state whole.
+  audio, each audio's voice slots, rings and scratch are made there, sized
+  by plain arguments, and reused: a load refills a free place in place.
+  Sizes as const generics were tried and dropped: one size the caller
+  could not choose at start-up, for no saving.
 - **The render side never allocates.** What it needs is allocated on the
   control side and handed over: live effects will be too.
 - **Memory the audio thread writes first is prefaulted** on the control
@@ -110,19 +112,20 @@ might be tried again.
   `Control`; every check comes before anything is sent. Dropping one ends
   what it holds, so each is `must_use`; a voice can be detached to play
   out.
-- **Voices belong to loaded audio,** `VOICES` each, a const generic chosen
-  at `create`: a runtime count would allocate on every load, and a build
-  setting is global and unseen. A play takes a free voice and, with none
-  free, cuts that audio's oldest, because a press must sound; one audio
-  never cuts another's. A global voice pool was dropped.
+- **Voices belong to loaded audio,** `voices` each, as `create` is told.
+  A play takes a free voice and, with none free, cuts that audio's oldest,
+  because a press must sound; one audio never cuts another's. A global
+  voice pool was dropped.
 - **A voice is started and stopped through atomics in its slot,** with no
   ring: a ring per audio could not be shared by its handles nor returned
   to its place. Each play gets the next number, sent in one atomic that
   the renderer takes, leaving 0. A stop raises the slot's stop to the
   voice's number and never lowers it, so a stolen voice's handle cannot
   stop its successor; the renderer marks each voice done, and a slot is
-  free once its last voice is. A flag beside the number was rejected for
-  a double-start race; plain flags would forbid stealing held voices.
+  free once its last voice is. The renderer keeps nothing per voice: which
+  voice plays and its playhead live in the slot, so the control side can
+  read where a voice is. A flag beside the number was rejected for a
+  double-start race; plain flags would forbid stealing held voices.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
   A master gain or limiter goes before the clip.
 - **Inputs name capture channels and own none.** Every open input renders
