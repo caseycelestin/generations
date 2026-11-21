@@ -17,7 +17,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // One input, and room to load the take for playback.
-    let (mut control, mut renderer) = engine::create::<8>(device.capture_channels(), 1, 1);
+    let (mut control, mut renderer) = engine::create(device.capture_channels(), 1, 1, 8);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     let input = control.open_input(InputChannels::Mono(0))?;

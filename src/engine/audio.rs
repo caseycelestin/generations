@@ -7,23 +7,34 @@ use thiserror::Error;
 use crate::engine::voice::{self, VoiceSlot};
 use crate::layout::ChannelLayout;
 
-/// `VOICES` is how many voices each loaded audio has; fixed in the type, so
-/// replacing a place's state never allocates.
 #[derive(Debug)]
-pub(crate) struct AudioState<const VOICES: usize> {
+pub(crate) struct AudioState {
     /// `None` while its place is free.
     pub(crate) buffer: Option<AudioBuffer>,
     pub(crate) unload: AtomicBool,
-    pub(crate) voices: [VoiceSlot; VOICES],
+    /// Made once, at `create`; reset rather than replaced when the place is
+    /// reused, so a load never allocates.
+    pub(crate) voices: Box<[VoiceSlot]>,
 }
 
-/// By hand: std's `Default` for arrays stops at 32.
-impl<const VOICES: usize> Default for AudioState<VOICES> {
-    fn default() -> Self {
+impl AudioState {
+    /// An empty place with room for `voices` voices. Allocates, so only at
+    /// `create`.
+    pub(crate) fn new(voices: usize) -> Self {
         Self {
             buffer: None,
-            unload: AtomicBool::default(),
-            voices: std::array::from_fn(|_| VoiceSlot::default()),
+            unload: AtomicBool::new(false),
+            voices: (0..voices).map(|_| VoiceSlot::default()).collect(),
+        }
+    }
+
+    /// Ready for a new load, in place: every field a reused place carries
+    /// over is reset here, and the slots made at `create` are kept.
+    pub(crate) fn refill(&mut self, buffer: AudioBuffer) {
+        self.buffer = Some(buffer);
+        *self.unload.get_mut() = false;
+        for slot in &mut self.voices {
+            slot.reset();
         }
     }
 }
@@ -57,37 +68,29 @@ impl LoadError {
 
 #[derive(Debug)]
 #[must_use = "dropping it unloads the audio"]
-pub struct Audio<const VOICES: usize> {
-    state: Arc<AudioState<VOICES>>,
+pub struct Audio {
+    state: Arc<AudioState>,
     /// Voices asked for so far; the next one's number is this plus one, so
     /// none is 0.
     played: u32,
-    /// The number last sent to each slot, or 0; a slot is free once the
-    /// renderer has finished that voice.
-    sent: [u32; VOICES],
 }
 
-impl<const VOICES: usize> Audio<VOICES> {
-    pub(crate) fn load(state: Arc<AudioState<VOICES>>) -> Self {
-        Self {
-            state,
-            played: 0,
-            sent: [0; VOICES],
-        }
+impl Audio {
+    pub(crate) fn load(state: Arc<AudioState>) -> Self {
+        Self { state, played: 0 }
     }
 
     /// Heard from the renderer's next block, from the top, in a free slot;
     /// with none free, it cuts the oldest voice, since a press must sound.
-    pub fn play(&mut self) -> voice::Voice<VOICES> {
-        let free = (0..VOICES).find(|&slot| self.state.voices[slot].finished(self.sent[slot]));
-        // Numbers only grow, so the smallest sent is the oldest voice.
-        let oldest = || (0..VOICES).min_by_key(|&slot| self.sent[slot]);
+    pub fn play(&mut self) -> voice::Voice {
+        let slots = &self.state.voices;
+        let free = slots.iter().position(VoiceSlot::is_free);
+        let oldest = || (0..slots.len()).min_by_key(|&slot| slots[slot].last_sent());
         let slot = free
             .or_else(oldest)
             .expect("an audio has at least one voice");
         self.played += 1;
-        self.sent[slot] = self.played;
-        self.state.voices[slot].send_voice(self.played);
+        slots[slot].send_voice(self.played);
         voice::Voice::play(Arc::clone(&self.state), slot, self.played)
     }
 
@@ -96,19 +99,14 @@ impl<const VOICES: usize> Audio<VOICES> {
 }
 
 /// Loaded audio stays loaded while its handle is held.
-impl<const VOICES: usize> Drop for Audio<VOICES> {
+impl Drop for Audio {
     fn drop(&mut self) {
         self.state.unload.store(true, Ordering::Relaxed);
     }
 }
 
 /// `places` is how many can be loaded at once.
-pub(crate) fn channel<const VOICES: usize>(
-    places: usize,
-) -> (
-    Producer<Arc<AudioState<VOICES>>>,
-    realtime::LoadedAudio<VOICES>,
-) {
+pub(crate) fn channel(places: usize) -> (Producer<Arc<AudioState>>, realtime::LoadedAudio) {
     let (producer, consumer) = RingBuffer::new(places);
     (producer, realtime::LoadedAudio::new(places, consumer))
 }
@@ -122,21 +120,16 @@ pub(crate) mod realtime {
     use super::AudioState;
     use crate::engine::math::add;
     use crate::engine::renderer::Frame;
-    use crate::engine::voice::realtime::Voice;
+    use crate::engine::voice::realtime as voice;
 
     #[derive(Debug)]
-    pub(crate) struct Audio<const VOICES: usize> {
-        state: Arc<AudioState<VOICES>>,
-        /// One per voice slot, `None` while it is silent.
-        voices: [Option<Voice>; VOICES],
+    pub(crate) struct Audio {
+        state: Arc<AudioState>,
     }
 
-    impl<const VOICES: usize> Audio<VOICES> {
-        fn load(state: Arc<AudioState<VOICES>>) -> Self {
-            Self {
-                state,
-                voices: [const { None }; VOICES],
-            }
+    impl Audio {
+        fn load(state: Arc<AudioState>) -> Self {
+            Self { state }
         }
 
         /// Its handle unloaded it or is gone.
@@ -151,22 +144,20 @@ pub(crate) mod realtime {
             let Some(buffer) = &self.state.buffer else {
                 return;
             };
-            for (voice, slot) in self.voices.iter_mut().zip(&self.state.voices) {
+            for slot in &self.state.voices {
                 if let Some(number) = slot.take_incoming_voice() {
-                    *voice = Some(Voice::start(number));
+                    slot.start(number);
                 }
-                if let Some(playing) = voice
-                    && slot.stopped(playing.number())
+                if let Some(number) = slot.playing()
+                    && slot.stopped(number)
                 {
-                    slot.finish(playing.number());
-                    *voice = None;
+                    slot.finish(number);
                 }
-                if let Some(playing) = voice {
-                    playing.render(buffer, scratch);
+                if let Some(number) = slot.playing() {
+                    voice::render(slot, buffer, scratch);
                     add(out, scratch);
-                    if playing.finished(buffer) {
-                        slot.finish(playing.number());
-                        *voice = None;
+                    if voice::finished(slot, buffer) {
+                        slot.finish(number);
                     }
                 }
             }
@@ -174,15 +165,15 @@ pub(crate) mod realtime {
     }
 
     #[derive(Debug)]
-    pub(crate) struct LoadedAudio<const VOICES: usize> {
+    pub(crate) struct LoadedAudio {
         /// Never past its capacity, so loading one never allocates.
-        audio: Vec<Audio<VOICES>>,
+        audio: Vec<Audio>,
         /// The only way audio arrives.
-        loaded: Consumer<Arc<AudioState<VOICES>>>,
+        loaded: Consumer<Arc<AudioState>>,
     }
 
-    impl<const VOICES: usize> LoadedAudio<VOICES> {
-        pub(crate) fn new(places: usize, loaded: Consumer<Arc<AudioState<VOICES>>>) -> Self {
+    impl LoadedAudio {
+        pub(crate) fn new(places: usize, loaded: Consumer<Arc<AudioState>>) -> Self {
             Self {
                 audio: Vec::with_capacity(places),
                 loaded,
@@ -202,7 +193,7 @@ pub(crate) mod realtime {
             self.audio.retain(|audio| !audio.unloaded());
         }
 
-        pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Audio<VOICES>> {
+        pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Audio> {
             self.audio.iter_mut()
         }
     }

@@ -13,22 +13,22 @@ use crate::layout::ChannelLayout;
 /// One per renderer; an app shares it its own way. Everything done here or
 /// on a handle takes effect at the renderer's next period.
 #[derive(Debug)]
-pub struct Control<const VOICES: usize> {
+pub struct Control {
     inputs: Producer<InputData>,
     input_places: Pool<InputState>,
-    audio: Producer<Arc<AudioState<VOICES>>>,
-    audio_places: Pool<AudioState<VOICES>>,
+    audio: Producer<Arc<AudioState>>,
+    audio_places: Pool<AudioState>,
     recordings: transfer::ControlEnd<RecordingData>,
     /// The capture device's, or zero without one.
     capture_channels: usize,
 }
 
-impl<const VOICES: usize> Control<VOICES> {
+impl Control {
     pub(crate) fn new(
         inputs: Producer<InputData>,
         input_places: Pool<InputState>,
-        audio: Producer<Arc<AudioState<VOICES>>>,
-        audio_places: Pool<AudioState<VOICES>>,
+        audio: Producer<Arc<AudioState>>,
+        audio_places: Pool<AudioState>,
         recordings: transfer::ControlEnd<RecordingData>,
         capture_channels: usize,
     ) -> Self {
@@ -49,7 +49,7 @@ impl<const VOICES: usize> Control<VOICES> {
     /// use generations::{ChannelLayout, engine};
     ///
     /// // Room to load one audio, with eight voices of its own.
-    /// let (mut control, mut renderer) = engine::create::<8>(0, 0, 1);
+    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8);
     /// let mut pluck = control.load(vec![0.5; 48_000], ChannelLayout::Mono)?;
     /// let voice = pluck.play();
     ///
@@ -63,24 +63,18 @@ impl<const VOICES: usize> Control<VOICES> {
         &mut self,
         samples: Vec<f32>,
         layout: ChannelLayout,
-    ) -> Result<audio::Audio<VOICES>, LoadError> {
+    ) -> Result<audio::Audio, LoadError> {
         if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
         }
         if self.audio.is_abandoned() {
             return Err(LoadError::RendererGone(samples));
         }
-        let value = AudioState {
-            buffer: Some(AudioBuffer { samples, layout }),
-            ..AudioState::default()
-        };
-        let state = match self.audio_places.take(value) {
-            Ok(state) => state,
-            Err(value) => {
-                let buffer = value.buffer.expect("the buffer was just put in");
-                return Err(LoadError::Full(buffer.samples));
-            }
-        };
+        let buffer = AudioBuffer { samples, layout };
+        let state = self
+            .audio_places
+            .take(buffer, AudioState::refill)
+            .map_err(|buffer| LoadError::Full(buffer.samples))?;
         // Each message holds a place, so the ring never has more than places.
         self.audio
             .push(Arc::clone(&state))
@@ -96,7 +90,7 @@ impl<const VOICES: usize> Control<VOICES> {
     /// use generations::engine::{self, Tap};
     /// use generations::{AudioMemory, ChannelLayout};
     ///
-    /// let (mut control, mut renderer) = engine::create::<8>(0, 0, 0);
+    /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8);
     /// // Room for a second of the main out.
     /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
     /// let mut recording = control.record(take, Tap::MainOut)?;
@@ -121,7 +115,7 @@ impl<const VOICES: usize> Control<VOICES> {
     /// use generations::engine::{self, InputChannels};
     ///
     /// // A mono device, with one input.
-    /// let (mut control, mut renderer) = engine::create::<8>(1, 1, 0);
+    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     /// // Heard through the main out until stopped.
     /// input.set_monitoring(true);
@@ -148,7 +142,7 @@ impl<const VOICES: usize> Control<VOICES> {
         }
         let state = self
             .input_places
-            .take(InputState::default())
+            .take(InputState::default(), |state, fresh| *state = fresh)
             .map_err(|_| InputError::Full)?;
         let data = InputData {
             channels,

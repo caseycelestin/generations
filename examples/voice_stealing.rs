@@ -17,7 +17,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // One audio with two voices of its own; no inputs.
-    let (mut control, mut renderer) = engine::create::<2>(device.capture_channels(), 0, 1);
+    let (mut control, mut renderer) = engine::create(device.capture_channels(), 0, 1, 2);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // A four-second sweep from A220 to A440 at a fifth of full scale, so
