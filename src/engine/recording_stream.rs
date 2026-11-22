@@ -1,4 +1,7 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+use crate::engine::input::InputState;
 
 #[derive(Debug, Default)]
 pub(crate) struct RecordingState {
@@ -7,22 +10,51 @@ pub(crate) struct RecordingState {
     pub(crate) ended: AtomicBool,
 }
 
+#[derive(Debug)]
+pub(crate) enum TapData {
+    /// As heard, after clipping.
+    MainOut,
+    /// Whether it is monitored or not.
+    Input(Arc<InputState>),
+}
+
 pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
     use rtrb::Producer;
 
-    use super::RecordingState;
+    use super::{RecordingState, TapData};
+    use crate::engine::input::realtime::Input;
     use crate::engine::renderer::Frame;
+
+    /// A point in the render loop a take may record from.
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) enum TapPoint<'a> {
+        MainOut,
+        Input(&'a Input),
+    }
 
     #[derive(Debug)]
     pub(crate) struct Recorder {
         frames: Producer<Frame>,
         state: Arc<RecordingState>,
+        tap: TapData,
     }
 
     impl Recorder {
+        pub(crate) fn records_from(&self, point: TapPoint<'_>) -> bool {
+            match (point, &self.tap) {
+                (TapPoint::MainOut, TapData::MainOut) => true,
+                (TapPoint::Input(input), TapData::Input(state)) => {
+                    Arc::ptr_eq(input.state(), state)
+                }
+                (TapPoint::MainOut, TapData::Input(_)) | (TapPoint::Input(_), TapData::MainOut) => {
+                    false
+                }
+            }
+        }
+
         /// A full ring takes the frames that fit and counts the rest lost,
         /// so a take loses its newest frames, never its oldest.
         pub(crate) fn write(&mut self, block: &[Frame]) {
