@@ -18,6 +18,7 @@ mod input;
 mod math;
 mod pool;
 mod recording;
+mod recording_stream;
 mod renderer;
 mod transfer;
 mod voice;
