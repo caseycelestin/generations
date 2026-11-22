@@ -48,6 +48,13 @@ pub(crate) mod realtime {
     }
 
     impl Recorder {
+        pub(crate) fn new(frames: Producer<Frame>) -> Self {
+            Self {
+                frames,
+                recording: None,
+            }
+        }
+
         pub(crate) fn records_from(&self, point: TapPoint<'_>) -> bool {
             let Some(recording) = &self.recording else {
                 return false;
