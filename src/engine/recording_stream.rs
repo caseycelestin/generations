@@ -1,7 +1,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering, fence};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 
+use rtrb::Consumer;
 use thiserror::Error;
+
+use crate::engine::renderer::Frame;
 
 #[derive(Debug)]
 pub(crate) struct RecordingState {
@@ -32,9 +36,24 @@ pub struct Recorder {
     state: Arc<RecordingState>,
 }
 
+impl Recorder {
+    pub fn record(&self) {
+        todo!()
+    }
+}
+
+#[derive(Debug)]
+pub struct Drain {
+    consumer: Consumer<Frame>,
+    state: Arc<RecordingState>,
+    return_consumer: SyncSender<(usize, Consumer<Frame>)>,
+}
+
 #[derive(Debug)]
 pub(crate) struct Recorders {
     states: Vec<Arc<RecordingState>>,
+    return_consumer: SyncSender<(usize, Consumer<Frame>)>,
+    returned_consumers: Receiver<(usize, Consumer<Frame>)>,
 }
 
 impl Recorders {
@@ -64,7 +83,14 @@ pub(crate) fn create(count: usize) -> (Recorders, realtime::Recorders) {
         .map(|id| Arc::new(RecordingState::new(id)))
         .collect();
     let realtime = realtime::Recorders::new(states.clone());
-    (Recorders { states }, realtime)
+    // Each recorder's consumer is out at most once, so a return never waits.
+    let (return_consumer, returned_consumers) = mpsc::sync_channel(count);
+    let recorders = Recorders {
+        states,
+        return_consumer,
+        returned_consumers,
+    };
+    (recorders, realtime)
 }
 
 pub(crate) mod realtime {
