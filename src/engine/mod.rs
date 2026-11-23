@@ -27,6 +27,7 @@
 mod audio;
 mod control;
 mod input;
+mod input_v2;
 mod math;
 mod pool;
 mod recording;
