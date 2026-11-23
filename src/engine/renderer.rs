@@ -5,8 +5,7 @@ use crate::config::Pcm;
 use crate::engine::audio::realtime::LoadedAudio;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
-use crate::engine::recording::realtime::{Recorder, TapPoint};
-use crate::engine::recording_stream::realtime::Recorders;
+use crate::engine::recording::realtime::Recorders;
 
 /// Always stereo.
 pub const OUTPUT_CHANNELS: usize = 2;
@@ -19,7 +18,7 @@ pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
 
 /// Dropping it ends the engine: [`Control`](crate::engine::Control) and
 /// every handle from the same [`create`](crate::engine::create) report the
-/// renderer gone, though a recording still ends with its audio. A stream
+/// renderer gone. A stream
 /// drops the callback that owns it, so to survive a stream restart the
 /// callback must hand it back when dropped.
 #[derive(Debug)]
@@ -28,7 +27,6 @@ pub struct Renderer {
     capture_channels: usize,
     inputs: Inputs,
     audio: LoadedAudio,
-    recorder: Recorder,
     recorders: Recorders,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
@@ -40,7 +38,6 @@ impl Renderer {
     pub(crate) fn new(
         inputs: Inputs,
         audio: LoadedAudio,
-        recorder: Recorder,
         recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
@@ -48,7 +45,6 @@ impl Renderer {
             capture_channels,
             inputs,
             audio,
-            recorder,
             recorders,
             scratch: vec![[0.0; OUTPUT_CHANNELS]; BLOCK_FRAMES].into_boxed_slice(),
         }
@@ -66,7 +62,6 @@ impl Renderer {
         );
         self.inputs.receive();
         self.audio.receive();
-        self.recorder.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
@@ -78,14 +73,8 @@ impl Renderer {
                 if input.monitoring() {
                     add(out_block, scratch);
                 }
-                if self.recorder.records_from(TapPoint::Input(input)) {
-                    self.recorder.write(scratch);
-                }
             }
             hard_clip(out_block);
-            if self.recorder.records_from(TapPoint::MainOut) {
-                self.recorder.write(out_block);
-            }
             for recorder in self.recorders.iter_mut() {
                 recorder.render(out_block);
             }

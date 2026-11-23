@@ -1,351 +1,333 @@
-//! A recording: the main out written into audio the renderer holds.
-
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering, fence};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 
+use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use crate::audio::{Audio, AudioBuffer};
-use crate::engine::input::{Input, InputState};
-use crate::engine::transfer;
-use crate::layout::ChannelLayout;
+use crate::engine::renderer::Frame;
 
-#[derive(Debug, Default)]
-pub(crate) struct RecordingState {
-    pub(crate) stop: AtomicBool,
-}
-
-/// Its audio comes back holding what was heard until the recording ended.
-#[derive(Debug)]
-pub(crate) struct RecordingData {
-    pub(crate) audio: Arc<AudioBuffer>,
-    pub(crate) tap: TapData,
-    pub(crate) state: Arc<RecordingState>,
-}
-
-/// Where a recording takes its frames from, chosen per take.
-#[derive(Debug, Clone, Copy)]
-pub enum Tap<'a> {
-    /// As heard, after clipping.
-    MainOut,
-    /// Whether it is monitored or not.
-    Input(&'a Input),
-}
-
-/// A `Tap` owned, to cross to the renderer.
-#[derive(Debug)]
-pub(crate) enum TapData {
-    MainOut,
-    Input(Arc<InputState>),
-}
-
-/// Nothing was recorded; the audio comes back in it.
-#[derive(Debug, Error)]
-pub enum RecordError {
-    /// The main out is stereo, so mono audio cannot hold it.
-    #[error("recording needs stereo audio")]
-    NotStereo(Audio),
-    /// A voice holds its audio until it ends; stop it, or wait for it to
-    /// end.
-    #[error("a voice still holds the audio")]
-    AudioInUse(Audio),
-    /// A stopped recording gives its place back at the renderer's next
-    /// period.
-    #[error("another recording is running")]
-    Full(Audio),
-    #[error("the renderer is gone")]
-    RendererGone(Audio),
-}
-
-impl RecordError {
-    pub fn into_audio(self) -> Audio {
-        match self {
-            Self::NotStereo(audio)
-            | Self::AudioInUse(audio)
-            | Self::Full(audio)
-            | Self::RendererGone(audio) => audio,
-        }
-    }
-}
-
-impl From<transfer::StartError<RecordingData>> for RecordError {
-    fn from(error: transfer::StartError<RecordingData>) -> Self {
-        match error {
-            transfer::StartError::Full(data) => Self::Full(Audio::from_shared(data.audio)),
-            transfer::StartError::Disconnected(data) => {
-                Self::RendererGone(Audio::from_shared(data.audio))
-            }
-        }
-    }
-}
-
-/// The audio was not taken.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum TryTakeError {
-    /// Still recording, or its audio is on the way back.
-    #[error("still recording")]
+/// Where a recorder is in its life. Each side moves it only by
+/// `compare_exchange` from the state it expects, so neither overwrites the
+/// other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Lifecycle {
+    /// No `Recorder` holds it; only `arm` moves it on.
+    Idle,
+    /// Held by a `Recorder`, not recording.
+    Armed,
+    /// `record` asked; the realtime side has not started.
+    StartRequested,
+    /// The realtime side is writing frames.
     Recording,
-    #[error("the audio was already taken")]
-    Taken,
-    /// Not expected: a dropped renderer hands its recording back.
-    #[error("the renderer is gone, and the audio with it")]
-    RendererGone,
+    /// `stop` asked; the realtime side ends at `Armed` after its last frame.
+    StopRequested,
+    /// Its `Recorder` was dropped while recording; the realtime side ends at
+    /// `Idle` after its last frame.
+    Releasing,
 }
 
-impl From<transfer::TryWaitError> for TryTakeError {
-    fn from(error: transfer::TryWaitError) -> Self {
-        match error {
-            transfer::TryWaitError::Empty => Self::Recording,
-            transfer::TryWaitError::Taken => Self::Taken,
-            transfer::TryWaitError::Disconnected => Self::RendererGone,
+impl Lifecycle {
+    /// Only ever given what was stored from a `Lifecycle`.
+    fn from_u8(value: u8) -> Self {
+        match value {
+            v if v == Self::Idle as u8 => Self::Idle,
+            v if v == Self::Armed as u8 => Self::Armed,
+            v if v == Self::StartRequested as u8 => Self::StartRequested,
+            v if v == Self::Recording as u8 => Self::Recording,
+            v if v == Self::StopRequested as u8 => Self::StopRequested,
+            v if v == Self::Releasing as u8 => Self::Releasing,
+            _ => unreachable!("only a Lifecycle is stored"),
         }
     }
 }
 
-/// Holds the recorder until the recording ends.
 #[derive(Debug)]
-#[must_use = "dropping it stops the recording"]
-pub struct Recording {
-    transfer: transfer::Transfer<RecordingData>,
+pub(crate) struct RecordingState {
+    /// Its index in both sides' lists, fixed at `create`.
+    id: usize,
+    /// A `Lifecycle` as its `u8`, since no atomic holds an enum.
+    lifecycle: AtomicU8,
+}
+
+impl RecordingState {
+    fn new(id: usize) -> Self {
+        Self {
+            id,
+            lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
+        }
+    }
+}
+
+/// Nothing was armed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ArmError {
+    #[error("every recorder is in use")]
+    Full,
+}
+
+#[derive(Debug)]
+pub struct Recorder {
     state: Arc<RecordingState>,
 }
 
-impl Recording {
-    pub(crate) fn record(
-        transfers: &mut transfer::ControlEnd<RecordingData>,
-        audio: Audio,
-        tap: Tap<'_>,
-    ) -> Result<Self, RecordError> {
-        let audio = Self::validate(audio)?;
-        let audio = Self::prepare(audio);
-        let tap = match tap {
-            Tap::MainOut => TapData::MainOut,
-            Tap::Input(input) => TapData::Input(Arc::clone(input.state())),
-        };
-        let state = Arc::new(RecordingState::default());
-        let data = RecordingData {
-            audio,
-            tap,
-            state: Arc::clone(&state),
-        };
-        let transfer = transfers.try_start(data)?;
-        Ok(Self { transfer, state })
+impl Recorder {
+    /// Does nothing unless armed and not already recording.
+    pub fn record(&self) {
+        // Release hands what `arm` prepared to the realtime side.
+        let _ = self.state.lifecycle.compare_exchange(
+            Lifecycle::Armed as u8,
+            Lifecycle::StartRequested as u8,
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
     }
 
-    pub fn stop(&mut self) {
-        self.state.stop.store(true, Ordering::Relaxed);
-    }
-
-    /// Tries to take the audio out, once it is back.
-    pub fn try_take(&mut self) -> Result<Audio, TryTakeError> {
-        let data = self.transfer.try_wait()?;
-        Ok(Audio::from_shared(data.audio))
-    }
-
-    /// Ended voices must have been collected first, or they still count as
-    /// holding `audio`.
-    fn validate(audio: Audio) -> Result<Audio, RecordError> {
-        if audio.layout() != ChannelLayout::Stereo {
-            return Err(RecordError::NotStereo(audio));
-        }
-        // The caller gave up theirs, so nothing can clone it: the count can
-        // only fall before the send.
-        if Arc::strong_count(audio.shared()) > 1 {
-            return Err(RecordError::AudioInUse(audio));
-        }
-        Ok(audio)
-    }
-
-    /// `audio` must have passed `validate`.
-    fn prepare(audio: Audio) -> Arc<AudioBuffer> {
-        let mut audio = audio.into_shared();
-        let buffer = Arc::get_mut(&mut audio).expect("checked: the only reference");
-        buffer.clear();
-        buffer.prefault();
-        audio
+    /// Does nothing unless recording.
+    pub fn stop(&self) {
+        // Relaxed: only a request; the realtime side publishes the end.
+        let _ = self.state.lifecycle.compare_exchange(
+            Lifecycle::Recording as u8,
+            Lifecycle::StopRequested as u8,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
     }
 }
 
-/// Stops a recording still running, since nothing could take its audio
-/// once the handle is gone.
-impl Drop for Recording {
+/// Frees the recorder, or, mid-recording, leaves the realtime side to free
+/// it after its last frame.
+impl Drop for Recorder {
     fn drop(&mut self) {
-        self.stop();
+        // Retried if the realtime side moves it meanwhile, so a start it
+        // takes ends here as `Releasing`, never `Idle`.
+        let lifecycle = &self.state.lifecycle;
+        let _ = lifecycle.try_update(Ordering::Release, Ordering::Relaxed, |current| {
+            let next = match Lifecycle::from_u8(current) {
+                Lifecycle::Armed | Lifecycle::StartRequested => Lifecycle::Idle,
+                Lifecycle::Recording | Lifecycle::StopRequested => Lifecycle::Releasing,
+                Lifecycle::Idle | Lifecycle::Releasing => return None,
+            };
+            Some(next as u8)
+        });
     }
 }
 
-/// Recordings at once: each holds a place from `record` until it comes
-/// back.
-const RECORDERS: usize = 1;
-
-pub(crate) fn channel() -> (transfer::ControlEnd<RecordingData>, realtime::Recorder) {
-    let (control, realtime) = transfer::channel(RECORDERS);
-    (control, realtime::Recorder::new(realtime))
+#[derive(Debug)]
+pub struct Drain {
+    /// `None` only once dropped, so `drop` can send it home.
+    consumer: Option<Consumer<Frame>>,
+    state: Arc<RecordingState>,
+    return_consumer: SyncSender<(usize, Consumer<Frame>)>,
 }
 
-/// The renderer's one recorder: it writes at most one recording at a time.
+impl Drain {
+    /// Appends every frame the realtime side has pushed so far, interleaved.
+    pub fn drain_into(&mut self, into: &mut Vec<f32>) {
+        let consumer = self.consumer.as_mut().expect("taken only in drop");
+        let available = consumer.slots();
+        let Ok(chunk) = consumer.read_chunk(available) else {
+            return;
+        };
+        let (first, second) = chunk.as_slices();
+        into.extend_from_slice(first.as_flattened());
+        into.extend_from_slice(second.as_flattened());
+        chunk.commit_all();
+    }
+}
+
+/// Sends the consumer home to its slot.
+impl Drop for Drain {
+    fn drop(&mut self) {
+        // Sent here, before `state` drops with the fields after this, so a
+        // slot `arm` finds free already has its consumer on the way.
+        if let Some(consumer) = self.consumer.take() {
+            let _ = self.return_consumer.send((self.state.id, consumer));
+        }
+    }
+}
+
+#[derive(Debug)]
+struct Slot {
+    state: Arc<RecordingState>,
+    /// `None` while lent to a `Drain`.
+    consumer: Option<Consumer<Frame>>,
+}
+
+#[derive(Debug)]
+pub struct Recorders {
+    /// By id.
+    slots: Vec<Slot>,
+    return_consumer: SyncSender<(usize, Consumer<Frame>)>,
+    returned_consumers: Receiver<(usize, Consumer<Frame>)>,
+}
+
+impl Recorders {
+    pub fn arm(&mut self) -> Result<(Recorder, Drain), ArmError> {
+        let id = self.find_available().ok_or(ArmError::Full)?.state.id;
+        // After the search: a `Drain` sends its consumer before letting go
+        // of the state, so the one for a slot found free is already sent.
+        self.collect();
+        let slot = &mut self.slots[id];
+        // Relaxed: nothing is handed to the realtime side until `record`.
+        slot.state
+            .lifecycle
+            .compare_exchange(
+                Lifecycle::Idle as u8,
+                Lifecycle::Armed as u8,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .map_err(|_| ArmError::Full)?;
+        let recorder = Recorder {
+            state: Arc::clone(&slot.state),
+        };
+        let drain = Drain {
+            consumer: Some(
+                slot.consumer
+                    .take()
+                    .expect("a free slot's consumer is home"),
+            ),
+            state: Arc::clone(&slot.state),
+            return_consumer: self.return_consumer.clone(),
+        };
+        Ok((recorder, drain))
+    }
+
+    /// Puts each consumer a `Drain` sent home back in its slot.
+    fn collect(&mut self) {
+        for (id, consumer) in self.returned_consumers.try_iter() {
+            self.slots[id].consumer = Some(consumer);
+        }
+    }
+
+    /// Free once `Idle` and no handle holds it, leaving the two sides' clones;
+    /// a `Drain` can outlive its `Recorder`, so `Idle` alone is not enough.
+    fn find_available(&mut self) -> Option<&mut Slot> {
+        let slot = self.slots.iter_mut().find(|slot| {
+            slot.state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
+                && Arc::strong_count(&slot.state) == 2
+        })?;
+        // Pairs with the Release in a handle's drop, so its last writes are
+        // seen before the state is reused.
+        fence(Ordering::Acquire);
+        Some(slot)
+    }
+}
+
+pub(crate) fn create(count: usize, ring_frames: usize) -> (Recorders, realtime::Recorders) {
+    let mut slots = Vec::with_capacity(count);
+    let mut realtime_recorders = Vec::with_capacity(count);
+    for id in 0..count {
+        let state = Arc::new(RecordingState::new(id));
+        let (producer, consumer) = RingBuffer::new(ring_frames);
+        realtime_recorders.push(realtime::Recorder::new(Arc::clone(&state), producer));
+        slots.push(Slot {
+            state,
+            consumer: Some(consumer),
+        });
+    }
+    let realtime = realtime::Recorders::new(realtime_recorders);
+    // Each recorder's consumer is out at most once, so a return never waits.
+    let (return_consumer, returned_consumers) = mpsc::sync_channel(count);
+    let recorders = Recorders {
+        slots,
+        return_consumer,
+        returned_consumers,
+    };
+    (recorders, realtime)
+}
+
 pub(crate) mod realtime {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
-    use super::{RecordingData, TapData};
-    use crate::engine::input::realtime::Input;
-    use crate::engine::renderer::Frame;
-    use crate::engine::transfer::{self, Completion};
+    use rtrb::Producer;
 
-    /// A point in the render loop a take may record from.
-    #[derive(Debug, Clone, Copy)]
-    pub(crate) enum TapPoint<'a> {
-        MainOut,
-        Input(&'a Input),
-    }
+    use super::{Lifecycle, RecordingState};
+    use crate::engine::renderer::Frame;
 
     #[derive(Debug)]
     pub(crate) struct Recorder {
-        recording: Option<Completion<RecordingData>>,
-        transfers: transfer::RealtimeEnd<RecordingData>,
+        state: Arc<RecordingState>,
+        producer: Producer<Frame>,
     }
 
     impl Recorder {
-        pub(crate) fn new(transfers: transfer::RealtimeEnd<RecordingData>) -> Self {
-            Self {
-                recording: None,
-                transfers,
-            }
+        pub(crate) fn new(state: Arc<RecordingState>, producer: Producer<Frame>) -> Self {
+            Self { state, producer }
         }
 
-        /// A new recording starts, then a stopped one ends, including one
-        /// stopped before it arrived.
-        pub(crate) fn receive(&mut self) {
-            if let Some(recording) = self.transfers.try_recv() {
-                debug_assert!(self.recording.is_none(), "one transfer per recorder");
-                self.recording = Some(recording);
-            }
-            if let Some(stopped) = self.recording.take_if(|recording| Self::stopped(recording)) {
-                self.end(stopped);
-            }
-        }
-
-        /// Never true with no take.
-        pub(crate) fn records_from(&self, point: TapPoint<'_>) -> bool {
-            let Some(recording) = &self.recording else {
-                return false;
-            };
-            match (point, &recording.tap) {
-                (TapPoint::MainOut, TapData::MainOut) => true,
-                (TapPoint::Input(input), TapData::Input(state)) => {
-                    Arc::ptr_eq(input.state(), state)
+        /// Called every block, recording or not, so control's requests take
+        /// effect at block boundaries.
+        pub(crate) fn render(&mut self, block: &[Frame]) {
+            let recording = self.advance_lifecycle();
+            if recording {
+                // A full ring takes the frames that fit, so a recording
+                // loses its newest frames, never its oldest.
+                let fits = block.len().min(self.producer.slots());
+                if let Ok(chunk) = self.producer.write_chunk_uninit(fits) {
+                    chunk.fill_from_iter(block[..fits].iter().copied());
                 }
-                (TapPoint::MainOut, TapData::Input(_)) | (TapPoint::Input(_), TapData::MainOut) => {
+            }
+        }
+
+        /// Makes the move due this block; true if the block is recorded.
+        fn advance_lifecycle(&mut self) -> bool {
+            let lifecycle = &self.state.lifecycle;
+            // Relaxed: each move below carries its own ordering.
+            let current = Lifecycle::from_u8(lifecycle.load(Ordering::Relaxed));
+            match current {
+                // Acquire takes what `arm` prepared; fails only if the
+                // `Recorder` was dropped first.
+                Lifecycle::StartRequested => lifecycle
+                    .compare_exchange(
+                        Lifecycle::StartRequested as u8,
+                        Lifecycle::Recording as u8,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok(),
+                Lifecycle::Recording => true,
+                // Release publishes the frames already pushed. A drop that
+                // turns it into `Releasing` first is ended next block.
+                Lifecycle::StopRequested => {
+                    let _ = lifecycle.compare_exchange(
+                        Lifecycle::StopRequested as u8,
+                        Lifecycle::Armed as u8,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    );
                     false
                 }
-            }
-        }
-
-        /// Appends `block`; a recording that fills ends here.
-        pub(crate) fn write(&mut self, block: &[Frame]) {
-            let Some(recording) = &mut self.recording else {
-                return;
-            };
-            let audio = Arc::get_mut(&mut recording.audio);
-            debug_assert!(audio.is_some(), "record refuses audio a voice holds");
-            if let Some(audio) = audio {
-                audio.extend(block.as_flattened().iter().copied());
-            }
-            if let Some(full) = self
-                .recording
-                .take_if(|recording| recording.audio.is_full())
-            {
-                self.end(full);
-            }
-        }
-
-        /// Its handle stopped it or is gone, or its input's did: a take
-        /// ends with its input.
-        fn stopped(recording: &Completion<RecordingData>) -> bool {
-            let input_stopped = match &recording.tap {
-                TapData::MainOut => false,
-                TapData::Input(input) => input.stop.load(Ordering::Relaxed),
-            };
-            recording.state.stop.load(Ordering::Relaxed) || input_stopped
-        }
-
-        /// The one way a recording leaves.
-        fn end(&mut self, recording: Completion<RecordingData>) {
-            self.transfers.complete(recording);
-        }
-    }
-
-    /// A recording's audio is its caller's, so it goes home even when the
-    /// renderer goes; one still on its way is received first.
-    impl Drop for Recorder {
-        fn drop(&mut self) {
-            self.receive();
-            if let Some(recording) = self.recording.take() {
-                self.end(recording);
+                Lifecycle::Releasing => {
+                    let _ = lifecycle.compare_exchange(
+                        Lifecycle::Releasing as u8,
+                        Lifecycle::Idle as u8,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    );
+                    false
+                }
+                Lifecycle::Armed | Lifecycle::Idle => false,
             }
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use std::sync::Arc;
+    #[derive(Debug)]
+    pub(crate) struct Recorders {
+        /// By id, for the whole run.
+        recorders: Vec<Recorder>,
+    }
 
-        use super::*;
-        use crate::audio::AudioMemory;
-        use crate::engine::recording::{RecordingState, TapData};
-        use crate::engine::transfer::{ControlEnd, Transfer, TryWaitError};
-        use crate::layout::ChannelLayout;
-
-        fn recorder() -> (ControlEnd<RecordingData>, Recorder) {
-            let (control, realtime) = transfer::channel(1);
-            (control, Recorder::new(realtime))
+    impl Recorders {
+        pub(crate) fn new(recorders: Vec<Recorder>) -> Self {
+            Self { recorders }
         }
 
-        /// Starts a recording into empty stereo audio with room for `frames`,
-        /// as `Control::record` does, keeping the state its handle stops it
-        /// through.
-        fn record(
-            control: &mut ControlEnd<RecordingData>,
-            frames: usize,
-        ) -> (Transfer<RecordingData>, Arc<RecordingState>) {
-            let audio = AudioMemory::new()
-                .alloc_buffer(ChannelLayout::Stereo, frames)
-                .unwrap();
-            let state = Arc::new(RecordingState::default());
-            let data = RecordingData {
-                audio: Arc::new(audio),
-                tap: TapData::MainOut,
-                state: Arc::clone(&state),
-            };
-            let recording = control.try_start(data).unwrap();
-            (recording, state)
-        }
-
-        #[test]
-        fn a_recording_stopped_before_it_arrives_ends_at_once_empty() {
-            let (mut control, mut recorder) = recorder();
-            let (mut recording, state) = record(&mut control, 64);
-            state.stop.store(true, Ordering::Relaxed);
-
-            recorder.receive();
-
-            let data = recording.try_wait().unwrap();
-            assert_eq!(data.audio.frames(), 0);
-        }
-
-        #[test]
-        fn a_take_ends_in_the_block_that_fills_it() {
-            let (mut control, mut recorder) = recorder();
-            let (mut recording, _) = record(&mut control, 4);
-            recorder.receive();
-
-            recorder.write(&[[0.5; 2]; 2]);
-            assert_eq!(recording.try_wait().err(), Some(TryWaitError::Empty));
-            recorder.write(&[[0.5; 2]; 2]);
-
-            let data = recording.try_wait().unwrap();
-            assert_eq!(data.audio.frames(), 4);
+        pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Recorder> {
+            self.recorders.iter_mut()
         }
     }
 }

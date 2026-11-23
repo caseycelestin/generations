@@ -6,11 +6,23 @@
 //! which has a deadline: they never allocate, free, lock, block or make
 //! system calls. A helper they call says so where it is defined.
 //!
-//! Nothing the renderer holds is freed there. Loaded audio and inputs are
-//! states made at `create` in pools the control side keeps a clone of, sent
-//! one way and reused; voices are started and stopped through atomics in
-//! their audio's state; a recording is a transfer, its take coming back
-//! whole to be freed on the control side.
+//! The two sides cross in four ways, each with one job:
+//!
+//! - A start ring per feature carries a place's state when its use begins
+//!   and it holds what only a ring can carry, such as loaded samples. It is
+//!   sized to the places, so a push never fails.
+//! - Atomics in a state carry everything during its life, both ways:
+//!   flags where the latest value wins, numbers that only grow, counters,
+//!   a lifecycle moved by compare-exchange. A state both sides hold from
+//!   `create`, as a recorder's is, needs no start ring at all.
+//! - A stream ring, made at `create`, carries audio that keeps flowing.
+//! - `render`'s arguments carry what the device hands over each period.
+//!
+//! Places are made at `create` and the control side keeps a clone of each,
+//! so nothing the renderer holds is freed there; a place is reused only
+//! once that clone, with the renderer's if it keeps one, is all that is
+//! left. Nothing comes home to the renderer's side; a recorder's consumer
+//! comes home between control threads.
 
 mod audio;
 mod control;
@@ -18,16 +30,13 @@ mod input;
 mod math;
 mod pool;
 mod recording;
-mod recording_stream;
 mod renderer;
-mod transfer;
 mod voice;
 
 pub use audio::{Audio, LoadError};
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
-pub use recording::{RecordError, Recording, Tap, TryTakeError};
-pub use recording_stream::{ArmError, Drain, Recorder, Recorders};
+pub use recording::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
 pub use voice::Voice;
 
@@ -45,8 +54,7 @@ pub fn create(
     recorders: usize,
     ring_frames: usize,
 ) -> (Control, Renderer) {
-    let (recordings_control, recordings_realtime) = recording::channel();
-    let (recorders_control, recorders_realtime) = recording_stream::create(recorders, ring_frames);
+    let (recorders_control, recorders_realtime) = recording::create(recorders, ring_frames);
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
     let (audio_control, audio_realtime) = audio::channel(audio);
     (
@@ -55,14 +63,12 @@ pub fn create(
             pool::Pool::new(inputs, input::InputState::default),
             audio_control,
             pool::Pool::new(audio, || audio::AudioState::new(voices)),
-            recordings_control,
             recorders_control,
             capture_channels,
         ),
         Renderer::new(
             inputs_realtime,
             audio_realtime,
-            recordings_realtime,
             recorders_realtime,
             capture_channels,
         ),

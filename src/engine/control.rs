@@ -2,13 +2,10 @@ use std::sync::Arc;
 
 use rtrb::Producer;
 
-use crate::audio::Audio;
 use crate::engine::audio::{self, AudioBuffer, AudioState, LoadError};
 use crate::engine::input::{Input, InputChannels, InputData, InputError, InputState};
 use crate::engine::pool::Pool;
-use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
-use crate::engine::recording_stream::Recorders;
-use crate::engine::transfer;
+use crate::engine::recording::Recorders;
 use crate::layout::ChannelLayout;
 
 /// One per renderer; an app shares it its own way. Everything done here or
@@ -19,7 +16,6 @@ pub struct Control {
     input_places: Pool<InputState>,
     audio: Producer<Arc<AudioState>>,
     audio_places: Pool<AudioState>,
-    recordings: transfer::ControlEnd<RecordingData>,
     recorders: Recorders,
     /// The capture device's, or zero without one.
     capture_channels: usize,
@@ -31,7 +27,6 @@ impl Control {
         input_places: Pool<InputState>,
         audio: Producer<Arc<AudioState>>,
         audio_places: Pool<AudioState>,
-        recordings: transfer::ControlEnd<RecordingData>,
         recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
@@ -40,7 +35,6 @@ impl Control {
             input_places,
             audio,
             audio_places,
-            recordings,
             recorders,
             capture_channels,
         }
@@ -84,33 +78,6 @@ impl Control {
             .push(Arc::clone(&state))
             .expect("the ring holds one message per place");
         Ok(audio::Audio::load(state))
-    }
-
-    /// Records what `tap` gives into `audio`, from empty. By value: the
-    /// renderer writes it until it comes back. Refused while another
-    /// recording runs.
-    ///
-    /// ```no_run
-    /// use generations::engine::{self, Tap};
-    /// use generations::{AudioMemory, ChannelLayout};
-    ///
-    /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8);
-    /// // Room for a second of the main out.
-    /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
-    /// let mut recording = control.record(take, Tap::MainOut)?;
-    ///
-    /// // Written from the renderer's next period until stopped or full;
-    /// // back, holding what was heard, at the period after.
-    /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// recording.stop();
-    /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// let recorded = recording.try_take()?;
-    /// assert_eq!(recorded.frames(), 512);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn record(&mut self, audio: Audio, tap: Tap<'_>) -> Result<Recording, RecordError> {
-        self.collect();
-        Recording::record(&mut self.recordings, audio, tap)
     }
 
     /// Inputs may read the same channels; each gets its own copy.
@@ -157,13 +124,6 @@ impl Control {
             .push(data)
             .expect("the ring holds one message per place");
         Ok(Input::open(state))
-    }
-
-    /// Frees the audio of recordings whose handles are gone, returning it to
-    /// `AudioMemory`. `record` does this first; call it when the app goes
-    /// quiet, or before a load that needs the memory.
-    pub fn collect(&mut self) {
-        self.recordings.take_in();
     }
 
     pub fn recorders(&mut self) -> &mut Recorders {
