@@ -249,7 +249,12 @@ pub(crate) mod realtime {
         pub(crate) fn render(&mut self, block: &[Frame]) {
             let recording = self.advance_lifecycle();
             if recording {
-                todo!("push the block")
+                // A full ring takes the frames that fit, so a recording
+                // loses its newest frames, never its oldest.
+                let fits = block.len().min(self.producer.slots());
+                if let Ok(chunk) = self.producer.write_chunk_uninit(fits) {
+                    chunk.fill_from_iter(block[..fits].iter().copied());
+                }
             }
         }
 
