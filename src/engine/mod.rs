@@ -27,6 +27,7 @@ pub use audio::{Audio, LoadError};
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
 pub use recording::{RecordError, Recording, Tap, TryTakeError};
+pub use recording_stream::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
 pub use voice::Voice;
 
@@ -34,14 +35,18 @@ pub use voice::Voice;
 /// `capture_channels` is the width of the capture `render` is handed each
 /// period, zero without an input device; `inputs` is how many can be open
 /// at once; `audio`, how many can be loaded at once, each with `voices`
-/// voices of its own.
+/// voices of its own; `recorders`, how many can be armed at once, each
+/// holding `ring_frames` frames its drain has yet to take.
 pub fn create(
     capture_channels: usize,
     inputs: usize,
     audio: usize,
     voices: usize,
+    recorders: usize,
+    ring_frames: usize,
 ) -> (Control, Renderer) {
     let (recordings_control, recordings_realtime) = recording::channel();
+    let (recorders_control, recorders_realtime) = recording_stream::create(recorders, ring_frames);
     let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
     let (audio_control, audio_realtime) = audio::channel(audio);
     (
@@ -51,12 +56,14 @@ pub fn create(
             audio_control,
             pool::Pool::new(audio, || audio::AudioState::new(voices)),
             recordings_control,
+            recorders_control,
             capture_channels,
         ),
         Renderer::new(
             inputs_realtime,
             audio_realtime,
             recordings_realtime,
+            recorders_realtime,
             capture_channels,
         ),
     )

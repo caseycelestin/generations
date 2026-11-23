@@ -6,6 +6,7 @@ use crate::engine::audio::realtime::LoadedAudio;
 use crate::engine::input::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::{Recorder, TapPoint};
+use crate::engine::recording_stream::realtime::Recorders;
 
 /// Always stereo.
 pub const OUTPUT_CHANNELS: usize = 2;
@@ -28,6 +29,7 @@ pub struct Renderer {
     inputs: Inputs,
     audio: LoadedAudio,
     recorder: Recorder,
+    recorders: Recorders,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
 }
@@ -39,6 +41,7 @@ impl Renderer {
         inputs: Inputs,
         audio: LoadedAudio,
         recorder: Recorder,
+        recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
         Self {
@@ -46,6 +49,7 @@ impl Renderer {
             inputs,
             audio,
             recorder,
+            recorders,
             scratch: vec![[0.0; OUTPUT_CHANNELS]; BLOCK_FRAMES].into_boxed_slice(),
         }
     }
@@ -81,6 +85,9 @@ impl Renderer {
             hard_clip(out_block);
             if self.recorder.records_from(TapPoint::MainOut) {
                 self.recorder.write(out_block);
+            }
+            for recorder in self.recorders.iter_mut() {
+                recorder.render(out_block);
             }
         }
     }

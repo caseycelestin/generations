@@ -156,7 +156,7 @@ struct Slot {
 }
 
 #[derive(Debug)]
-pub(crate) struct Recorders {
+pub struct Recorders {
     /// By id.
     slots: Vec<Slot>,
     return_consumer: SyncSender<(usize, Consumer<Frame>)>,
@@ -164,7 +164,7 @@ pub(crate) struct Recorders {
 }
 
 impl Recorders {
-    pub(crate) fn arm(&mut self) -> Result<(Recorder, Drain), ArmError> {
+    pub fn arm(&mut self) -> Result<(Recorder, Drain), ArmError> {
         let id = self.find_available().ok_or(ArmError::Full)?.state.id;
         // After the search: a `Drain` sends its consumer before letting go
         // of the state, so the one for a slot found free is already sent.

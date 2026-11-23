@@ -7,6 +7,7 @@ use crate::engine::audio::{self, AudioBuffer, AudioState, LoadError};
 use crate::engine::input::{Input, InputChannels, InputData, InputError, InputState};
 use crate::engine::pool::Pool;
 use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
+use crate::engine::recording_stream::Recorders;
 use crate::engine::transfer;
 use crate::layout::ChannelLayout;
 
@@ -19,6 +20,7 @@ pub struct Control {
     audio: Producer<Arc<AudioState>>,
     audio_places: Pool<AudioState>,
     recordings: transfer::ControlEnd<RecordingData>,
+    recorders: Recorders,
     /// The capture device's, or zero without one.
     capture_channels: usize,
 }
@@ -30,6 +32,7 @@ impl Control {
         audio: Producer<Arc<AudioState>>,
         audio_places: Pool<AudioState>,
         recordings: transfer::ControlEnd<RecordingData>,
+        recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
         Self {
@@ -38,6 +41,7 @@ impl Control {
             audio,
             audio_places,
             recordings,
+            recorders,
             capture_channels,
         }
     }
@@ -160,5 +164,9 @@ impl Control {
     /// quiet, or before a load that needs the memory.
     pub fn collect(&mut self) {
         self.recordings.take_in();
+    }
+
+    pub fn recorders(&mut self) -> &mut Recorders {
+        &mut self.recorders
     }
 }
