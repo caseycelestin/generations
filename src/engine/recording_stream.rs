@@ -122,6 +122,21 @@ pub struct Drain {
     return_consumer: SyncSender<(usize, Consumer<Frame>)>,
 }
 
+impl Drain {
+    /// Appends every frame the realtime side has pushed so far, interleaved.
+    pub fn drain_into(&mut self, into: &mut Vec<f32>) {
+        let consumer = self.consumer.as_mut().expect("taken only in drop");
+        let available = consumer.slots();
+        let Ok(chunk) = consumer.read_chunk(available) else {
+            return;
+        };
+        let (first, second) = chunk.as_slices();
+        into.extend_from_slice(first.as_flattened());
+        into.extend_from_slice(second.as_flattened());
+        chunk.commit_all();
+    }
+}
+
 /// Sends the consumer home to its slot.
 impl Drop for Drain {
     fn drop(&mut self) {
