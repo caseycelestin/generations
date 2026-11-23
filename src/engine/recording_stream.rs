@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering, fence};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 
-use rtrb::Consumer;
+use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
 use crate::engine::renderer::Frame;
@@ -122,8 +122,16 @@ pub struct Drain {
 }
 
 #[derive(Debug)]
+struct Slot {
+    state: Arc<RecordingState>,
+    /// `None` while lent to a `Drain`.
+    consumer: Option<Consumer<Frame>>,
+}
+
+#[derive(Debug)]
 pub(crate) struct Recorders {
-    states: Vec<Arc<RecordingState>>,
+    /// By id.
+    slots: Vec<Slot>,
     return_consumer: SyncSender<(usize, Consumer<Frame>)>,
     returned_consumers: Receiver<(usize, Consumer<Frame>)>,
 }
@@ -149,26 +157,34 @@ impl Recorders {
     /// Free once `Idle` and no handle holds it, leaving the two sides' clones;
     /// a `Drain` can outlive its `Recorder`, so `Idle` alone is not enough.
     fn find_available(&self) -> Option<&Arc<RecordingState>> {
-        let state = self.states.iter().find(|state| {
-            state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
-                && Arc::strong_count(state) == 2
+        let slot = self.slots.iter().find(|slot| {
+            slot.state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
+                && Arc::strong_count(&slot.state) == 2
         })?;
         // Pairs with the Release in a handle's drop, so its last writes are
         // seen before the state is reused.
         fence(Ordering::Acquire);
-        Some(state)
+        Some(&slot.state)
     }
 }
 
-pub(crate) fn create(count: usize) -> (Recorders, realtime::Recorders) {
-    let states: Vec<_> = (0..count)
-        .map(|id| Arc::new(RecordingState::new(id)))
-        .collect();
-    let realtime = realtime::Recorders::new(states.clone());
+pub(crate) fn create(count: usize, ring_frames: usize) -> (Recorders, realtime::Recorders) {
+    let mut slots = Vec::with_capacity(count);
+    let mut realtime_recorders = Vec::with_capacity(count);
+    for id in 0..count {
+        let state = Arc::new(RecordingState::new(id));
+        let (producer, consumer) = RingBuffer::new(ring_frames);
+        realtime_recorders.push(realtime::Recorder::new(Arc::clone(&state), producer));
+        slots.push(Slot {
+            state,
+            consumer: Some(consumer),
+        });
+    }
+    let realtime = realtime::Recorders::new(realtime_recorders);
     // Each recorder's consumer is out at most once, so a return never waits.
     let (return_consumer, returned_consumers) = mpsc::sync_channel(count);
     let recorders = Recorders {
-        states,
+        slots,
         return_consumer,
         returned_consumers,
     };
@@ -178,16 +194,32 @@ pub(crate) fn create(count: usize) -> (Recorders, realtime::Recorders) {
 pub(crate) mod realtime {
     use std::sync::Arc;
 
+    use rtrb::Producer;
+
     use super::RecordingState;
+    use crate::engine::renderer::Frame;
+
+    #[derive(Debug)]
+    pub(crate) struct Recorder {
+        state: Arc<RecordingState>,
+        producer: Producer<Frame>,
+    }
+
+    impl Recorder {
+        pub(crate) fn new(state: Arc<RecordingState>, producer: Producer<Frame>) -> Self {
+            Self { state, producer }
+        }
+    }
 
     #[derive(Debug)]
     pub(crate) struct Recorders {
-        states: Vec<Arc<RecordingState>>,
+        /// By id, for the whole run.
+        recorders: Vec<Recorder>,
     }
 
     impl Recorders {
-        pub(crate) fn new(states: Vec<Arc<RecordingState>>) -> Self {
-            Self { states }
+        pub(crate) fn new(recorders: Vec<Recorder>) -> Self {
+            Self { recorders }
         }
     }
 }
