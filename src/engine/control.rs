@@ -47,7 +47,7 @@ impl Control {
     /// use generations::{ChannelLayout, engine};
     ///
     /// // Room to load one audio, with eight voices of its own.
-    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8);
+    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8, 0, 0);
     /// let mut pluck = control.load(vec![0.5; 48_000], ChannelLayout::Mono)?;
     /// let voice = pluck.play();
     ///
@@ -86,7 +86,7 @@ impl Control {
     /// use generations::engine::{self, InputChannels};
     ///
     /// // A mono device, with one input.
-    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8);
+    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8, 0, 0);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     /// // Heard through the main out until stopped.
     /// input.set_monitoring(true);

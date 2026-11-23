@@ -16,7 +16,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // One input; nothing loaded.
-    let (mut control, mut renderer) = engine::create(device.capture_channels(), 1, 0, 8);
+    let (mut control, mut renderer) = engine::create(device.capture_channels(), 1, 0, 8, 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     let mut input = control.open_input(InputChannels::Stereo(0, 1))?;
