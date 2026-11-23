@@ -310,5 +310,9 @@ pub(crate) mod realtime {
         pub(crate) fn new(recorders: Vec<Recorder>) -> Self {
             Self { recorders }
         }
+
+        pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut Recorder> {
+            self.recorders.iter_mut()
+        }
     }
 }
