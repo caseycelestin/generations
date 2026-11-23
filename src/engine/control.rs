@@ -2,12 +2,10 @@ use std::sync::Arc;
 
 use rtrb::Producer;
 
-use crate::audio::Audio;
 use crate::engine::audio::{self, AudioBuffer, AudioState, LoadError};
 use crate::engine::input::{Input, InputChannels, InputData, InputError, InputState};
 use crate::engine::pool::Pool;
-use crate::engine::recording::{RecordError, Recording, RecordingData, Tap};
-use crate::engine::transfer;
+use crate::engine::recording::Recorders;
 use crate::layout::ChannelLayout;
 
 /// One per renderer; an app shares it its own way. Everything done here or
@@ -18,7 +16,7 @@ pub struct Control {
     input_places: Pool<InputState>,
     audio: Producer<Arc<AudioState>>,
     audio_places: Pool<AudioState>,
-    recordings: transfer::ControlEnd<RecordingData>,
+    recorders: Recorders,
     /// The capture device's, or zero without one.
     capture_channels: usize,
 }
@@ -29,7 +27,7 @@ impl Control {
         input_places: Pool<InputState>,
         audio: Producer<Arc<AudioState>>,
         audio_places: Pool<AudioState>,
-        recordings: transfer::ControlEnd<RecordingData>,
+        recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
         Self {
@@ -37,7 +35,7 @@ impl Control {
             input_places,
             audio,
             audio_places,
-            recordings,
+            recorders,
             capture_channels,
         }
     }
@@ -49,7 +47,7 @@ impl Control {
     /// use generations::{ChannelLayout, engine};
     ///
     /// // Room to load one audio, with eight voices of its own.
-    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8);
+    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8, 0, 0);
     /// let mut pluck = control.load(vec![0.5; 48_000], ChannelLayout::Mono)?;
     /// let voice = pluck.play();
     ///
@@ -82,40 +80,13 @@ impl Control {
         Ok(audio::Audio::load(state))
     }
 
-    /// Records what `tap` gives into `audio`, from empty. By value: the
-    /// renderer writes it until it comes back. Refused while another
-    /// recording runs.
-    ///
-    /// ```no_run
-    /// use generations::engine::{self, Tap};
-    /// use generations::{AudioMemory, ChannelLayout};
-    ///
-    /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8);
-    /// // Room for a second of the main out.
-    /// let take = AudioMemory::new().alloc(ChannelLayout::Stereo, 48_000)?;
-    /// let mut recording = control.record(take, Tap::MainOut)?;
-    ///
-    /// // Written from the renderer's next period until stopped or full;
-    /// // back, holding what was heard, at the period after.
-    /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// recording.stop();
-    /// renderer.render(&[], &mut [0.0; 512 * 2]);
-    /// let recorded = recording.try_take()?;
-    /// assert_eq!(recorded.frames(), 512);
-    /// # Ok::<(), Box<dyn std::error::Error>>(())
-    /// ```
-    pub fn record(&mut self, audio: Audio, tap: Tap<'_>) -> Result<Recording, RecordError> {
-        self.collect();
-        Recording::record(&mut self.recordings, audio, tap)
-    }
-
     /// Inputs may read the same channels; each gets its own copy.
     ///
     /// ```no_run
     /// use generations::engine::{self, InputChannels};
     ///
     /// // A mono device, with one input.
-    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8);
+    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8, 0, 0);
     /// let mut input = control.open_input(InputChannels::Mono(0))?;
     /// // Heard through the main out until stopped.
     /// input.set_monitoring(true);
@@ -155,10 +126,29 @@ impl Control {
         Ok(Input::open(state))
     }
 
-    /// Frees the audio of recordings whose handles are gone, returning it to
-    /// `AudioMemory`. `record` does this first; call it when the app goes
-    /// quiet, or before a load that needs the memory.
-    pub fn collect(&mut self) {
-        self.recordings.take_in();
+    /// Arming one hands out a [`Recorder`](crate::engine::Recorder) that
+    /// starts and stops it and a [`Drain`](crate::engine::Drain) that
+    /// collects what it recorded, usually on a thread of its own.
+    ///
+    /// ```no_run
+    /// use generations::engine;
+    ///
+    /// // One recorder, holding up to half a second its drain has yet to take.
+    /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8, 1, 24_000);
+    /// let (recorder, mut drain) = control.recorders().arm()?;
+    ///
+    /// // Recorded from the renderer's next period until a period after the stop.
+    /// recorder.record();
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// recorder.stop();
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    ///
+    /// let mut recording = Vec::new();
+    /// drain.drain_into(&mut recording);
+    /// assert_eq!(recording.len(), 512 * 2);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn recorders(&mut self) -> &mut Recorders {
+        &mut self.recorders
     }
 }

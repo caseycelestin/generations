@@ -7,12 +7,12 @@ crate (`cargo doc --open`); how it got this way is in git.
 ## Built
 
 - **The engine:** a duplex `Renderer` driven by the caller's device, and a
-  `Control` that loads audio, opens inputs and records takes.
+  `Control` that loads audio, opens inputs and arms recorders.
   - Loaded audio, each with voices of its own, mixed in blocks to a stereo
     main out.
   - Inputs from capture channels, each heard through the main out when
     monitored.
-  - Recording from the main out or one input, into `AudioMemory`.
+  - Recording the main out, streamed to a drain the caller runs.
 - **Examples:** one per feature, over cpal, in `examples/`.
 
 ## Next
@@ -31,6 +31,12 @@ crate (`cargo doc --open`); how it got this way is in git.
 
 ## Open questions
 
+- **Inputs on ids, like recorders.** States made at `create` and held by
+  both sides would make a tap plain data, so recording an input needs no
+  ring. Open: what stops a recorder tapping an input whose place is closed
+  and reopened. Recording an input waits on this.
+- **Per-feature parts on `Control` for inputs and audio,** as recorders
+  have (`control.recorders()`), or their verbs left on `Control`.
 - **What else lives on the audio thread.** Loaded audio now does, and a
   press is a voice number written into it. Open: whether pads, patterns,
   the transport, mixer and effect settings follow, the control side
@@ -66,8 +72,7 @@ might be tried again.
 
 - **The engine keeps no memory budget.** Loaded audio is the caller's
   samples, moved in rather than copied, held until unloaded and handed
-  back on any refusal. `AudioMemory` remains only for takes, until
-  recording changes.
+  back on any refusal.
 - **Nothing is allocated after `create`.** Places for inputs and loaded
   audio, each audio's voice slots, rings and scratch are made there, sized
   by plain arguments, and reused: a load refills a free place in place.
@@ -76,8 +81,9 @@ might be tried again.
 - **The render side never allocates.** What it needs is allocated on the
   control side and handed over: live effects will be too.
 - **Memory the audio thread writes first is prefaulted** on the control
-  side (a take, later a delay line); a first write would otherwise stall
-  the audio thread on a page fault.
+  side (a recorder's ring, later a delay line); a first write would
+  otherwise stall the audio thread on a page fault. Not yet done for
+  recorder rings.
 
 ### The engine
 
@@ -88,10 +94,6 @@ might be tried again.
 - **The render side never waits:** no disk, lock, allocation or error
   path, and frame counts rather than a clock, so the same `render` runs
   offline.
-- **A take goes over as a transfer and comes home whole,** so everything
-  it owns is freed on the control side. What changes while it runs (stop)
-  is lock-free state shared beside it, not further messages; its channel
-  is sized by how many can be in flight.
 - **Inputs are opened over a one-way ring, from states made at `create`.**
   `Control` keeps a clone of every input state in a pool, so the
   renderer's is never the last and a stopped input is simply dropped; a
@@ -108,7 +110,7 @@ might be tried again.
   renderer exists; handing the pools over on one more ring would avoid the
   leak. Not built.
 - **A verb lives on the thing it acts on.** Handles (`Audio`, `Voice`,
-  `Input`, `Recording`) carry their own verbs and errors and never hold a
+  `Input`, `Recorder`, `Drain`) carry their own verbs and errors and never hold a
   `Control`; every check comes before anything is sent. Dropping one ends
   what it holds, so each is `must_use`; a voice can be detached to play
   out.
@@ -129,16 +131,31 @@ might be tried again.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
   A master gain or limiter goes before the clip.
 - **Inputs name capture channels and own none.** Every open input renders
-  each block whether heard or not, so it can be recorded unmonitored;
-  monitoring is off until asked for.
-- **Recording is one handle per take,** into audio the caller allocated:
-  stereo from any tap, ending when full, stopped, or when its input stops.
-  Dropping the handle stops it. A take records from a tap, the main out
-  after the clip or an input unclipped, chosen per take; the render loop
-  writes at each tap point.
-- **Arming is for the audio thread,** when it comes: a take that starts
-  itself at a threshold, on a beat, or with pre-roll kept from before the
-  press. Not built.
+  each block whether heard or not, so it can be recorded unmonitored once
+  input taps return; monitoring is off until asked for.
+- **Recording streams.** `create` makes `recorders`, each a state and a
+  ring of `ring_frames` that both sides hold for the whole run; the
+  renderer pushes the main out after the clip, and the caller drains it.
+  Rejected: a take allocated by the caller and handed back whole, and a
+  ring made per recording, whose producer would die or allocate.
+- **Arming hands out two halves:** a `Recorder` that records and stops
+  from a control thread, and a `Drain` that owns the ring's consumer on
+  its own thread, so neither needs a lock (`Arc<Mutex>` was rejected). A
+  recorder records many times per arming; it is free once both halves are
+  gone, the `Drain` sending its consumer home over a channel between
+  control threads.
+- **A recorder's lifecycle is one atomic moved by compare-exchange:**
+  idle, armed, start requested, recording, stop requested, releasing.
+  Separate flags were rejected: a dropped `Recorder` with a pending start
+  could be re-armed while the renderer started it.
+- **Requests take effect at block boundaries.** A start records the whole
+  next block; a stop ends before the next. A record during a stop is
+  ignored, and a start cannot be cancelled.
+- **A full ring keeps its oldest frames.** Lost frames are not counted
+  yet, and a drain does not yet report where one recording ends.
+- **Arming is on the control side;** a recording that starts itself at a
+  threshold, on a beat, or with pre-roll kept from before the press would
+  be the renderer moving an armed recorder on. Not built.
 - **One file per feature.** A feature's data, handle and audio-thread part
   sit together; the audio-thread part in a `mod realtime`.
 
@@ -152,6 +169,8 @@ might be tried again.
 - **Examples show one feature each on a device,** as plain demonstration
   code. Refusals and edge cases belong in tests; a new feature also gets a
   `no_run` doc example on its API.
+- **Tests wait for a design to settle;** until then a feature is checked
+  by ear on its example. The recorder has no tests yet.
 - **cpal is pinned to master** for duplex streams, back to a release when
   0.19 ships.
 
@@ -172,10 +191,10 @@ Not planned yet; kept so they are not forgotten.
 - Stream errors reported to the caller.
 - A real-time rulebook, and a test allocator asserting `render` allocates
   nothing.
-- A level meter and progress on a take; saving a take straight into
+- A level meter and progress on a recording; saving one straight into
   loaded audio.
-- Recording into plain samples or streamed out, so `AudioMemory` and
-  `src/audio.rs` can go.
+- Lost frames counted, and where one recording ends reported by its
+  drain, through a frame count the renderer keeps.
 
 **Storage**
 - The project on disk, removed for now and in git: WAVs under a manifest,
