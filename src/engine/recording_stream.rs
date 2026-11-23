@@ -116,9 +116,21 @@ impl Drop for Recorder {
 
 #[derive(Debug)]
 pub struct Drain {
-    consumer: Consumer<Frame>,
+    /// `None` only once dropped, so `drop` can send it home.
+    consumer: Option<Consumer<Frame>>,
     state: Arc<RecordingState>,
     return_consumer: SyncSender<(usize, Consumer<Frame>)>,
+}
+
+/// Sends the consumer home to its slot.
+impl Drop for Drain {
+    fn drop(&mut self) {
+        // Sent here, before `state` drops with the fields after this, so a
+        // slot `arm` finds free already has its consumer on the way.
+        if let Some(consumer) = self.consumer.take() {
+            let _ = self.return_consumer.send((self.state.id, consumer));
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -137,10 +149,14 @@ pub(crate) struct Recorders {
 }
 
 impl Recorders {
-    pub(crate) fn arm(&mut self) -> Result<Recorder, ArmError> {
-        let state = self.find_available().ok_or(ArmError::Full)?;
+    pub(crate) fn arm(&mut self) -> Result<(Recorder, Drain), ArmError> {
+        let id = self.find_available().ok_or(ArmError::Full)?.state.id;
+        // After the search: a `Drain` sends its consumer before letting go
+        // of the state, so the one for a slot found free is already sent.
+        self.collect();
+        let slot = &mut self.slots[id];
         // Relaxed: nothing is handed to the realtime side until `record`.
-        state
+        slot.state
             .lifecycle
             .compare_exchange(
                 Lifecycle::Idle as u8,
@@ -149,22 +165,39 @@ impl Recorders {
                 Ordering::Relaxed,
             )
             .map_err(|_| ArmError::Full)?;
-        Ok(Recorder {
-            state: Arc::clone(state),
-        })
+        let recorder = Recorder {
+            state: Arc::clone(&slot.state),
+        };
+        let drain = Drain {
+            consumer: Some(
+                slot.consumer
+                    .take()
+                    .expect("a free slot's consumer is home"),
+            ),
+            state: Arc::clone(&slot.state),
+            return_consumer: self.return_consumer.clone(),
+        };
+        Ok((recorder, drain))
+    }
+
+    /// Puts each consumer a `Drain` sent home back in its slot.
+    fn collect(&mut self) {
+        for (id, consumer) in self.returned_consumers.try_iter() {
+            self.slots[id].consumer = Some(consumer);
+        }
     }
 
     /// Free once `Idle` and no handle holds it, leaving the two sides' clones;
     /// a `Drain` can outlive its `Recorder`, so `Idle` alone is not enough.
-    fn find_available(&self) -> Option<&Arc<RecordingState>> {
-        let slot = self.slots.iter().find(|slot| {
+    fn find_available(&mut self) -> Option<&mut Slot> {
+        let slot = self.slots.iter_mut().find(|slot| {
             slot.state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
                 && Arc::strong_count(&slot.state) == 2
         })?;
         // Pairs with the Release in a handle's drop, so its last writes are
         // seen before the state is reused.
         fence(Ordering::Acquire);
-        Some(&slot.state)
+        Some(slot)
     }
 }
 
