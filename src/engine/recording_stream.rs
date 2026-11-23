@@ -226,10 +226,11 @@ pub(crate) fn create(count: usize, ring_frames: usize) -> (Recorders, realtime::
 
 pub(crate) mod realtime {
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use rtrb::Producer;
 
-    use super::RecordingState;
+    use super::{Lifecycle, RecordingState};
     use crate::engine::renderer::Frame;
 
     #[derive(Debug)]
@@ -241,6 +242,56 @@ pub(crate) mod realtime {
     impl Recorder {
         pub(crate) fn new(state: Arc<RecordingState>, producer: Producer<Frame>) -> Self {
             Self { state, producer }
+        }
+
+        /// Called every block, recording or not, so control's requests take
+        /// effect at block boundaries.
+        pub(crate) fn render(&mut self, block: &[Frame]) {
+            let recording = self.advance_lifecycle();
+            if recording {
+                todo!("push the block")
+            }
+        }
+
+        /// Makes the move due this block; true if the block is recorded.
+        fn advance_lifecycle(&mut self) -> bool {
+            let lifecycle = &self.state.lifecycle;
+            // Relaxed: each move below carries its own ordering.
+            let current = Lifecycle::from_u8(lifecycle.load(Ordering::Relaxed));
+            match current {
+                // Acquire takes what `arm` prepared; fails only if the
+                // `Recorder` was dropped first.
+                Lifecycle::StartRequested => lifecycle
+                    .compare_exchange(
+                        Lifecycle::StartRequested as u8,
+                        Lifecycle::Recording as u8,
+                        Ordering::Acquire,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok(),
+                Lifecycle::Recording => true,
+                // Release publishes the frames already pushed. A drop that
+                // turns it into `Releasing` first is ended next block.
+                Lifecycle::StopRequested => {
+                    let _ = lifecycle.compare_exchange(
+                        Lifecycle::StopRequested as u8,
+                        Lifecycle::Armed as u8,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    );
+                    false
+                }
+                Lifecycle::Releasing => {
+                    let _ = lifecycle.compare_exchange(
+                        Lifecycle::Releasing as u8,
+                        Lifecycle::Idle as u8,
+                        Ordering::Release,
+                        Ordering::Relaxed,
+                    );
+                    false
+                }
+                Lifecycle::Armed | Lifecycle::Idle => false,
+            }
         }
     }
 
