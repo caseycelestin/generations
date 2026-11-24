@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -40,6 +40,8 @@ pub(crate) struct InputState {
     right: AtomicUsize,
     /// A `Lifecycle` as its `u8`, since no atomic holds an enum.
     lifecycle: AtomicU8,
+    /// Off when the input opens, so an open mic is not heard until asked for.
+    monitoring: AtomicBool,
 }
 
 impl InputState {
@@ -49,6 +51,7 @@ impl InputState {
             left: AtomicUsize::new(0),
             right: AtomicUsize::new(0),
             lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
+            monitoring: AtomicBool::new(false),
         }
     }
 }
@@ -57,6 +60,13 @@ impl InputState {
 #[must_use = "dropping it closes the input"]
 pub struct Input {
     state: Arc<InputState>,
+}
+
+impl Input {
+    /// Takes effect from the renderer's next block.
+    pub fn set_monitoring(&mut self, on: bool) {
+        self.state.monitoring.store(on, Ordering::Relaxed);
+    }
 }
 
 impl Drop for Input {
@@ -84,6 +94,7 @@ impl Inputs {
         // Relaxed: the store that opens the input must publish these.
         free.left.store(channels.left, Ordering::Relaxed);
         free.right.store(channels.right, Ordering::Relaxed);
+        free.monitoring.store(false, Ordering::Relaxed);
         free.lifecycle
             .store(Lifecycle::Open as u8, Ordering::Release);
         Some(Input {
@@ -111,8 +122,7 @@ pub(crate) mod realtime {
     }
 
     impl Input {
-        /// Called every block, so opens and closes land on block boundaries;
-        /// true if the block is rendered.
+        /// True if the block is rendered.
         fn advance_lifecycle(&self) -> bool {
             let lifecycle = &self.state.lifecycle;
             // Acquire takes the channels `open` wrote.
@@ -127,6 +137,10 @@ pub(crate) mod realtime {
                 }
                 Lifecycle::Idle => false,
             }
+        }
+
+        pub(crate) fn monitoring(&self) -> bool {
+            self.state.monitoring.load(Ordering::Relaxed)
         }
     }
 
