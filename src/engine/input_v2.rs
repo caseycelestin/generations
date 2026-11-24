@@ -13,6 +13,18 @@ enum Lifecycle {
     CloseRequested,
 }
 
+impl Lifecycle {
+    /// Only ever given what was stored from a `Lifecycle`.
+    fn from_u8(value: u8) -> Self {
+        match value {
+            v if v == Self::Idle as u8 => Self::Idle,
+            v if v == Self::Open as u8 => Self::Open,
+            v if v == Self::CloseRequested as u8 => Self::CloseRequested,
+            _ => unreachable!("only a Lifecycle is stored"),
+        }
+    }
+}
+
 /// The capture device's channels an input reads, counted from zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InputChannels {
@@ -89,16 +101,44 @@ pub(crate) fn create(count: usize) -> (Inputs, realtime::Inputs) {
 pub(crate) mod realtime {
     use std::sync::Arc;
 
-    use super::InputState;
+    use std::sync::atomic::Ordering;
+
+    use super::{InputState, Lifecycle};
+
+    #[derive(Debug)]
+    pub(crate) struct Input {
+        state: Arc<InputState>,
+    }
+
+    impl Input {
+        /// Called every block, so opens and closes land on block boundaries;
+        /// true if the block is rendered.
+        fn advance_lifecycle(&self) -> bool {
+            let lifecycle = &self.state.lifecycle;
+            // Acquire takes the channels `open` wrote.
+            match Lifecycle::from_u8(lifecycle.load(Ordering::Acquire)) {
+                Lifecycle::Open => true,
+                // A plain store: only the renderer moves a state out of
+                // `CloseRequested`. Release: the channels are no longer
+                // read, so `open` may rewrite them.
+                Lifecycle::CloseRequested => {
+                    lifecycle.store(Lifecycle::Idle as u8, Ordering::Release);
+                    false
+                }
+                Lifecycle::Idle => false,
+            }
+        }
+    }
 
     #[derive(Debug)]
     pub(crate) struct Inputs {
-        states: Vec<Arc<InputState>>,
+        inputs: Vec<Input>,
     }
 
     impl Inputs {
         pub(crate) fn new(states: Vec<Arc<InputState>>) -> Self {
-            Self { states }
+            let inputs = states.into_iter().map(|state| Input { state }).collect();
+            Self { inputs }
         }
     }
 }
