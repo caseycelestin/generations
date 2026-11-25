@@ -186,5 +186,9 @@ pub(crate) mod realtime {
                 .collect();
             Self { inputs }
         }
+
+        pub(crate) fn iter(&self) -> impl Iterator<Item = &Input> {
+            self.inputs.iter()
+        }
     }
 }
