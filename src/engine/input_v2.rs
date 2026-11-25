@@ -83,6 +83,9 @@ impl Drop for Input {
 /// Nothing was opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum InputError {
+    /// Past the capture device's channels.
+    #[error("no such channel")]
+    NoSuchChannel,
     /// A closed input gives its place back at the renderer's next block.
     #[error("every input is open")]
     Full,
@@ -98,6 +101,9 @@ pub struct Inputs {
 impl Inputs {
     /// A state is free while only the two sides' clones hold it.
     pub fn open(&mut self, channels: InputChannels) -> Result<Input, InputError> {
+        if channels.left.max(channels.right) >= self.capture_channels {
+            return Err(InputError::NoSuchChannel);
+        }
         let free = self.states.iter().find(|state| {
             // Acquire: pairs with the store that closes the input.
             state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
