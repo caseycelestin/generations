@@ -103,6 +103,26 @@ impl VoiceState {
             .is_ok()
     }
 
+    /// The renderer's: voice `number` has ended, played out or stopped, so
+    /// its slot is free. Only while the slot still holds that voice, so a
+    /// `play` that took it meanwhile is never lost. Release: pairs with
+    /// `play`'s Acquire load.
+    fn set_idle(&self, number: u64) {
+        let _ = self
+            .packed
+            .try_update(Ordering::Release, Ordering::Relaxed, |packed| {
+                let (current, lifecycle) = Self::unpack(packed);
+                if current != number {
+                    return None;
+                }
+                let next = match lifecycle {
+                    VoiceLifecycle::Playing | VoiceLifecycle::StopRequested => VoiceLifecycle::Idle,
+                    VoiceLifecycle::Idle | VoiceLifecycle::StartRequested => return None,
+                };
+                Some(Self::pack(number, next))
+            });
+    }
+
     /// Only while the slot still holds voice `number`, so a stale `Voice`
     /// never stops a newer one. Relaxed: nothing is published through it.
     fn set_stop_requested(&self, number: u64) {
