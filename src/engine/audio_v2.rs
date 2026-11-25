@@ -1,16 +1,59 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
 use crate::engine::audio::AudioBuffer;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Lifecycle {
+    /// Free for `load`.
+    Idle,
+    /// The renderer has its buffer.
+    Loaded,
+    /// Its handle is gone; only the renderer moves it on, to `Idle`, once
+    /// it has dropped its buffer.
+    UnloadRequested,
+}
+
+impl Lifecycle {
+    /// Only ever given what was stored from a `Lifecycle`.
+    fn from_u8(value: u8) -> Self {
+        match value {
+            v if v == Self::Idle as u8 => Self::Idle,
+            v if v == Self::Loaded as u8 => Self::Loaded,
+            v if v == Self::UnloadRequested as u8 => Self::UnloadRequested,
+            _ => unreachable!("only a Lifecycle is stored"),
+        }
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct AudioState {}
+pub(crate) struct AudioState {
+    /// A `Lifecycle` as its `u8`, since no atomic holds an enum.
+    lifecycle: AtomicU8,
+}
 
 #[derive(Debug)]
 pub(crate) struct LoadedAudio {
     state: Arc<AudioState>,
+}
+
+impl Drop for LoadedAudio {
+    fn drop(&mut self) {
+        // Retried if the renderer moves it meanwhile, since its buffer may
+        // not have arrived yet. Relaxed: nothing is published through it.
+        let lifecycle = &self.state.lifecycle;
+        let _ = lifecycle.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            let next = match Lifecycle::from_u8(current) {
+                Lifecycle::Idle | Lifecycle::Loaded => Lifecycle::UnloadRequested,
+                Lifecycle::UnloadRequested => return None,
+            };
+            Some(next as u8)
+        });
+    }
 }
 
 /// Nothing was loaded; the buffer comes back in it.
@@ -50,7 +93,9 @@ impl Audio {
         // Free once no `LoadedAudio` holds the state, so only the two sides'
         // lists do, and the renderer has dropped its clone of the buffer.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
-            Arc::strong_count(&place.state) == 2
+            // Acquire: pairs with the store that frees the place.
+            place.state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
+                && Arc::strong_count(&place.state) == 2
                 && place
                     .buffer
                     .as_ref()
@@ -72,7 +117,13 @@ impl Audio {
 }
 
 pub(crate) fn create(count: usize) -> (Audio, realtime::Audio) {
-    let states: Vec<Arc<AudioState>> = (0..count).map(|_| Arc::new(AudioState {})).collect();
+    let states: Vec<Arc<AudioState>> = (0..count)
+        .map(|_| {
+            Arc::new(AudioState {
+                lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
+            })
+        })
+        .collect();
     // A place is refilled only after the renderer has taken its last
     // message, so a ring of one per place is never full.
     let (producer, consumer) = RingBuffer::new(count);
@@ -82,10 +133,11 @@ pub(crate) fn create(count: usize) -> (Audio, realtime::Audio) {
 
 pub(crate) mod realtime {
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use rtrb::Consumer;
 
-    use super::AudioState;
+    use super::{AudioState, Lifecycle};
     use crate::engine::audio::AudioBuffer;
 
     #[derive(Debug)]
@@ -127,6 +179,34 @@ pub(crate) mod realtime {
                 // dropped its buffer, so nothing is dropped here.
                 debug_assert!(place.buffer.is_none(), "a loaded place is refilled");
                 place.buffer = Some(buffer);
+                // Fails if the handle was dropped before its buffer arrived,
+                // leaving the unload it asked for. Relaxed: nothing is
+                // published through it.
+                let _ = place.state.lifecycle.compare_exchange(
+                    Lifecycle::Idle as u8,
+                    Lifecycle::Loaded as u8,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
+        }
+
+        /// Drops every unloaded buffer and frees its place. After `receive`,
+        /// so one unloaded before it arrived goes in the same block.
+        pub(crate) fn unload(&mut self) {
+            for place in &mut self.places {
+                let lifecycle = place.state.lifecycle.load(Ordering::Relaxed);
+                if lifecycle != Lifecycle::UnloadRequested as u8 {
+                    continue;
+                }
+                // Never the last clone: the control side keeps one.
+                place.buffer = None;
+                // Release: the control side sees the buffer dropped before it
+                // sees the place free.
+                place
+                    .state
+                    .lifecycle
+                    .store(Lifecycle::Idle as u8, Ordering::Release);
             }
         }
     }
