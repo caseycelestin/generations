@@ -319,7 +319,14 @@ pub(crate) mod realtime {
     use crate::engine::audio::AudioBuffer;
 
     #[derive(Debug)]
-    struct Voice {}
+    struct Voice {
+        state: Arc<AudioState>,
+        /// Which of the state's voices it is.
+        slot: usize,
+        /// The next frame, from the start of the buffer; only the renderer
+        /// uses it, so no atomic.
+        playhead: usize,
+    }
 
     #[derive(Debug)]
     struct Audio {
@@ -327,11 +334,26 @@ pub(crate) mod realtime {
         /// Dropped on unload, never freed here: the control side keeps a
         /// clone.
         buffer: Option<Arc<AudioBuffer>>,
-        /// Each voice's next frame, by slot; only the renderer uses them, so
-        /// no atomics.
-        playheads: Box<[usize]>,
         /// By slot, like the state's voices.
         voices: Box<[Voice]>,
+    }
+
+    impl Audio {
+        /// Allocates its voices, so only at `create`.
+        fn new(state: Arc<AudioState>) -> Self {
+            let voices = (0..state.voices.len())
+                .map(|slot| Voice {
+                    state: Arc::clone(&state),
+                    slot,
+                    playhead: 0,
+                })
+                .collect();
+            Self {
+                state,
+                buffer: None,
+                voices,
+            }
+        }
     }
 
     #[derive(Debug)]
@@ -347,15 +369,7 @@ pub(crate) mod realtime {
             states: Vec<Arc<AudioState>>,
             consumer: Consumer<(usize, Arc<AudioBuffer>)>,
         ) -> Self {
-            let audio = states
-                .into_iter()
-                .map(|state| Audio {
-                    playheads: vec![0; state.voices.len()].into_boxed_slice(),
-                    voices: state.voices.iter().map(|_| Voice {}).collect(),
-                    state,
-                    buffer: None,
-                })
-                .collect();
+            let audio = states.into_iter().map(Audio::new).collect();
             Self { audio, consumer }
         }
 
