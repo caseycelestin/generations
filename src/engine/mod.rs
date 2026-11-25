@@ -36,8 +36,8 @@ mod voice;
 
 pub use audio::{Audio, LoadError};
 pub use control::Control;
-pub use input::{Input, InputChannels, InputError};
-pub use input_v2::Inputs;
+pub use input::InputError;
+pub use input_v2::{Input, InputChannels, Inputs};
 pub use recording::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
 pub use voice::Voice;
@@ -62,7 +62,6 @@ pub fn create(
     (
         Control::new(
             inputs_control,
-            pool::Pool::new(inputs, input::InputState::default),
             audio_control,
             pool::Pool::new(audio, || audio::AudioState::new(voices)),
             recorders_control,
