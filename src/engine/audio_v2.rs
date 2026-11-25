@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
@@ -30,16 +30,55 @@ impl Lifecycle {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum VoiceLifecycle {
+    /// Free for `play`.
+    Idle,
+}
+
+#[derive(Debug)]
+struct VoiceState {
+    /// The voice in this slot, by its audio's play count, or 0 before any;
+    /// a `Voice` stops it only while this is still its number.
+    number: AtomicU64,
+    /// A `VoiceLifecycle` as its `u8`, since no atomic holds an enum.
+    lifecycle: AtomicU8,
+}
+
 #[derive(Debug)]
 pub(crate) struct AudioState {
     /// A `Lifecycle` as its `u8`, since no atomic holds an enum.
     lifecycle: AtomicU8,
+    voices: Box<[VoiceState]>,
 }
 
 #[derive(Debug)]
 #[must_use = "dropping it unloads the audio"]
 pub(crate) struct LoadedAudio {
     state: Arc<AudioState>,
+    /// Voices started so far, by this handle alone; the next one's number
+    /// is this plus one, so none is 0 and the smallest is the oldest.
+    played: u64,
+}
+
+impl LoadedAudio {
+    pub(crate) fn play(&mut self) {
+        let voices = &self.state.voices;
+        // Acquire: pairs with the renderer's store when a voice ends.
+        let free = voices.iter().position(|voice| {
+            voice.lifecycle.load(Ordering::Acquire) == VoiceLifecycle::Idle as u8
+        });
+        // With none free, the oldest is cut, since a press must sound.
+        let oldest = || {
+            (0..voices.len())
+                // Relaxed: only this handle writes it.
+                .min_by_key(|&index| voices[index].number.load(Ordering::Relaxed))
+                .expect("an audio has at least one voice")
+        };
+        let slot = free.unwrap_or_else(oldest);
+        todo!()
+    }
 }
 
 impl Drop for LoadedAudio {
@@ -113,6 +152,7 @@ impl Audio {
             .expect("the ring holds one message per place");
         Ok(LoadedAudio {
             state: Arc::clone(&free.state),
+            played: 0,
         })
     }
 }
@@ -122,6 +162,7 @@ pub(crate) fn create(count: usize) -> (Audio, realtime::Audio) {
         .map(|_| {
             Arc::new(AudioState {
                 lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
+                voices: Box::new([]),
             })
         })
         .collect();
