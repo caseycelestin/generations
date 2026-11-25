@@ -87,14 +87,25 @@ impl VoiceState {
     /// Cuts whatever was playing here. Release: the renderer sees the new
     /// number with the request. A plain store: the renderer leaves a state
     /// only by compare_exchange, so it never overwrites this.
-    fn start(&self, number: u64) {
+    fn set_start_requested(&self, number: u64) {
         let packed = Self::pack(number, VoiceLifecycle::StartRequested);
         self.packed.store(packed, Ordering::Release);
     }
 
+    /// The renderer's: voice `number`, asked to start, is now playing.
+    /// False if `play` or a stop got there first; the renderer sees that
+    /// next block. Relaxed: the renderer's Acquire load saw the request.
+    fn set_playing(&self, number: u64) -> bool {
+        let requested = Self::pack(number, VoiceLifecycle::StartRequested);
+        let playing = Self::pack(number, VoiceLifecycle::Playing);
+        self.packed
+            .compare_exchange(requested, playing, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    }
+
     /// Only while the slot still holds voice `number`, so a stale `Voice`
     /// never stops a newer one. Relaxed: nothing is published through it.
-    fn request_stop(&self, number: u64) {
+    fn set_stop_requested(&self, number: u64) {
         let _ = self
             .packed
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |packed| {
@@ -145,7 +156,7 @@ impl Voice {
 impl Drop for Voice {
     fn drop(&mut self) {
         if !self.detached {
-            self.state.voices[self.slot].request_stop(self.number);
+            self.state.voices[self.slot].set_stop_requested(self.number);
         }
     }
 }
@@ -176,7 +187,7 @@ impl LoadedAudio {
         };
         let slot = free.unwrap_or_else(oldest);
         self.played += 1;
-        self.state.voices[slot].start(self.played);
+        self.state.voices[slot].set_start_requested(self.played);
         Voice {
             state: Arc::clone(&self.state),
             slot,
