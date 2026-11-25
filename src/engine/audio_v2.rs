@@ -293,7 +293,7 @@ impl Audio {
     }
 }
 
-pub(crate) fn create(count: usize) -> (Audio, realtime::Audio) {
+pub(crate) fn create(count: usize) -> (Audio, realtime::AudioPool) {
     let states: Vec<Arc<AudioState>> = (0..count)
         .map(|_| {
             Arc::new(AudioState {
@@ -305,7 +305,7 @@ pub(crate) fn create(count: usize) -> (Audio, realtime::Audio) {
     // A place is refilled only after the renderer has taken its last
     // message, so a ring of one per place is never full.
     let (producer, consumer) = RingBuffer::new(count);
-    let realtime = realtime::Audio::new(states.clone(), consumer);
+    let realtime = realtime::AudioPool::new(states.clone(), consumer);
     (Audio::new(states, producer), realtime)
 }
 
@@ -330,19 +330,19 @@ pub(crate) mod realtime {
     }
 
     #[derive(Debug)]
-    pub(crate) struct Audio {
-        /// In `create`'s order, so a message's index names the same place
+    pub(crate) struct AudioPool {
+        /// In `create`'s order, so a message's index names the same audio
         /// on both sides; never resized.
-        places: Box<[Place]>,
+        audio: Box<[Place]>,
         consumer: Consumer<(usize, Arc<AudioBuffer>)>,
     }
 
-    impl Audio {
+    impl AudioPool {
         pub(super) fn new(
             states: Vec<Arc<AudioState>>,
             consumer: Consumer<(usize, Arc<AudioBuffer>)>,
         ) -> Self {
-            let places = states
+            let audio = states
                 .into_iter()
                 .map(|state| Place {
                     playheads: vec![0; state.voices.len()].into_boxed_slice(),
@@ -350,21 +350,21 @@ pub(crate) mod realtime {
                     buffer: None,
                 })
                 .collect();
-            Self { places, consumer }
+            Self { audio, consumer }
         }
 
         /// Takes in every buffer loaded since the last block.
         pub(crate) fn receive(&mut self) {
             while let Ok((index, buffer)) = self.consumer.pop() {
-                let place = &mut self.places[index];
-                // The control side refills a place only once this side has
+                let audio = &mut self.audio[index];
+                // The control side refills an audio only once this side has
                 // dropped its buffer, so nothing is dropped here.
-                debug_assert!(place.buffer.is_none(), "a loaded place is refilled");
-                place.buffer = Some(buffer);
+                debug_assert!(audio.buffer.is_none(), "a loaded audio is refilled");
+                audio.buffer = Some(buffer);
                 // Fails if the handle was dropped before its buffer arrived,
                 // leaving the unload it asked for. Relaxed: nothing is
                 // published through it.
-                let _ = place.state.lifecycle.compare_exchange(
+                let _ = audio.state.lifecycle.compare_exchange(
                     Lifecycle::Idle as u8,
                     Lifecycle::Loaded as u8,
                     Ordering::Relaxed,
@@ -373,19 +373,19 @@ pub(crate) mod realtime {
             }
         }
 
-        /// Drops every unloaded buffer and frees its place. After `receive`,
+        /// Drops every unloaded buffer and frees its audio. After `receive`,
         /// so one unloaded before it arrived goes in the same block.
         pub(crate) fn unload(&mut self) {
-            for place in &mut self.places {
-                let lifecycle = place.state.lifecycle.load(Ordering::Relaxed);
+            for audio in &mut self.audio {
+                let lifecycle = audio.state.lifecycle.load(Ordering::Relaxed);
                 if lifecycle != Lifecycle::UnloadRequested as u8 {
                     continue;
                 }
                 // Never the last clone: the control side keeps one.
-                place.buffer = None;
+                audio.buffer = None;
                 // Release: the control side sees the buffer dropped before it
-                // sees the place free.
-                place
+                // sees the audio free.
+                audio
                     .state
                     .lifecycle
                     .store(Lifecycle::Idle as u8, Ordering::Release);
