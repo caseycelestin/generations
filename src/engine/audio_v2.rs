@@ -37,6 +37,7 @@ pub(crate) struct AudioState {
 }
 
 #[derive(Debug)]
+#[must_use = "dropping it unloads the audio"]
 pub(crate) struct LoadedAudio {
     state: Arc<AudioState>,
 }
