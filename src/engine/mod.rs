@@ -65,7 +65,6 @@ pub fn create(
             audio_control,
             pool::Pool::new(audio, || audio::AudioState::new(voices)),
             recorders_control,
-            capture_channels,
         ),
         Renderer::new(
             inputs_realtime,

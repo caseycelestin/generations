@@ -16,8 +16,6 @@ pub struct Control {
     audio: Producer<Arc<AudioState>>,
     audio_places: Pool<AudioState>,
     recorders: Recorders,
-    /// The capture device's, or zero without one.
-    capture_channels: usize,
 }
 
 impl Control {
@@ -26,14 +24,12 @@ impl Control {
         audio: Producer<Arc<AudioState>>,
         audio_places: Pool<AudioState>,
         recorders: Recorders,
-        capture_channels: usize,
     ) -> Self {
         Self {
             inputs,
             audio,
             audio_places,
             recorders,
-            capture_channels,
         }
     }
 
