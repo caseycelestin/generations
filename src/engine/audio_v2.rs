@@ -319,7 +319,10 @@ pub(crate) mod realtime {
     use crate::engine::audio::AudioBuffer;
 
     #[derive(Debug)]
-    struct Place {
+    struct Voice {}
+
+    #[derive(Debug)]
+    struct Audio {
         state: Arc<AudioState>,
         /// Dropped on unload, never freed here: the control side keeps a
         /// clone.
@@ -327,13 +330,15 @@ pub(crate) mod realtime {
         /// Each voice's next frame, by slot; only the renderer uses them, so
         /// no atomics.
         playheads: Box<[usize]>,
+        /// By slot, like the state's voices.
+        voices: Box<[Voice]>,
     }
 
     #[derive(Debug)]
     pub(crate) struct AudioPool {
         /// In `create`'s order, so a message's index names the same audio
         /// on both sides; never resized.
-        audio: Box<[Place]>,
+        audio: Box<[Audio]>,
         consumer: Consumer<(usize, Arc<AudioBuffer>)>,
     }
 
@@ -344,8 +349,9 @@ pub(crate) mod realtime {
         ) -> Self {
             let audio = states
                 .into_iter()
-                .map(|state| Place {
+                .map(|state| Audio {
                     playheads: vec![0; state.voices.len()].into_boxed_slice(),
+                    voices: state.voices.iter().map(|_| Voice {}).collect(),
                     state,
                     buffer: None,
                 })
