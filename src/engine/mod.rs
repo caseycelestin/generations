@@ -78,6 +78,17 @@ mod tests {
     use super::*;
     use crate::layout::ChannelLayout;
 
+    fn mono(channel: usize) -> InputChannels {
+        InputChannels {
+            left: channel,
+            right: channel,
+        }
+    }
+
+    fn stereo(left: usize, right: usize) -> InputChannels {
+        InputChannels { left, right }
+    }
+
     #[test]
     fn a_loaded_audio_plays_to_its_end() {
         let (mut control, mut renderer) = create(0, 0, 1, 8, 0, 0);
@@ -200,9 +211,9 @@ mod tests {
     #[test]
     fn an_open_is_refused_while_every_input_is_open() {
         let (mut control, _renderer) = create(1, 1, 0, 8, 0, 0);
-        let _open = control.open_input(InputChannels::Mono(0)).unwrap();
+        let _open = control.inputs().open(mono(0)).unwrap();
         assert!(matches!(
-            control.open_input(InputChannels::Mono(0)),
+            control.inputs().open(mono(0)),
             Err(InputError::Full)
         ));
     }
@@ -211,7 +222,7 @@ mod tests {
     fn without_capture_channels_every_open_is_refused() {
         let (mut control, _renderer) = create(0, 1, 0, 8, 0, 0);
         assert!(matches!(
-            control.open_input(InputChannels::Mono(0)),
+            control.inputs().open(mono(0)),
             Err(InputError::NoSuchChannel)
         ));
     }
@@ -220,32 +231,32 @@ mod tests {
     fn a_channel_past_the_device_is_refused() {
         let (mut control, _renderer) = create(2, 2, 0, 8, 0, 0);
         assert!(matches!(
-            control.open_input(InputChannels::Mono(2)),
+            control.inputs().open(mono(2)),
             Err(InputError::NoSuchChannel)
         ));
         assert!(matches!(
-            control.open_input(InputChannels::Stereo(0, 2)),
+            control.inputs().open(stereo(0, 2)),
             Err(InputError::NoSuchChannel)
         ));
-        assert!(control.open_input(InputChannels::Mono(1)).is_ok());
+        assert!(control.inputs().open(mono(1)).is_ok());
     }
 
     #[test]
     fn inputs_switch_from_two_stereo_to_four_mono_on_one_device() {
         let (mut control, mut renderer) = create(4, 4, 0, 8, 0, 0);
         let stereo = [
-            control.open_input(InputChannels::Stereo(0, 1)).unwrap(),
-            control.open_input(InputChannels::Stereo(2, 3)).unwrap(),
+            control.inputs().open(stereo(0, 1)).unwrap(),
+            control.inputs().open(stereo(2, 3)).unwrap(),
         ];
         renderer.render(&[0.0; 4 * 4], &mut [0.0; 4 * 2]);
 
         for input in stereo {
-            input.stop();
+            drop(input);
         }
         renderer.render(&[0.0; 4 * 4], &mut [0.0; 4 * 2]);
 
         let mono: Result<Vec<Input>, _> = (0..4)
-            .map(|channel| control.open_input(InputChannels::Mono(channel)))
+            .map(|channel| control.inputs().open(mono(channel)))
             .collect();
         assert_eq!(mono.map(|held| held.len()), Ok(4));
     }
@@ -253,16 +264,16 @@ mod tests {
     #[test]
     fn a_dropped_input_gives_its_place_back() {
         let (mut control, mut renderer) = create(1, 1, 0, 8, 0, 0);
-        let open = control.open_input(InputChannels::Mono(0)).unwrap();
+        let open = control.inputs().open(mono(0)).unwrap();
         drop(open);
         renderer.render(&[0.0; 4], &mut [0.0; 4 * 2]);
-        assert!(control.open_input(InputChannels::Mono(0)).is_ok());
+        assert!(control.inputs().open(mono(0)).is_ok());
     }
 
     #[test]
     fn an_input_is_heard_only_once_monitored() {
         let (mut control, mut renderer) = create(1, 1, 0, 8, 0, 0);
-        let mut input = control.open_input(InputChannels::Mono(0)).unwrap();
+        let mut input = control.inputs().open(mono(0)).unwrap();
         let mut out = [0.0; 4 * 2];
         renderer.render(&[0.5; 4], &mut out);
         assert_eq!(out, [0.0; 4 * 2]);

@@ -107,7 +107,7 @@ mod tests {
     use super::*;
     use crate::engine::audio::{self, Audio, AudioState};
     use crate::engine::voice::Voice;
-    use crate::engine::{input, recording};
+    use crate::engine::{inputs, recording};
     use crate::layout::ChannelLayout;
 
     /// The control ends of the renderer's channels.
@@ -120,7 +120,7 @@ mod tests {
     fn renderer(places: usize) -> (Ends, Renderer) {
         let (audio_control, audio_realtime) = audio::channel(places);
         let (_, recorders_realtime) = recording::create(0, 0);
-        let (_, inputs_realtime) = input::channel(0, 0);
+        let (_, inputs_realtime) = inputs::create(0, 0);
         let ends = Ends {
             audio: audio_control,
         };
