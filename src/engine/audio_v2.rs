@@ -54,6 +54,15 @@ pub(crate) struct AudioState {
 }
 
 #[derive(Debug)]
+pub(crate) struct Voice {
+    state: Arc<AudioState>,
+    /// Which of the audio's voices it plays in.
+    slot: usize,
+    /// Which voice of that slot it is.
+    number: u64,
+}
+
+#[derive(Debug)]
 #[must_use = "dropping it unloads the audio"]
 pub(crate) struct LoadedAudio {
     state: Arc<AudioState>,
@@ -63,7 +72,7 @@ pub(crate) struct LoadedAudio {
 }
 
 impl LoadedAudio {
-    pub(crate) fn play(&mut self) {
+    pub(crate) fn play(&mut self) -> Voice {
         let voices = &self.state.voices;
         // Acquire: pairs with the renderer's store when a voice ends.
         let free = voices.iter().position(|voice| {
@@ -77,7 +86,12 @@ impl LoadedAudio {
                 .expect("an audio has at least one voice")
         };
         let slot = free.unwrap_or_else(oldest);
-        todo!()
+        self.played += 1;
+        Voice {
+            state: Arc::clone(&self.state),
+            slot,
+            number: self.played,
+        }
     }
 }
 
