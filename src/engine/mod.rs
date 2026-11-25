@@ -26,7 +26,7 @@
 
 mod audio;
 mod control;
-mod input_v2;
+mod inputs;
 mod math;
 mod pool;
 mod recording;
@@ -35,7 +35,7 @@ mod voice;
 
 pub use audio::{Audio, LoadError};
 pub use control::Control;
-pub use input_v2::{Input, InputChannels, InputError, Inputs};
+pub use inputs::{Input, InputChannels, InputError, Inputs};
 pub use recording::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
 pub use voice::Voice;
@@ -55,7 +55,7 @@ pub fn create(
     ring_frames: usize,
 ) -> (Control, Renderer) {
     let (recorders_control, recorders_realtime) = recording::create(recorders, ring_frames);
-    let (inputs_control, inputs_realtime) = input_v2::create(inputs, capture_channels);
+    let (inputs_control, inputs_realtime) = inputs::create(inputs, capture_channels);
     let (audio_control, audio_realtime) = audio::channel(audio);
     (
         Control::new(

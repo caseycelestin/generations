@@ -3,7 +3,7 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use crate::engine::audio::{self, AudioBuffer, AudioState, LoadError};
-use crate::engine::input_v2;
+use crate::engine::inputs;
 use crate::engine::pool::Pool;
 use crate::engine::recording::Recorders;
 use crate::layout::ChannelLayout;
@@ -12,7 +12,7 @@ use crate::layout::ChannelLayout;
 /// on a handle takes effect at the renderer's next period.
 #[derive(Debug)]
 pub struct Control {
-    inputs: input_v2::Inputs,
+    inputs: inputs::Inputs,
     audio: Producer<Arc<AudioState>>,
     audio_places: Pool<AudioState>,
     recorders: Recorders,
@@ -20,7 +20,7 @@ pub struct Control {
 
 impl Control {
     pub(crate) fn new(
-        inputs: input_v2::Inputs,
+        inputs: inputs::Inputs,
         audio: Producer<Arc<AudioState>>,
         audio_places: Pool<AudioState>,
         recorders: Recorders,
@@ -73,7 +73,7 @@ impl Control {
         Ok(audio::Audio::load(state))
     }
 
-    pub fn inputs(&mut self) -> &mut input_v2::Inputs {
+    pub fn inputs(&mut self) -> &mut inputs::Inputs {
         &mut self.inputs
     }
 

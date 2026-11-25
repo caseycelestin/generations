@@ -3,7 +3,7 @@
 
 use crate::config::Pcm;
 use crate::engine::audio::realtime::LoadedAudio;
-use crate::engine::input_v2::realtime::Inputs;
+use crate::engine::inputs::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::Recorders;
 
