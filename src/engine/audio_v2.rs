@@ -315,17 +315,59 @@ pub(crate) mod realtime {
 
     use rtrb::Consumer;
 
-    use super::{AudioState, Lifecycle};
+    use super::{AudioState, Lifecycle, VoiceLifecycle};
     use crate::engine::audio::AudioBuffer;
+    use crate::engine::renderer::Frame;
+    use crate::layout::ChannelLayout;
 
     #[derive(Debug)]
     struct Voice {
         state: Arc<AudioState>,
         /// Which of the state's voices it is.
         slot: usize,
+        /// Dropped on unload, never freed here: the control side keeps a
+        /// clone.
+        buffer: Option<Arc<AudioBuffer>>,
         /// The next frame, from the start of the buffer; only the renderer
         /// uses it, so no atomic.
         playhead: usize,
+    }
+
+    impl Voice {
+        fn render(&mut self, scratch: &mut [Frame]) {
+            // Acquire: pairs with `play`'s Release store, so a new voice's
+            // number comes with its request.
+            let (_, lifecycle) = self.state.voices[self.slot].load(Ordering::Acquire);
+            match lifecycle {
+                VoiceLifecycle::Idle | VoiceLifecycle::StopRequested => return,
+                VoiceLifecycle::StartRequested | VoiceLifecycle::Playing => {}
+            }
+            let Some(buffer) = &self.buffer else {
+                return;
+            };
+            let channels = buffer.layout.count();
+            let frames = buffer.samples.len() / channels;
+            // Past the buffer's end it adds nothing.
+            let end = (self.playhead + scratch.len()).min(frames);
+            let samples = &buffer.samples[self.playhead * channels..end * channels];
+            match buffer.layout {
+                // Both sides at full level.
+                ChannelLayout::Mono => {
+                    for (frame, &sample) in scratch.iter_mut().zip(samples) {
+                        frame[0] += sample;
+                        frame[1] += sample;
+                    }
+                }
+                ChannelLayout::Stereo => {
+                    let (pairs, _) = samples.as_chunks::<2>();
+                    for (frame, pair) in scratch.iter_mut().zip(pairs) {
+                        frame[0] += pair[0];
+                        frame[1] += pair[1];
+                    }
+                }
+            }
+            self.playhead = end;
+        }
     }
 
     #[derive(Debug)]
@@ -345,6 +387,7 @@ pub(crate) mod realtime {
                 .map(|slot| Voice {
                     state: Arc::clone(&state),
                     slot,
+                    buffer: None,
                     playhead: 0,
                 })
                 .collect();
