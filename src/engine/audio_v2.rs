@@ -35,6 +35,9 @@ impl Lifecycle {
 enum VoiceLifecycle {
     /// Free for `play`.
     Idle,
+    /// `play` asked; the renderer starts it from the top at its next block,
+    /// cutting whatever was playing there.
+    StartRequested,
 }
 
 #[derive(Debug)]
@@ -87,6 +90,15 @@ impl LoadedAudio {
         };
         let slot = free.unwrap_or_else(oldest);
         self.played += 1;
+        let voice = &self.state.voices[slot];
+        // Relaxed: the store below publishes it.
+        voice.number.store(self.played, Ordering::Relaxed);
+        // Release: the renderer sees the new number with it. A plain store,
+        // even over a playing voice: the renderer leaves a state only by
+        // compare_exchange, so it never overwrites this.
+        voice
+            .lifecycle
+            .store(VoiceLifecycle::StartRequested as u8, Ordering::Release);
         Voice {
             state: Arc::clone(&self.state),
             slot,
