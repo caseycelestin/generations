@@ -97,6 +97,28 @@ pub struct Inputs {
 }
 
 impl Inputs {
+    /// Inputs may read the same channels; each gets its own copy.
+    ///
+    /// ```no_run
+    /// use generations::engine::{self, InputChannels};
+    ///
+    /// // A mono device, with one input.
+    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8, 0, 0);
+    /// // Mono: the same channel on both sides.
+    /// let mut input = control.inputs().open(InputChannels { left: 0, right: 0 })?;
+    /// // Heard through the main out until closed.
+    /// input.set_monitoring(true);
+    ///
+    /// // A duplex callback would own the renderer: a period of capture in,
+    /// // the same frames out.
+    /// renderer.render(&[0.0; 512], &mut [0.0; 512 * 2]);
+    ///
+    /// // Silent, and its place free, from the renderer's next block.
+    /// drop(input);
+    /// renderer.render(&[0.0; 512], &mut [0.0; 512 * 2]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    ///
     /// A state is free while only the two sides' clones hold it.
     pub fn open(&mut self, channels: InputChannels) -> Result<Input, InputError> {
         if channels.left.max(channels.right) >= self.capture_channels {

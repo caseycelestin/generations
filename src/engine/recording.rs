@@ -164,6 +164,28 @@ pub struct Recorders {
 }
 
 impl Recorders {
+    /// Arming one hands out a [`Recorder`](crate::engine::Recorder) that
+    /// starts and stops it and a [`Drain`](crate::engine::Drain) that
+    /// collects what it recorded, usually on a thread of its own.
+    ///
+    /// ```no_run
+    /// use generations::engine;
+    ///
+    /// // One recorder, holding up to half a second its drain has yet to take.
+    /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8, 1, 24_000);
+    /// let (recorder, mut drain) = control.recorders().arm()?;
+    ///
+    /// // Recorded from the renderer's next period until a period after the stop.
+    /// recorder.record();
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// recorder.stop();
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    ///
+    /// let mut recording = Vec::new();
+    /// drain.drain_into(&mut recording);
+    /// assert_eq!(recording.len(), 512 * 2);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn arm(&mut self) -> Result<(Recorder, Drain), ArmError> {
         let id = self.find_available().ok_or(ArmError::Full)?.state.id;
         // After the search: a `Drain` sends its consumer before letting go
