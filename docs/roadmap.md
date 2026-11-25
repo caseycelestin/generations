@@ -31,12 +31,12 @@ crate (`cargo doc --open`); how it got this way is in git.
 
 ## Open questions
 
-- **Inputs on ids, like recorders.** States made at `create` and held by
-  both sides would make a tap plain data, so recording an input needs no
-  ring. Open: what stops a recorder tapping an input whose place is closed
-  and reopened. Recording an input waits on this.
-- **Per-feature parts on `Control` for inputs and audio,** as recorders
-  have (`control.recorders()`), or their verbs left on `Control`.
+- **How a tap names an input.** Inputs are now states both sides hold, so
+  a tap can be plain data. Open: whether it names a place, a count bumped
+  on each open, or the state itself, and how it notices its input closing
+  and the place reopening. Recording an input waits on this.
+- **A per-feature part on `Control` for audio,** as inputs and recorders
+  have, or `load` left on `Control`.
 - **What else lives on the audio thread.** Loaded audio now does, and a
   press is a voice number written into it. Open: whether pads, patterns,
   the transport, mixer and effect settings follow, the control side
@@ -94,21 +94,23 @@ might be tried again.
 - **The render side never waits:** no disk, lock, allocation or error
   path, and frame counts rather than a clock, so the same `render` runs
   offline.
-- **Inputs are opened over a one-way ring, from states made at `create`.**
-  `Control` keeps a clone of every input state in a pool, so the
-  renderer's is never the last and a stopped input is simply dropped; a
-  place is free again once the pool's clone is the only one left. A
-  transfer brought each input home only to free it.
-- **Loaded audio lives in a pool too.** Its samples and layout sit in the
+- **Inputs are states made at `create` that both sides hold for the whole
+  run,** as recorders are, opened through `control.inputs()`. `open`
+  writes a free state's channels and publishes it open; dropping the
+  handle requests the close, and only the renderer moves it back to idle,
+  so a place is never rewritten while the renderer reads it. Rejected: a
+  one-way ring from a pool, which kept a tap from being plain data, and a
+  renderer-gone error, which recorders do without.
+- **Loaded audio lives in a pool.** Its samples and layout sit in the
   pooled state, so the renderer's clone is never their last owner;
   `load` checks for whole frames, a renderer, then a free place, and sends
   the state over a one-way ring. Rejected: samples in the message, which
   would have to come home to be freed.
 - **Dropping `Control` leaves the renderer as it was:** inputs and loaded
-  audio still held keep sounding. So the renderer's drop of a state is
-  never the last, `Control`'s drop is to leak the pools' clones while the
-  renderer exists; handing the pools over on one more ring would avoid the
-  leak. Not built.
+  audio still held keep sounding. So the renderer's drop of loaded audio
+  is never the last, `Control`'s drop is to leak the pool's clones while
+  the renderer exists; handing the pool over on one more ring would avoid
+  the leak. Not built.
 - **A verb lives on the thing it acts on.** Handles (`Audio`, `Voice`,
   `Input`, `Recorder`, `Drain`) carry their own verbs and errors and never hold a
   `Control`; every check comes before anything is sent. Dropping one ends
@@ -130,9 +132,12 @@ might be tried again.
   double-start race; plain flags would forbid stealing held voices.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
   A master gain or limiter goes before the clip.
-- **Inputs name capture channels and own none.** Every open input renders
-  each block whether heard or not, so it can be recorded unmonitored once
-  input taps return; monitoring is off until asked for.
+- **Inputs name capture channels and own none,** always a left and a
+  right; a mono source names one channel twice. `Mono` and `Stereo` were
+  dropped: they render the same. Every open input renders each block
+  whether heard or not, so it can be recorded unmonitored once input taps
+  return; opens and closes land on block boundaries, and monitoring is off
+  at every open.
 - **Recording streams.** `create` makes `recorders`, each a state and a
   ring of `ring_frames` that both sides hold for the whole run; the
   renderer pushes the main out after the clip, and the caller drains it.
