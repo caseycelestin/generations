@@ -47,10 +47,10 @@ impl Audio {
     }
 
     pub(crate) fn load(&mut self, buffer: AudioBuffer) -> Result<LoadedAudio, LoadError> {
-        // Free once no `LoadedAudio` holds the state and the renderer has
-        // dropped its clone of the buffer.
+        // Free once no `LoadedAudio` holds the state, so only the two sides'
+        // lists do, and the renderer has dropped its clone of the buffer.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
-            Arc::strong_count(&place.state) == 1
+            Arc::strong_count(&place.state) == 2
                 && place
                     .buffer
                     .as_ref()
@@ -71,10 +71,63 @@ impl Audio {
     }
 }
 
-pub(crate) fn create(count: usize) -> Audio {
-    let states = (0..count).map(|_| Arc::new(AudioState {})).collect();
+pub(crate) fn create(count: usize) -> (Audio, realtime::Audio) {
+    let states: Vec<Arc<AudioState>> = (0..count).map(|_| Arc::new(AudioState {})).collect();
     // A place is refilled only after the renderer has taken its last
     // message, so a ring of one per place is never full.
-    let (producer, _consumer) = RingBuffer::new(count);
-    Audio::new(states, producer)
+    let (producer, consumer) = RingBuffer::new(count);
+    let realtime = realtime::Audio::new(states.clone(), consumer);
+    (Audio::new(states, producer), realtime)
+}
+
+pub(crate) mod realtime {
+    use std::sync::Arc;
+
+    use rtrb::Consumer;
+
+    use super::AudioState;
+    use crate::engine::audio::AudioBuffer;
+
+    #[derive(Debug)]
+    struct Place {
+        state: Arc<AudioState>,
+        /// Dropped on unload, never freed here: the control side keeps a
+        /// clone.
+        buffer: Option<Arc<AudioBuffer>>,
+    }
+
+    #[derive(Debug)]
+    pub(crate) struct Audio {
+        /// In `create`'s order, so a message's index names the same place
+        /// on both sides; never resized.
+        places: Vec<Place>,
+        consumer: Consumer<(usize, Arc<AudioBuffer>)>,
+    }
+
+    impl Audio {
+        pub(super) fn new(
+            states: Vec<Arc<AudioState>>,
+            consumer: Consumer<(usize, Arc<AudioBuffer>)>,
+        ) -> Self {
+            let places = states
+                .into_iter()
+                .map(|state| Place {
+                    state,
+                    buffer: None,
+                })
+                .collect();
+            Self { places, consumer }
+        }
+
+        /// Takes in every buffer loaded since the last block.
+        pub(crate) fn receive(&mut self) {
+            while let Ok((index, buffer)) = self.consumer.pop() {
+                let place = &mut self.places[index];
+                // The control side refills a place only once this side has
+                // dropped its buffer, so nothing is dropped here.
+                debug_assert!(place.buffer.is_none(), "a loaded place is refilled");
+                place.buffer = Some(buffer);
+            }
+        }
+    }
 }
