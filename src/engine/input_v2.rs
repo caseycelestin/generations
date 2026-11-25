@@ -87,7 +87,7 @@ pub(crate) struct Inputs {
 
 impl Inputs {
     /// A state is free while only the two sides' clones hold it.
-    pub(crate) fn open(&mut self, channels: InputChannels) -> Option<Input> {
+    pub fn open(&mut self, channels: InputChannels) -> Option<Input> {
         let free = self.states.iter().find(|state| {
             // Acquire: pairs with the store that closes the input.
             state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
