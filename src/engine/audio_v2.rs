@@ -421,6 +421,24 @@ pub(crate) mod realtime {
                 voices,
             }
         }
+
+        fn load(&mut self, buffer: Arc<AudioBuffer>) {
+            // Cloning only counts; nothing is allocated here.
+            for voice in &mut self.voices {
+                voice.buffer = Some(Arc::clone(&buffer));
+            }
+            self.buffer = Some(buffer);
+        }
+
+        fn render(&mut self, scratch: &mut [Frame]) {
+            // Every voice is idle while there is no buffer: unload frees them.
+            if self.buffer.is_none() {
+                return;
+            }
+            for voice in &mut self.voices {
+                voice.render(scratch);
+            }
+        }
     }
 
     #[derive(Debug)]
