@@ -40,13 +40,50 @@ enum VoiceLifecycle {
     StartRequested,
 }
 
+impl VoiceLifecycle {
+    /// Bits it takes in a `VoiceState`; enough for every variant.
+    const BITS: u32 = 2;
+
+    /// Only ever given what was stored from a `VoiceLifecycle`.
+    fn from_u8(value: u8) -> Self {
+        match value {
+            v if v == Self::Idle as u8 => Self::Idle,
+            v if v == Self::StartRequested as u8 => Self::StartRequested,
+            _ => unreachable!("only a VoiceLifecycle is stored"),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct VoiceState {
-    /// The voice in this slot, by its audio's play count, or 0 before any;
-    /// a `Voice` stops it only while this is still its number.
-    number: AtomicU64,
-    /// A `VoiceLifecycle` as its `u8`, since no atomic holds an enum.
-    lifecycle: AtomicU8,
+    /// The voice's number above its `VoiceLifecycle`, in one atomic so a
+    /// `Voice` can check the slot is still its voice and change it in one
+    /// step. The number is its audio's play count, or 0 before any.
+    packed: AtomicU64,
+}
+
+impl VoiceState {
+    fn pack(number: u64, lifecycle: VoiceLifecycle) -> u64 {
+        (number << VoiceLifecycle::BITS) | lifecycle as u64
+    }
+
+    fn unpack(packed: u64) -> (u64, VoiceLifecycle) {
+        let mask = (1 << VoiceLifecycle::BITS) - 1;
+        let lifecycle = VoiceLifecycle::from_u8((packed & mask) as u8);
+        (packed >> VoiceLifecycle::BITS, lifecycle)
+    }
+
+    fn load(&self, ordering: Ordering) -> (u64, VoiceLifecycle) {
+        Self::unpack(self.packed.load(ordering))
+    }
+
+    /// Cuts whatever was playing here. Release: the renderer sees the new
+    /// number with the request. A plain store: the renderer leaves a state
+    /// only by compare_exchange, so it never overwrites this.
+    fn start(&self, number: u64) {
+        let packed = Self::pack(number, VoiceLifecycle::StartRequested);
+        self.packed.store(packed, Ordering::Release);
+    }
 }
 
 #[derive(Debug)]
@@ -79,26 +116,19 @@ impl LoadedAudio {
         let voices = &self.state.voices;
         // Acquire: pairs with the renderer's store when a voice ends.
         let free = voices.iter().position(|voice| {
-            voice.lifecycle.load(Ordering::Acquire) == VoiceLifecycle::Idle as u8
+            let (_, lifecycle) = voice.load(Ordering::Acquire);
+            lifecycle == VoiceLifecycle::Idle
         });
         // With none free, the oldest is cut, since a press must sound.
         let oldest = || {
             (0..voices.len())
-                // Relaxed: only this handle writes it.
-                .min_by_key(|&index| voices[index].number.load(Ordering::Relaxed))
+                // Relaxed: only this handle writes numbers.
+                .min_by_key(|&index| voices[index].load(Ordering::Relaxed).0)
                 .expect("an audio has at least one voice")
         };
         let slot = free.unwrap_or_else(oldest);
         self.played += 1;
-        let voice = &self.state.voices[slot];
-        // Relaxed: the store below publishes it.
-        voice.number.store(self.played, Ordering::Relaxed);
-        // Release: the renderer sees the new number with it. A plain store,
-        // even over a playing voice: the renderer leaves a state only by
-        // compare_exchange, so it never overwrites this.
-        voice
-            .lifecycle
-            .store(VoiceLifecycle::StartRequested as u8, Ordering::Release);
+        self.state.voices[slot].start(self.played);
         Voice {
             state: Arc::clone(&self.state),
             slot,
