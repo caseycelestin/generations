@@ -121,12 +121,33 @@ pub(crate) struct AudioState {
 }
 
 #[derive(Debug)]
+#[must_use = "dropping it stops the voice"]
 pub(crate) struct Voice {
     state: Arc<AudioState>,
     /// Which of the audio's voices it plays in.
     slot: usize,
     /// Which voice of that slot it is.
     number: u64,
+    /// Let go without stopping; the voice plays out.
+    detached: bool,
+}
+
+impl Voice {
+    /// Gives up the handle without stopping the voice, so it plays to its
+    /// end; nothing can stop it after.
+    pub(crate) fn detach(mut self) {
+        // A flag, not `mem::forget`: forgetting would keep the state's
+        // count up, so its place could never be loaded again.
+        self.detached = true;
+    }
+}
+
+impl Drop for Voice {
+    fn drop(&mut self) {
+        if !self.detached {
+            self.state.voices[self.slot].request_stop(self.number);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -160,6 +181,7 @@ impl LoadedAudio {
             state: Arc::clone(&self.state),
             slot,
             number: self.played,
+            detached: false,
         }
     }
 }
