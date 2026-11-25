@@ -334,12 +334,10 @@ pub(crate) mod realtime {
     }
 
     impl Voice {
-        /// Acts on what the voice was asked; true if it plays this block.
-        fn update_lifecycle(&mut self) -> bool {
-            // Acquire: pairs with `play`'s Release store, so a new voice's
-            // number comes with its request.
+        /// Acts on what voice `number` was asked; true if it plays this
+        /// block.
+        fn update_lifecycle(&mut self, number: u64, lifecycle: VoiceLifecycle) -> bool {
             let voice = &self.state.voices[self.slot];
-            let (number, lifecycle) = voice.load(Ordering::Acquire);
             match lifecycle {
                 VoiceLifecycle::Idle => false,
                 VoiceLifecycle::StopRequested => {
@@ -359,7 +357,10 @@ pub(crate) mod realtime {
         }
 
         fn render(&mut self, scratch: &mut [Frame]) {
-            if !self.update_lifecycle() {
+            // Acquire: pairs with `play`'s Release store, so a new voice's
+            // number comes with its request.
+            let (number, lifecycle) = self.state.voices[self.slot].load(Ordering::Acquire);
+            if !self.update_lifecycle(number, lifecycle) {
                 return;
             }
             let Some(buffer) = &self.buffer else {
@@ -387,6 +388,9 @@ pub(crate) mod realtime {
                 }
             }
             self.playhead = end;
+            if end == frames {
+                self.state.voices[self.slot].set_idle(number);
+            }
         }
     }
 
