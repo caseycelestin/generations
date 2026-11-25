@@ -37,6 +37,7 @@ mod voice;
 pub use audio::{Audio, LoadError};
 pub use control::Control;
 pub use input::{Input, InputChannels, InputError};
+pub use input_v2::Inputs;
 pub use recording::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
 pub use voice::Voice;

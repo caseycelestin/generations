@@ -79,7 +79,7 @@ impl Drop for Input {
 }
 
 #[derive(Debug)]
-pub(crate) struct Inputs {
+pub struct Inputs {
     states: Vec<Arc<InputState>>,
     /// The capture device's, so `open` can refuse channels past it.
     capture_channels: usize,
