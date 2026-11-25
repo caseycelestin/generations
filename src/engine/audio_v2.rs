@@ -218,7 +218,7 @@ struct Place {
 
 #[derive(Debug)]
 pub(crate) struct Audio {
-    places: Vec<Place>,
+    places: Box<[Place]>,
     producer: Producer<(usize, Arc<AudioBuffer>)>,
 }
 
@@ -293,13 +293,16 @@ pub(crate) mod realtime {
         /// Dropped on unload, never freed here: the control side keeps a
         /// clone.
         buffer: Option<Arc<AudioBuffer>>,
+        /// Each voice's next frame, by slot; only the renderer uses them, so
+        /// no atomics.
+        playheads: Box<[usize]>,
     }
 
     #[derive(Debug)]
     pub(crate) struct Audio {
         /// In `create`'s order, so a message's index names the same place
         /// on both sides; never resized.
-        places: Vec<Place>,
+        places: Box<[Place]>,
         consumer: Consumer<(usize, Arc<AudioBuffer>)>,
     }
 
@@ -311,6 +314,7 @@ pub(crate) mod realtime {
             let places = states
                 .into_iter()
                 .map(|state| Place {
+                    playheads: vec![0; state.voices.len()].into_boxed_slice(),
                     state,
                     buffer: None,
                 })
