@@ -81,6 +81,8 @@ impl Drop for Input {
 #[derive(Debug)]
 pub(crate) struct Inputs {
     states: Vec<Arc<InputState>>,
+    /// The capture device's, so `open` can refuse channels past it.
+    capture_channels: usize,
 }
 
 impl Inputs {
@@ -103,10 +105,14 @@ impl Inputs {
     }
 }
 
-pub(crate) fn create(count: usize) -> (Inputs, realtime::Inputs) {
+pub(crate) fn create(count: usize, capture_channels: usize) -> (Inputs, realtime::Inputs) {
     let states: Vec<Arc<InputState>> = (0..count).map(|id| Arc::new(InputState::new(id))).collect();
-    let realtime = realtime::Inputs::new(states.clone());
-    (Inputs { states }, realtime)
+    let realtime = realtime::Inputs::new(states.clone(), capture_channels);
+    let inputs = Inputs {
+        states,
+        capture_channels,
+    };
+    (inputs, realtime)
 }
 
 pub(crate) mod realtime {
@@ -121,6 +127,8 @@ pub(crate) mod realtime {
     #[derive(Debug)]
     pub(crate) struct Input {
         state: Arc<InputState>,
+        /// Samples per capture frame.
+        capture_channels: usize,
     }
 
     impl Input {
@@ -143,8 +151,7 @@ pub(crate) mod realtime {
 
         /// Called every block, so opens and closes land on block boundaries.
         /// Silence unless open, so a stale `scratch` is never heard.
-        /// `capture_channels` is samples per capture frame.
-        pub(crate) fn render(&self, capture: &[Pcm], capture_channels: usize, scratch: &mut [Frame]) {
+        pub(crate) fn render(&self, capture: &[Pcm], scratch: &mut [Frame]) {
             if !self.advance_lifecycle() {
                 scratch.fill([0.0; 2]);
                 return;
@@ -152,7 +159,7 @@ pub(crate) mod realtime {
             // Relaxed: `advance_lifecycle`'s Acquire already took them.
             let left = self.state.left.load(Ordering::Relaxed);
             let right = self.state.right.load(Ordering::Relaxed);
-            let frames = capture.chunks_exact(capture_channels);
+            let frames = capture.chunks_exact(self.capture_channels);
             for (into, frame) in scratch.iter_mut().zip(frames) {
                 *into = [frame[left], frame[right]];
             }
@@ -169,8 +176,14 @@ pub(crate) mod realtime {
     }
 
     impl Inputs {
-        pub(crate) fn new(states: Vec<Arc<InputState>>) -> Self {
-            let inputs = states.into_iter().map(|state| Input { state }).collect();
+        pub(crate) fn new(states: Vec<Arc<InputState>>, capture_channels: usize) -> Self {
+            let inputs = states
+                .into_iter()
+                .map(|state| Input {
+                    state,
+                    capture_channels,
+                })
+                .collect();
             Self { inputs }
         }
     }
