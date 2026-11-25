@@ -38,10 +38,15 @@ enum VoiceLifecycle {
     /// `play` asked; the renderer starts it from the top at its next block,
     /// cutting whatever was playing there.
     StartRequested,
+    /// The renderer is playing it.
+    Playing,
+    /// Its `Voice` was dropped; the renderer ends it at its next block.
+    StopRequested,
 }
 
 impl VoiceLifecycle {
-    /// Bits it takes in a `VoiceState`; enough for every variant.
+    /// Bits it takes in a `VoiceState`: four variants, full. A fifth needs
+    /// a third bit.
     const BITS: u32 = 2;
 
     /// Only ever given what was stored from a `VoiceLifecycle`.
@@ -49,6 +54,8 @@ impl VoiceLifecycle {
         match value {
             v if v == Self::Idle as u8 => Self::Idle,
             v if v == Self::StartRequested as u8 => Self::StartRequested,
+            v if v == Self::Playing as u8 => Self::Playing,
+            v if v == Self::StopRequested as u8 => Self::StopRequested,
             _ => unreachable!("only a VoiceLifecycle is stored"),
         }
     }
@@ -83,6 +90,26 @@ impl VoiceState {
     fn start(&self, number: u64) {
         let packed = Self::pack(number, VoiceLifecycle::StartRequested);
         self.packed.store(packed, Ordering::Release);
+    }
+
+    /// Only while the slot still holds voice `number`, so a stale `Voice`
+    /// never stops a newer one. Relaxed: nothing is published through it.
+    fn request_stop(&self, number: u64) {
+        let _ = self
+            .packed
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |packed| {
+                let (current, lifecycle) = Self::unpack(packed);
+                if current != number {
+                    return None;
+                }
+                let next = match lifecycle {
+                    VoiceLifecycle::StartRequested | VoiceLifecycle::Playing => {
+                        VoiceLifecycle::StopRequested
+                    }
+                    VoiceLifecycle::Idle | VoiceLifecycle::StopRequested => return None,
+                };
+                Some(Self::pack(number, next))
+            });
     }
 }
 
