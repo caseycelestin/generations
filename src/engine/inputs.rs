@@ -154,7 +154,6 @@ pub(crate) fn create(count: usize, capture_channels: usize) -> (Inputs, realtime
 
 pub(crate) mod realtime {
     use std::sync::Arc;
-
     use std::sync::atomic::Ordering;
 
     use super::{InputState, Lifecycle};
