@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (mut control, mut renderer) = engine::create(device.capture_channels(), 1, 0, 8, 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
-    let mut input = control.open_input(InputChannels::Stereo(0, 1))?;
+    let mut input = control.inputs().open(InputChannels { left: 0, right: 1 })?;
     input.set_monitoring(true);
     println!("monitoring channels 0 and 1, left and right");
     sleep(Duration::from_secs(3));
