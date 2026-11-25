@@ -145,7 +145,7 @@ impl VoiceState {
 }
 
 #[derive(Debug)]
-pub(crate) struct AudioState {
+struct AudioState {
     /// A `Lifecycle` as its `u8`, since no atomic holds an enum.
     lifecycle: AtomicU8,
     voices: Box<[VoiceState]>,
@@ -428,6 +428,15 @@ pub(crate) mod realtime {
                 voice.buffer = Some(Arc::clone(&buffer));
             }
             self.buffer = Some(buffer);
+            // Fails if the handle was dropped before its buffer arrived,
+            // leaving the unload it asked for. Relaxed: nothing is published
+            // through it.
+            let _ = self.state.lifecycle.compare_exchange(
+                Lifecycle::Idle as u8,
+                Lifecycle::Loaded as u8,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         }
 
         fn render(&mut self, scratch: &mut [Frame]) {
@@ -465,16 +474,7 @@ pub(crate) mod realtime {
                 // The control side refills an audio only once this side has
                 // dropped its buffer, so nothing is dropped here.
                 debug_assert!(audio.buffer.is_none(), "a loaded audio is refilled");
-                audio.buffer = Some(buffer);
-                // Fails if the handle was dropped before its buffer arrived,
-                // leaving the unload it asked for. Relaxed: nothing is
-                // published through it.
-                let _ = audio.state.lifecycle.compare_exchange(
-                    Lifecycle::Idle as u8,
-                    Lifecycle::Loaded as u8,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                );
+                audio.load(buffer);
             }
         }
 
