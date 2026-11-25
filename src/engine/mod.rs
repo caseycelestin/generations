@@ -25,6 +25,7 @@
 //! comes home between control threads.
 
 mod audio;
+mod audio_v2;
 mod control;
 mod inputs;
 mod math;
