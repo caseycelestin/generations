@@ -46,7 +46,7 @@ pub(crate) struct InputState {
 }
 
 impl InputState {
-    fn new(id: usize) -> Self {
+    fn new() -> Self {
         Self {
             left: AtomicUsize::new(0),
             right: AtomicUsize::new(0),
@@ -121,7 +121,7 @@ impl Inputs {
 }
 
 pub(crate) fn create(count: usize, capture_channels: usize) -> (Inputs, realtime::Inputs) {
-    let states: Vec<Arc<InputState>> = (0..count).map(|id| Arc::new(InputState::new(id))).collect();
+    let states: Vec<Arc<InputState>> = (0..count).map(|_| Arc::new(InputState::new())).collect();
     let realtime = realtime::Inputs::new(states.clone(), capture_channels);
     let inputs = Inputs {
         states,
