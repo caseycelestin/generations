@@ -115,6 +115,8 @@ pub(crate) mod realtime {
     use std::sync::atomic::Ordering;
 
     use super::{InputState, Lifecycle};
+    use crate::config::Pcm;
+    use crate::engine::renderer::Frame;
 
     #[derive(Debug)]
     pub(crate) struct Input {
@@ -136,6 +138,23 @@ pub(crate) mod realtime {
                     false
                 }
                 Lifecycle::Idle => false,
+            }
+        }
+
+        /// Called every block, so opens and closes land on block boundaries.
+        /// Silence unless open, so a stale `scratch` is never heard.
+        /// `capture_channels` is samples per capture frame.
+        pub(crate) fn render(&self, capture: &[Pcm], capture_channels: usize, scratch: &mut [Frame]) {
+            if !self.advance_lifecycle() {
+                scratch.fill([0.0; 2]);
+                return;
+            }
+            // Relaxed: `advance_lifecycle`'s Acquire already took them.
+            let left = self.state.left.load(Ordering::Relaxed);
+            let right = self.state.right.load(Ordering::Relaxed);
+            let frames = capture.chunks_exact(capture_channels);
+            for (into, frame) in scratch.iter_mut().zip(frames) {
+                *into = [frame[left], frame[right]];
             }
         }
 
