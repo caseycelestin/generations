@@ -56,7 +56,7 @@ pub fn create(
     ring_frames: usize,
 ) -> (Control, Renderer) {
     let (recorders_control, recorders_realtime) = recording::create(recorders, ring_frames);
-    let (inputs_control, inputs_realtime) = input::channel(inputs, capture_channels);
+    let (inputs_control, inputs_realtime) = input_v2::create(inputs, capture_channels);
     let (audio_control, audio_realtime) = audio::channel(audio);
     (
         Control::new(

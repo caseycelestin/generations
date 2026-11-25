@@ -3,7 +3,7 @@
 
 use crate::config::Pcm;
 use crate::engine::audio::realtime::LoadedAudio;
-use crate::engine::input::realtime::Inputs;
+use crate::engine::input_v2::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::Recorders;
 
@@ -60,7 +60,6 @@ impl Renderer {
             (out.len() / OUTPUT_CHANNELS) * self.capture_channels,
             "capture and output are not the same frames"
         );
-        self.inputs.receive();
         self.audio.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; OUTPUT_CHANNELS]);
