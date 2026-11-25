@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
+use thiserror::Error;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum Lifecycle {
@@ -78,6 +80,14 @@ impl Drop for Input {
     }
 }
 
+/// Nothing was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum InputError {
+    /// A closed input gives its place back at the renderer's next block.
+    #[error("every input is open")]
+    Full,
+}
+
 #[derive(Debug)]
 pub struct Inputs {
     states: Vec<Arc<InputState>>,
@@ -87,19 +97,20 @@ pub struct Inputs {
 
 impl Inputs {
     /// A state is free while only the two sides' clones hold it.
-    pub fn open(&mut self, channels: InputChannels) -> Option<Input> {
+    pub fn open(&mut self, channels: InputChannels) -> Result<Input, InputError> {
         let free = self.states.iter().find(|state| {
             // Acquire: pairs with the store that closes the input.
             state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
                 && Arc::strong_count(state) == 2
-        })?;
+        });
+        let free = free.ok_or(InputError::Full)?;
         // Relaxed: the store that opens the input must publish these.
         free.left.store(channels.left, Ordering::Relaxed);
         free.right.store(channels.right, Ordering::Relaxed);
         free.monitoring.store(false, Ordering::Relaxed);
         free.lifecycle
             .store(Lifecycle::Open as u8, Ordering::Release);
-        Some(Input {
+        Ok(Input {
             state: Arc::clone(free),
         })
     }
