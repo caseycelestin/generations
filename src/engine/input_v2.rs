@@ -36,7 +36,6 @@ pub struct InputChannels {
 
 #[derive(Debug)]
 pub(crate) struct InputState {
-    id: AtomicUsize,
     /// Capture channels; a mono source names the same one twice.
     left: AtomicUsize,
     right: AtomicUsize,
@@ -49,7 +48,6 @@ pub(crate) struct InputState {
 impl InputState {
     fn new(id: usize) -> Self {
         Self {
-            id: AtomicUsize::new(id),
             left: AtomicUsize::new(0),
             right: AtomicUsize::new(0),
             lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
