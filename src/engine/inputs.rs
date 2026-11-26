@@ -90,7 +90,7 @@ pub enum InputError {
 
 #[derive(Debug)]
 pub struct Inputs {
-    states: Vec<Arc<InputState>>,
+    states: Box<[Arc<InputState>]>,
     /// The capture device's, so `open` can refuse channels past it.
     capture_channels: usize,
 }
@@ -145,7 +145,7 @@ pub(crate) fn create(count: usize, capture_channels: usize) -> (Inputs, realtime
     let states: Vec<Arc<InputState>> = (0..count).map(|_| Arc::new(InputState::new())).collect();
     let realtime = realtime::Inputs::new(states.clone(), capture_channels);
     let inputs = Inputs {
-        states,
+        states: states.into_boxed_slice(),
         capture_channels,
     };
     (inputs, realtime)
