@@ -250,7 +250,7 @@ pub(crate) fn create(count: usize, ring_frames: usize) -> (Recorders, realtime::
             consumer: Some(consumer),
         });
     }
-    let realtime = realtime::Recorders::new(realtime_recorders);
+    let realtime = realtime::Recorders::new(realtime_recorders.into_boxed_slice());
     // Each recorder's consumer is out at most once, so a return never waits.
     let (return_consumer, returned_consumers) = mpsc::sync_channel(count);
     let recorders = Recorders {
@@ -340,11 +340,11 @@ pub(crate) mod realtime {
     #[derive(Debug)]
     pub(crate) struct Recorders {
         /// By id, for the whole run.
-        recorders: Vec<Recorder>,
+        recorders: Box<[Recorder]>,
     }
 
     impl Recorders {
-        pub(crate) fn new(recorders: Vec<Recorder>) -> Self {
+        pub(crate) fn new(recorders: Box<[Recorder]>) -> Self {
             Self { recorders }
         }
 
