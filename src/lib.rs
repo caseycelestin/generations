@@ -11,11 +11,10 @@
 //!                  RAM and on the render path alike
 //! engine/          everything heard; create() makes both sides
 //!   control          Control, the door to one renderer
-//!   audio, voice,    one file per feature: its shared state, its handle,
-//!   input,             and its real-time part; voices belong to loaded
-//!   recording          audio
+//!   audio, inputs,   one file per feature: its shared state, its
+//!   recording          handles, and its real-time part; voices belong to
+//!                      loaded audio
 //!   renderer, math   the audio thread
-//!   pool             shared state made once at create and reused
 //! (the caller)     owns the audio device and hands it the renderer to
 //!                  drive, and the samples it loads. The crate has no
 //!                  audio dependency; examples/device/ is one caller's

@@ -19,7 +19,6 @@ enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// Only ever given what was stored from a `Lifecycle`.
     fn from_u8(value: u8) -> Self {
         match value {
             v if v == Self::Idle as u8 => Self::Idle,
@@ -38,18 +37,15 @@ enum VoiceLifecycle {
     /// `play` asked; the renderer starts it from the top at its next block,
     /// cutting whatever was playing there.
     StartRequested,
-    /// The renderer is playing it.
     Playing,
     /// Its `Voice` was dropped; the renderer ends it at its next block.
     StopRequested,
 }
 
 impl VoiceLifecycle {
-    /// Bits it takes in a `VoiceState`: four variants, full. A fifth needs
-    /// a third bit.
+    /// Four variants fill two bits; a fifth needs a third.
     const BITS: u32 = 2;
 
-    /// Only ever given what was stored from a `VoiceLifecycle`.
     fn from_u8(value: u8) -> Self {
         match value {
             v if v == Self::Idle as u8 => Self::Idle,
@@ -92,9 +88,8 @@ impl VoiceState {
         self.packed.store(packed, Ordering::Release);
     }
 
-    /// The renderer's: voice `number`, asked to start, is now playing.
-    /// False if `play` or a stop got there first; the renderer sees that
-    /// next block. Relaxed: the renderer's Acquire load saw the request.
+    /// The renderer's. False if `play` or a stop got there first. Relaxed:
+    /// the renderer's Acquire load saw the request.
     fn set_playing(&self, number: u64) -> bool {
         let requested = Self::pack(number, VoiceLifecycle::StartRequested);
         let playing = Self::pack(number, VoiceLifecycle::Playing);
@@ -103,10 +98,9 @@ impl VoiceState {
             .is_ok()
     }
 
-    /// The renderer's: voice `number` has ended, played out or stopped, so
-    /// its slot is free. Only while the slot still holds that voice, so a
-    /// `play` that took it meanwhile is never lost. Release: pairs with
-    /// `play`'s Acquire load.
+    /// The renderer's, once voice `number` plays out or stops. Only while
+    /// the slot still holds that voice, so a `play` that took it meanwhile
+    /// is never lost. Release: pairs with `play`'s Acquire load.
     fn set_idle(&self, number: u64) {
         let _ = self
             .packed
@@ -123,8 +117,8 @@ impl VoiceState {
             });
     }
 
-    /// The renderer's, once its audio is unloaded: frees the slot whatever it
-    /// held. No `play` can race it then, since the `Audio` is gone.
+    /// The renderer's, on unload: frees the slot whatever it holds. No
+    /// `play` can race it, since the `Audio` is gone.
     /// Release: pairs with `play`'s Acquire load.
     fn set_unloaded(&self) {
         let packed = Self::pack(0, VoiceLifecycle::Idle);
@@ -174,13 +168,11 @@ pub struct Voice {
     slot: usize,
     /// Which voice of that slot it is.
     number: u64,
-    /// Let go without stopping; the voice plays out.
     detached: bool,
 }
 
 impl Voice {
-    /// Gives up the handle without stopping the voice, so it plays to its
-    /// end; nothing can stop it after.
+    /// The voice plays to its end; nothing can stop it after.
     pub fn detach(mut self) {
         // A flag, not `mem::forget`: forgetting would keep the state's
         // count up, so its place could never be loaded again.
@@ -313,11 +305,10 @@ impl AudioPool {
         if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
         }
-        // Free once no `Audio` or `Voice` handle holds the state, so only
-        // the two sides' lists and the renderer's voices do, and the
-        // renderer has dropped its clones of the buffer. A live `Voice`
-        // keeps it: numbers restart each load, so its stop could hit a new
-        // voice.
+        // Free once only the two sides' lists and the renderer's voices
+        // hold the state, and the renderer has dropped its buffer clones.
+        // A live `Voice` keeps it held: numbers restart each load, so its
+        // stop could hit a new voice.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
             // Acquire: pairs with the store that frees the place.
             place.state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
@@ -380,16 +371,12 @@ pub(crate) mod realtime {
         state: Arc<AudioState>,
         /// Which of the state's voices it is.
         slot: usize,
-        /// Dropped on unload, never freed here: the control side keeps a
-        /// clone.
         buffer: Option<Arc<AudioBuffer>>,
-        /// The next frame, from the start of the buffer; only the renderer
-        /// uses it, so no atomic.
+        /// The next frame, counted from the buffer's start.
         playhead: usize,
     }
 
     impl Voice {
-        /// Drops its buffer, never the last clone, and frees its slot.
         fn unload(&mut self) {
             self.buffer = None;
             self.state.voices[self.slot].set_unloaded();
@@ -458,8 +445,6 @@ pub(crate) mod realtime {
     #[derive(Debug)]
     struct Audio {
         state: Arc<AudioState>,
-        /// Dropped on unload, never freed here: the control side keeps a
-        /// clone.
         buffer: Option<Arc<AudioBuffer>>,
         /// By slot, like the state's voices.
         voices: Box<[Voice]>,
@@ -500,7 +485,7 @@ pub(crate) mod realtime {
             );
         }
 
-        /// Drops its buffer and frees its voices, if its handle asked.
+        /// Only once its handle asked.
         fn unload(&mut self) {
             let lifecycle = self.state.lifecycle.load(Ordering::Relaxed);
             if lifecycle != Lifecycle::UnloadRequested as u8 {
@@ -509,7 +494,6 @@ pub(crate) mod realtime {
             for voice in &mut self.voices {
                 voice.unload();
             }
-            // Never the last clone: the control side keeps one.
             self.buffer = None;
             // Release: the control side sees the buffers dropped and the
             // voices free before it sees the audio free.
@@ -557,8 +541,8 @@ pub(crate) mod realtime {
             }
         }
 
-        /// Drops every unloaded buffer and frees its audio. After `receive`,
-        /// so one unloaded before it arrived goes in the same block.
+        /// After `receive`, so an audio unloaded before its buffer arrived
+        /// is freed in the same block.
         pub(crate) fn unload(&mut self) {
             for audio in &mut self.audio {
                 audio.unload();

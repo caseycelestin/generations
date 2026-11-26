@@ -8,20 +8,18 @@
 //!
 //! The two sides cross in four ways, each with one job:
 //!
-//! - A start ring per feature carries a place's state when its use begins
-//!   and it holds what only a ring can carry, such as loaded samples. It is
-//!   sized to the places, so a push never fails.
-//! - Atomics in a state carry everything during its life, both ways:
-//!   flags where the latest value wins, numbers that only grow, counters,
-//!   a lifecycle moved by compare-exchange. A state both sides hold from
-//!   `create`, as a recorder's is, needs no start ring at all.
+//! - A start ring carries what only a ring can, such as loaded samples,
+//!   when a place's use begins. It is sized to the places, so a push never
+//!   fails.
+//! - Atomics in a state carry everything else, both ways: flags where the
+//!   latest value wins, numbers that only grow, counters, a lifecycle moved
+//!   by compare-exchange.
 //! - A stream ring, made at `create`, carries audio that keeps flowing.
 //! - `render`'s arguments carry what the device hands over each period.
 //!
-//! Places are made at `create` and the control side keeps a clone of each,
-//! so nothing the renderer holds is freed there; a place is reused only
-//! once that clone, with the renderer's if it keeps one, is all that is
-//! left. Nothing comes home to the renderer's side; a recorder's consumer
+//! Places are made at `create` and both sides keep a clone of each, so
+//! nothing the renderer holds is freed there; a place is reused only once
+//! the clones made at `create` are all that is left. Nothing comes home to the renderer's side; a recorder's consumer
 //! comes home between control threads.
 
 mod audio;

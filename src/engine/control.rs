@@ -3,7 +3,7 @@ use crate::engine::inputs::Inputs;
 use crate::engine::recording::Recorders;
 
 /// One per renderer; an app shares it its own way. Everything done here or
-/// on a handle takes effect at the renderer's next period.
+/// on a handle takes effect at the renderer's next block.
 #[derive(Debug)]
 pub struct Control {
     inputs: Inputs,

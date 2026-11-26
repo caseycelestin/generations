@@ -16,7 +16,6 @@ enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// Only ever given what was stored from a `Lifecycle`.
     fn from_u8(value: u8) -> Self {
         match value {
             v if v == Self::Idle as u8 => Self::Idle,

@@ -16,11 +16,8 @@ const BLOCK_FRAMES: usize = 64;
 
 pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
 
-/// Dropping it ends the engine: [`Control`](crate::engine::Control) and
-/// every handle from the same [`create`](crate::engine::create) report the
-/// renderer gone. A stream
-/// drops the callback that owns it, so to survive a stream restart the
-/// callback must hand it back when dropped.
+/// A stream drops the callback that owns it, so to survive a stream
+/// restart the callback must hand the renderer back when dropped.
 #[derive(Debug)]
 pub struct Renderer {
     /// Per frame of `render`'s capture; zero without an input device.

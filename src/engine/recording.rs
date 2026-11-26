@@ -29,7 +29,6 @@ enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// Only ever given what was stored from a `Lifecycle`.
     fn from_u8(value: u8) -> Self {
         match value {
             v if v == Self::Idle as u8 => Self::Idle,
@@ -175,7 +174,8 @@ impl Recorders {
     /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8, 1, 24_000);
     /// let (recorder, mut drain) = control.recorders().arm()?;
     ///
-    /// // Recorded from the renderer's next period until a period after the stop.
+    /// // Recorded from the renderer's next block until its next block after
+    /// // the stop.
     /// recorder.record();
     /// renderer.render(&[], &mut [0.0; 512 * 2]);
     /// recorder.stop();
