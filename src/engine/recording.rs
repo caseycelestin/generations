@@ -339,7 +339,7 @@ pub(crate) mod realtime {
 
     #[derive(Debug)]
     pub(crate) struct Recorders {
-        /// By id, for the whole run.
+        /// By id.
         recorders: Box<[Recorder]>,
     }
 
