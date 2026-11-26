@@ -142,10 +142,10 @@ impl Inputs {
 }
 
 pub(crate) fn create(count: usize, capture_channels: usize) -> (Inputs, realtime::Inputs) {
-    let states: Vec<Arc<InputState>> = (0..count).map(|_| Arc::new(InputState::new())).collect();
+    let states: Box<[Arc<InputState>]> = (0..count).map(|_| Arc::new(InputState::new())).collect();
     let realtime = realtime::Inputs::new(states.clone(), capture_channels);
     let inputs = Inputs {
-        states: states.into_boxed_slice(),
+        states,
         capture_channels,
     };
     (inputs, realtime)
@@ -207,11 +207,11 @@ pub(crate) mod realtime {
 
     #[derive(Debug)]
     pub(crate) struct Inputs {
-        inputs: Vec<Input>,
+        inputs: Box<[Input]>,
     }
 
     impl Inputs {
-        pub(crate) fn new(states: Vec<Arc<InputState>>, capture_channels: usize) -> Self {
+        pub(crate) fn new(states: Box<[Arc<InputState>]>, capture_channels: usize) -> Self {
             let inputs = states
                 .into_iter()
                 .map(|state| Input {
