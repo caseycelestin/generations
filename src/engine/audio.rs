@@ -271,7 +271,7 @@ pub struct AudioPool {
 }
 
 impl AudioPool {
-    fn new(states: Vec<Arc<AudioState>>, producer: Producer<(usize, Arc<AudioBuffer>)>) -> Self {
+    fn new(states: Box<[Arc<AudioState>]>, producer: Producer<(usize, Arc<AudioBuffer>)>) -> Self {
         let places = states
             .into_iter()
             .map(|state| Place {
@@ -336,7 +336,7 @@ impl AudioPool {
 
 pub(crate) fn create(count: usize, voices: usize) -> (AudioPool, realtime::AudioPool) {
     assert!(voices > 0, "an audio needs at least one voice");
-    let states: Vec<Arc<AudioState>> = (0..count)
+    let states: Box<[Arc<AudioState>]> = (0..count)
         .map(|_| {
             Arc::new(AudioState {
                 lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
@@ -523,7 +523,7 @@ pub(crate) mod realtime {
 
     impl AudioPool {
         pub(super) fn new(
-            states: Vec<Arc<AudioState>>,
+            states: Box<[Arc<AudioState>]>,
             consumer: Consumer<(usize, Arc<AudioBuffer>)>,
         ) -> Self {
             let audio = states.into_iter().map(Audio::new).collect();
