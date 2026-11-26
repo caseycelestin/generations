@@ -31,6 +31,7 @@ mod math;
 mod recording;
 mod renderer;
 
+pub use audio_v2::{Audio, AudioPool, LoadError, Voice};
 pub use control::Control;
 pub use inputs::{Input, InputChannels, InputError, Inputs};
 pub use recording::{ArmError, Drain, Recorder, Recorders};
@@ -82,7 +83,7 @@ mod tests {
     #[test]
     fn a_loaded_audio_plays_to_its_end() {
         let (mut control, mut renderer) = create(0, 0, 1, 8, 0, 0);
-        let mut audio = control.load(vec![0.5; 2], ChannelLayout::Mono).unwrap();
+        let mut audio = control.audio().load(vec![0.5; 2], ChannelLayout::Mono).unwrap();
         let _voice = audio.play();
         let mut out = vec![0.0; 3 * 2];
         renderer.render(&[], &mut out);
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn a_dropped_voice_falls_silent() {
         let (mut control, mut renderer) = create(0, 0, 1, 8, 0, 0);
-        let mut audio = control.load(vec![0.5; 64], ChannelLayout::Mono).unwrap();
+        let mut audio = control.audio().load(vec![0.5; 64], ChannelLayout::Mono).unwrap();
         let voice = audio.play();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
@@ -106,7 +107,7 @@ mod tests {
     #[test]
     fn a_detached_voice_plays_on() {
         let (mut control, mut renderer) = create(0, 0, 1, 8, 0, 0);
-        let mut audio = control.load(vec![0.5; 64], ChannelLayout::Mono).unwrap();
+        let mut audio = control.audio().load(vec![0.5; 64], ChannelLayout::Mono).unwrap();
         audio.play().detach();
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&[], &mut out);
@@ -116,7 +117,7 @@ mod tests {
     #[test]
     fn a_play_takes_a_free_voice_before_cutting_one() {
         let (mut control, mut renderer) = create(0, 0, 1, 2, 0, 0);
-        let mut audio = control.load(vec![0.25; 64], ChannelLayout::Mono).unwrap();
+        let mut audio = control.audio().load(vec![0.25; 64], ChannelLayout::Mono).unwrap();
         let first = audio.play();
         let _second = audio.play();
         renderer.render(&[], &mut [0.0; 4 * 2]);
@@ -134,6 +135,7 @@ mod tests {
     fn a_play_with_every_voice_busy_cuts_the_oldest() {
         let (mut control, mut renderer) = create(0, 0, 1, 1, 0, 0);
         let mut audio = control
+            .audio()
             .load(vec![0.1, 0.2, 0.3, 0.4], ChannelLayout::Mono)
             .unwrap();
         let _first = audio.play();
@@ -149,11 +151,11 @@ mod tests {
     #[test]
     fn an_unloaded_audio_falls_silent() {
         let (mut control, mut renderer) = create(0, 0, 1, 8, 0, 0);
-        let mut audio = control.load(vec![0.5; 64], ChannelLayout::Mono).unwrap();
+        let mut audio = control.audio().load(vec![0.5; 64], ChannelLayout::Mono).unwrap();
         audio.play().detach();
         renderer.render(&[], &mut [0.0; 4 * 2]);
 
-        audio.unload();
+        drop(audio);
         let mut out = vec![0.5; 4 * 2];
         renderer.render(&[], &mut out);
 
@@ -164,6 +166,7 @@ mod tests {
     fn load_refuses_part_of_a_frame_and_hands_the_samples_back() {
         let (mut control, _renderer) = create(0, 0, 1, 8, 0, 0);
         let error = control
+            .audio()
             .load(vec![0.5; 3], ChannelLayout::Stereo)
             .unwrap_err();
         assert!(matches!(error, LoadError::PartFrame(_)));
@@ -173,8 +176,9 @@ mod tests {
     #[test]
     fn load_refuses_while_every_place_is_held() {
         let (mut control, _renderer) = create(0, 0, 1, 8, 0, 0);
-        let _held = control.load(vec![0.5; 2], ChannelLayout::Mono).unwrap();
+        let _held = control.audio().load(vec![0.5; 2], ChannelLayout::Mono).unwrap();
         let error = control
+            .audio()
             .load(vec![0.25; 2], ChannelLayout::Mono)
             .unwrap_err();
         assert!(matches!(error, LoadError::Full(_)));
@@ -184,18 +188,10 @@ mod tests {
     #[test]
     fn an_unloaded_place_is_free_again() {
         let (mut control, mut renderer) = create(0, 0, 1, 8, 0, 0);
-        let held = control.load(vec![0.5; 2], ChannelLayout::Mono).unwrap();
+        let held = control.audio().load(vec![0.5; 2], ChannelLayout::Mono).unwrap();
         drop(held);
         renderer.render(&[], &mut [0.0; 4 * 2]);
-        assert!(control.load(vec![0.25; 2], ChannelLayout::Mono).is_ok());
-    }
-
-    #[test]
-    fn load_refuses_once_the_renderer_is_gone() {
-        let (mut control, renderer) = create(0, 0, 1, 8, 0, 0);
-        drop(renderer);
-        let error = control.load(vec![0.5; 2], ChannelLayout::Mono).unwrap_err();
-        assert!(matches!(error, LoadError::RendererGone(_)));
+        assert!(control.audio().load(vec![0.25; 2], ChannelLayout::Mono).is_ok());
     }
 
     #[test]

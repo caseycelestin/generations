@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             0.3 * (TAU * 220.0 * t).sin()
         })
         .collect();
-    let mut audio = control.load(tone, ChannelLayout::Mono)?;
+    let mut audio = control.audio().load(tone, ChannelLayout::Mono)?;
 
     println!("a held tone, stopped after a second");
     let voice = audio.play();

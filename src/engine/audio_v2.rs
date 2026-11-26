@@ -294,12 +294,15 @@ impl AudioPool {
         if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
         }
-        // Free once no `Audio` holds the state, so only the two sides'
-        // lists do, and the renderer has dropped its clone of the buffer.
+        // Free once no `Audio` or `Voice` handle holds the state, so only
+        // the two sides' lists and the renderer's voices do, and the
+        // renderer has dropped its clones of the buffer. A live `Voice`
+        // keeps it: numbers restart each load, so its stop could hit a new
+        // voice.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
             // Acquire: pairs with the store that frees the place.
             place.state.lifecycle.load(Ordering::Acquire) == Lifecycle::Idle as u8
-                && Arc::strong_count(&place.state) == 2
+                && Arc::strong_count(&place.state) == 2 + place.state.voices.len()
                 && place
                     .buffer
                     .as_ref()
