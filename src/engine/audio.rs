@@ -290,6 +290,25 @@ impl AudioPool {
         Self { places, producer }
     }
 
+    /// The engine holds `samples` until the audio is unloaded; a refused
+    /// load hands them back.
+    ///
+    /// ```no_run
+    /// use generations::{ChannelLayout, engine};
+    ///
+    /// // Room to load one audio, with eight voices of its own.
+    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8, 0, 0);
+    /// let mut pluck = control
+    ///     .audio()
+    ///     .load(vec![0.5; 48_000], ChannelLayout::Mono)?;
+    /// let voice = pluck.play();
+    ///
+    /// // Heard from the renderer's next block until its handle drops.
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// drop(voice);
+    /// renderer.render(&[], &mut [0.0; 512 * 2]);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     pub fn load(&mut self, samples: Vec<f32>, layout: ChannelLayout) -> Result<Audio, LoadError> {
         if !samples.len().is_multiple_of(layout.count()) {
             return Err(LoadError::PartFrame(samples));
