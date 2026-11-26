@@ -124,7 +124,7 @@ impl VoiceState {
     }
 
     /// The renderer's, once its audio is unloaded: frees the slot whatever it
-    /// held. No `play` can race it then, since the `LoadedAudio` is gone.
+    /// held. No `play` can race it then, since the `Audio` is gone.
     /// Release: pairs with `play`'s Acquire load.
     fn set_unloaded(&self) {
         let packed = Self::pack(0, VoiceLifecycle::Idle);
@@ -191,14 +191,14 @@ impl Drop for Voice {
 
 #[derive(Debug)]
 #[must_use = "dropping it unloads the audio"]
-pub(crate) struct LoadedAudio {
+pub(crate) struct Audio {
     state: Arc<AudioState>,
     /// Voices started so far, by this handle alone; the next one's number
     /// is this plus one, so none is 0 and the smallest is the oldest.
     played: u64,
 }
 
-impl LoadedAudio {
+impl Audio {
     pub(crate) fn play(&mut self) -> Voice {
         let voices = &self.state.voices;
         // Acquire: pairs with the renderer's store when a voice ends.
@@ -225,7 +225,7 @@ impl LoadedAudio {
     }
 }
 
-impl Drop for LoadedAudio {
+impl Drop for Audio {
     fn drop(&mut self) {
         // Retried if the renderer moves it meanwhile, since its buffer may
         // not have arrived yet. Relaxed: nothing is published through it.
@@ -256,12 +256,12 @@ struct Place {
 }
 
 #[derive(Debug)]
-pub(crate) struct Audio {
+pub(crate) struct AudioPool {
     places: Box<[Place]>,
     producer: Producer<(usize, Arc<AudioBuffer>)>,
 }
 
-impl Audio {
+impl AudioPool {
     fn new(states: Vec<Arc<AudioState>>, producer: Producer<(usize, Arc<AudioBuffer>)>) -> Self {
         let places = states
             .into_iter()
@@ -273,8 +273,8 @@ impl Audio {
         Self { places, producer }
     }
 
-    pub(crate) fn load(&mut self, buffer: AudioBuffer) -> Result<LoadedAudio, LoadError> {
-        // Free once no `LoadedAudio` holds the state, so only the two sides'
+    pub(crate) fn load(&mut self, buffer: AudioBuffer) -> Result<Audio, LoadError> {
+        // Free once no `Audio` holds the state, so only the two sides'
         // lists do, and the renderer has dropped its clone of the buffer.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
             // Acquire: pairs with the store that frees the place.
@@ -294,14 +294,14 @@ impl Audio {
         self.producer
             .push((index, buffer))
             .expect("the ring holds one message per place");
-        Ok(LoadedAudio {
+        Ok(Audio {
             state: Arc::clone(&free.state),
             played: 0,
         })
     }
 }
 
-pub(crate) fn create(count: usize) -> (Audio, realtime::AudioPool) {
+pub(crate) fn create(count: usize) -> (AudioPool, realtime::AudioPool) {
     let states: Vec<Arc<AudioState>> = (0..count)
         .map(|_| {
             Arc::new(AudioState {
@@ -314,7 +314,7 @@ pub(crate) fn create(count: usize) -> (Audio, realtime::AudioPool) {
     // message, so a ring of one per place is never full.
     let (producer, consumer) = RingBuffer::new(count);
     let realtime = realtime::AudioPool::new(states.clone(), consumer);
-    (Audio::new(states, producer), realtime)
+    (AudioPool::new(states, producer), realtime)
 }
 
 pub(crate) mod realtime {
