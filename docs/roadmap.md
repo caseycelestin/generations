@@ -35,8 +35,6 @@ crate (`cargo doc --open`); how it got this way is in git.
   a tap can be plain data. Open: whether it names a place, a count bumped
   on each open, or the state itself, and how it notices its input closing
   and the place reopening. Recording an input waits on this.
-- **A per-feature part on `Control` for audio,** as inputs and recorders
-  have, or `load` left on `Control`.
 - **What else lives on the audio thread.** Loaded audio now does, and a
   press is a voice number written into it. Open: whether pads, patterns,
   the transport, mixer and effect settings follow, the control side
@@ -75,7 +73,7 @@ might be tried again.
   back on any refusal.
 - **Nothing is allocated after `create`.** Places for inputs and loaded
   audio, each audio's voice slots, rings and scratch are made there, sized
-  by plain arguments, and reused: a load refills a free place in place.
+  by plain arguments, and reused: a load fills a free place.
   Sizes as const generics were tried and dropped: one size the caller
   could not choose at start-up, for no saving.
 - **The render side never allocates.** What it needs is allocated on the
@@ -101,35 +99,43 @@ might be tried again.
   so a place is never rewritten while the renderer reads it. Rejected: a
   one-way ring from a pool, which kept a tap from being plain data, and a
   renderer-gone error, which recorders do without.
-- **Loaded audio lives in a pool.** Its samples and layout sit in the
-  pooled state, so the renderer's clone is never their last owner;
-  `load` checks for whole frames, a renderer, then a free place, and sends
-  the state over a one-way ring. Rejected: samples in the message, which
-  would have to come home to be freed.
+- **Loaded audio is states made at `create` that both sides hold for the
+  whole run,** as inputs are, loaded through `control.audio()`. `load`
+  checks for whole frames, then a free place, and sends the buffer with
+  the place's index over a one-way ring; the control side keeps a clone,
+  so the renderer's is never the last. A place is free once only the
+  clones made at `create` hold it, so a live `Voice` keeps it. Each block
+  the renderer takes in loads, frees what was unloaded, then renders.
+  Rejected: a return ring, `arc-swap` and an unsafe atomic pointer for the
+  buffer, and a renderer-gone error.
+- **One set of names on both sides:** `AudioPool`, `Audio` (the handle)
+  and `Voice`. Rejected: `LoadedAudio` for the handle.
+- **Each struct does its own work.** A pool only delegates: an audio
+  loads, unloads and renders itself, and a voice moves its own
+  lifecycle.
 - **Dropping `Control` leaves the renderer as it was:** inputs and loaded
-  audio still held keep sounding. So the renderer's drop of loaded audio
-  is never the last, `Control`'s drop is to leak the pool's clones while
-  the renderer exists; handing the pool over on one more ring would avoid
+  audio still held keep sounding. So the renderer's drop of a buffer is
+  never the last, `Control`'s drop is to leak the pool's clones while the
+  renderer exists; handing the pool over on one more ring would avoid
   the leak. Not built.
 - **A verb lives on the thing it acts on.** Handles (`Audio`, `Voice`,
   `Input`, `Recorder`, `Drain`) carry their own verbs and errors and never hold a
   `Control`; every check comes before anything is sent. Dropping one ends
   what it holds, so each is `must_use`; a voice can be detached to play
   out.
-- **Voices belong to loaded audio,** `voices` each, as `create` is told.
+- **Voices belong to loaded audio,** `voices` each, as `create` is told;
+  zero panics there rather than at the first play.
   A play takes a free voice and, with none free, cuts that audio's oldest,
   because a press must sound; one audio never cuts another's. A global
   voice pool was dropped.
-- **A voice is started and stopped through atomics in its slot,** with no
-  ring: a ring per audio could not be shared by its handles nor returned
-  to its place. Each play gets the next number, sent in one atomic that
-  the renderer takes, leaving 0. A stop raises the slot's stop to the
-  voice's number and never lowers it, so a stolen voice's handle cannot
-  stop its successor; the renderer marks each voice done, and a slot is
-  free once its last voice is. The renderer keeps nothing per voice: which
-  voice plays and its playhead live in the slot, so the control side can
-  read where a voice is. A flag beside the number was rejected for a
-  double-start race; plain flags would forbid stealing held voices.
+- **A voice's slot is one atomic: its number above its lifecycle** (idle,
+  start requested, playing, stop requested), with no ring. A play stores
+  the next number with a start request; the renderer moves it on only by
+  compare-exchange. A stop, and the renderer marking a voice done, apply
+  only while the slot holds that number, so a stolen voice's handle cannot
+  stop its successor. The playhead is the renderer's. A flag beside the
+  number was rejected for a double-start race; plain flags would forbid
+  stealing held voices.
 - **The mix is stereo, in blocks of 64 frames, clipped once, hard, last.**
   A master gain or limiter goes before the clip.
 - **Inputs name capture channels and own none,** always a left and a
@@ -200,6 +206,8 @@ Not planned yet; kept so they are not forgotten.
   loaded audio.
 - Lost frames counted, and where one recording ends reported by its
   drain, through a frame count the renderer keeps.
+- Lists that never grow after `create` as `Box<[T]>` rather than `Vec`,
+  so the type says so.
 
 **Storage**
 - The project on disk, removed for now and in git: WAVs under a manifest,
