@@ -247,11 +247,11 @@ impl Drop for Audio {
     }
 }
 
-/// Nothing was loaded; the buffer comes back in it.
+/// Nothing was loaded; the samples come back in it.
 #[derive(Debug, Error)]
 pub enum LoadError {
     #[error("every place for loaded audio is held")]
-    Full(AudioBuffer),
+    Full(Vec<f32>),
 }
 
 /// Only the control side has it.
@@ -280,7 +280,7 @@ impl AudioPool {
         Self { places, producer }
     }
 
-    pub fn load(&mut self, buffer: AudioBuffer) -> Result<Audio, LoadError> {
+    pub fn load(&mut self, samples: Vec<f32>, layout: ChannelLayout) -> Result<Audio, LoadError> {
         // Free once no `Audio` holds the state, so only the two sides'
         // lists do, and the renderer has dropped its clone of the buffer.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
@@ -293,9 +293,9 @@ impl AudioPool {
                     .is_none_or(|buffer| Arc::strong_count(buffer) == 1)
         });
         let Some((index, free)) = free else {
-            return Err(LoadError::Full(buffer));
+            return Err(LoadError::Full(samples));
         };
-        let buffer = Arc::new(buffer);
+        let buffer = Arc::new(AudioBuffer { samples, layout });
         // Drops the old buffer here, on the control side.
         free.buffer = Some(Arc::clone(&buffer));
         self.producer
