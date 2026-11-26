@@ -2,7 +2,7 @@
 //! output. An offline bounce runs the same code with no deadline.
 
 use crate::config::Pcm;
-use crate::engine::audio::realtime::LoadedAudio;
+use crate::engine::audio_v2::realtime::AudioPool;
 use crate::engine::inputs::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::Recorders;
@@ -26,7 +26,7 @@ pub struct Renderer {
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
-    audio: LoadedAudio,
+    pool: AudioPool,
     recorders: Recorders,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
@@ -37,14 +37,14 @@ impl Renderer {
     /// control side.
     pub(crate) fn new(
         inputs: Inputs,
-        audio: LoadedAudio,
+        pool: AudioPool,
         recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
         Self {
             capture_channels,
             inputs,
-            audio,
+            pool,
             recorders,
             scratch: vec![[0.0; OUTPUT_CHANNELS]; BLOCK_FRAMES].into_boxed_slice(),
         }
@@ -60,13 +60,15 @@ impl Renderer {
             (out.len() / OUTPUT_CHANNELS) * self.capture_channels,
             "capture and output are not the same frames"
         );
-        self.audio.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
-            for audio in self.audio.iter_mut() {
-                audio.render(out_block, scratch);
-            }
+            self.pool.receive();
+            self.pool.unload();
+            // The pool's voices add into scratch.
+            scratch.fill([0.0; OUTPUT_CHANNELS]);
+            self.pool.render(scratch);
+            add(out_block, scratch);
             for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
                 if input.monitoring() {
