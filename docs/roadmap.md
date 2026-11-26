@@ -206,8 +206,6 @@ Not planned yet; kept so they are not forgotten.
   loaded audio.
 - Lost frames counted, and where one recording ends reported by its
   drain, through a frame count the renderer keeps.
-- Lists that never grow after `create` as `Box<[T]>` rather than `Vec`,
-  so the type says so.
 
 **Storage**
 - The project on disk, removed for now and in git: WAVs under a manifest,
