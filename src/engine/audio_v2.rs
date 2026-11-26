@@ -250,8 +250,18 @@ impl Drop for Audio {
 /// Nothing was loaded; the samples come back in it.
 #[derive(Debug, Error)]
 pub enum LoadError {
+    #[error("the samples end part-way through a frame")]
+    PartFrame(Vec<f32>),
     #[error("every place for loaded audio is held")]
     Full(Vec<f32>),
+}
+
+impl LoadError {
+    pub fn into_samples(self) -> Vec<f32> {
+        match self {
+            Self::PartFrame(samples) | Self::Full(samples) => samples,
+        }
+    }
 }
 
 /// Only the control side has it.
@@ -281,6 +291,9 @@ impl AudioPool {
     }
 
     pub fn load(&mut self, samples: Vec<f32>, layout: ChannelLayout) -> Result<Audio, LoadError> {
+        if !samples.len().is_multiple_of(layout.count()) {
+            return Err(LoadError::PartFrame(samples));
+        }
         // Free once no `Audio` holds the state, so only the two sides'
         // lists do, and the renderer has dropped its clone of the buffer.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {
