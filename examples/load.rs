@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .collect();
 
-    let mut audio = control.load(pluck, ChannelLayout::Mono)?;
+    let mut audio = control.audio().load(pluck, ChannelLayout::Mono)?;
     println!("a pluck, in the middle");
     // Detached, so it plays to its end without its handle.
     audio.play().detach();

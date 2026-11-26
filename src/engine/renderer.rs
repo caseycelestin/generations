@@ -2,7 +2,7 @@
 //! output. An offline bounce runs the same code with no deadline.
 
 use crate::config::Pcm;
-use crate::engine::audio::realtime::LoadedAudio;
+use crate::engine::audio::realtime::AudioPool;
 use crate::engine::inputs::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::Recorders;
@@ -16,17 +16,14 @@ const BLOCK_FRAMES: usize = 64;
 
 pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
 
-/// Dropping it ends the engine: [`Control`](crate::engine::Control) and
-/// every handle from the same [`create`](crate::engine::create) report the
-/// renderer gone. A stream
-/// drops the callback that owns it, so to survive a stream restart the
-/// callback must hand it back when dropped.
+/// A stream drops the callback that owns it, so to survive a stream
+/// restart the callback must hand the renderer back when dropped.
 #[derive(Debug)]
 pub struct Renderer {
     /// Per frame of `render`'s capture; zero without an input device.
     capture_channels: usize,
     inputs: Inputs,
-    audio: LoadedAudio,
+    pool: AudioPool,
     recorders: Recorders,
     /// One sound's frames for the block, before they join the mix.
     scratch: Box<[Frame]>,
@@ -37,14 +34,14 @@ impl Renderer {
     /// control side.
     pub(crate) fn new(
         inputs: Inputs,
-        audio: LoadedAudio,
+        pool: AudioPool,
         recorders: Recorders,
         capture_channels: usize,
     ) -> Self {
         Self {
             capture_channels,
             inputs,
-            audio,
+            pool,
             recorders,
             scratch: vec![[0.0; OUTPUT_CHANNELS]; BLOCK_FRAMES].into_boxed_slice(),
         }
@@ -60,13 +57,15 @@ impl Renderer {
             (out.len() / OUTPUT_CHANNELS) * self.capture_channels,
             "capture and output are not the same frames"
         );
-        self.audio.receive();
         for (out_block, capture_block) in blocks(out, capture, self.capture_channels) {
             out_block.fill([0.0; OUTPUT_CHANNELS]);
             let scratch = &mut self.scratch[..out_block.len()];
-            for audio in self.audio.iter_mut() {
-                audio.render(out_block, scratch);
-            }
+            self.pool.receive();
+            self.pool.unload();
+            // The pool's voices add into scratch.
+            scratch.fill([0.0; OUTPUT_CHANNELS]);
+            self.pool.render(scratch);
+            add(out_block, scratch);
             for input in self.inputs.iter() {
                 input.render(capture_block, scratch);
                 if input.monitoring() {
@@ -100,60 +99,33 @@ fn blocks<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use rtrb::Producer;
-
     use super::*;
-    use crate::engine::audio::{self, Audio, AudioState};
-    use crate::engine::voice::Voice;
+    use crate::engine::audio::{self, Audio, Voice};
     use crate::engine::{inputs, recording};
     use crate::layout::ChannelLayout;
 
-    /// The control ends of the renderer's channels.
-    struct Ends {
-        audio: Producer<Arc<AudioState>>,
-    }
-
     /// A renderer with room for `places` loaded audio of one voice each, and
-    /// the control ends of its channels.
-    fn renderer(places: usize) -> (Ends, Renderer) {
-        let (audio_control, audio_realtime) = audio::channel(places);
+    /// the control side of its pool.
+    fn renderer(places: usize) -> (audio::AudioPool, Renderer) {
+        let (pool, pool_realtime) = audio::create(places, 1);
         let (_, recorders_realtime) = recording::create(0, 0);
         let (_, inputs_realtime) = inputs::create(0, 0);
-        let ends = Ends {
-            audio: audio_control,
-        };
-        let renderer = Renderer::new(inputs_realtime, audio_realtime, recorders_realtime, 0);
-        (ends, renderer)
+        let renderer = Renderer::new(inputs_realtime, pool_realtime, recorders_realtime, 0);
+        (pool, renderer)
     }
 
-    /// Loads mono `samples` as `Control::load` does, then plays them; the
-    /// state stands in for the pool's clone.
-    fn play(ends: &mut Ends, samples: &[Pcm]) -> (Arc<AudioState>, Audio, Voice) {
-        let mut state = AudioState::new(1);
-        state.refill(audio::AudioBuffer {
-            samples: samples.to_vec(),
-            layout: ChannelLayout::Mono,
-        });
-        let state = Arc::new(state);
-        ends.audio.push(Arc::clone(&state)).unwrap();
-        let mut audio = Audio::load(Arc::clone(&state));
+    /// Loads mono `samples`, then plays them.
+    fn play(pool: &mut audio::AudioPool, samples: &[Pcm]) -> (Audio, Voice) {
+        let mut audio = pool.load(samples.to_vec(), ChannelLayout::Mono).unwrap();
         let voice = audio.play();
-        (state, audio, voice)
-    }
-
-    /// The renderer finished the first voice played: it played out or was
-    /// stopped.
-    fn ended(state: &AudioState) -> bool {
-        state.voices[0].is_free()
+        (audio, voice)
     }
 
     #[test]
     fn voices_are_summed() {
-        let (mut ends, mut renderer) = renderer(2);
-        let _quiet = play(&mut ends, &[0.25; 8]);
-        let _loud = play(&mut ends, &[0.5; 8]);
+        let (mut pool, mut renderer) = renderer(2);
+        let _quiet = play(&mut pool, &[0.25; 8]);
+        let _loud = play(&mut pool, &[0.5; 8]);
         let mut out = vec![0.0; 8 * 2];
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.75; 8 * 2]);
@@ -161,9 +133,9 @@ mod tests {
 
     #[test]
     fn the_sum_is_clipped() {
-        let (mut ends, mut renderer) = renderer(2);
-        let _first = play(&mut ends, &[0.75; 4]);
-        let _second = play(&mut ends, &[0.75; 4]);
+        let (mut pool, mut renderer) = renderer(2);
+        let _first = play(&mut pool, &[0.75; 4]);
+        let _second = play(&mut pool, &[0.75; 4]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![1.0; 4 * 2]);
@@ -173,8 +145,8 @@ mod tests {
     fn a_period_longer_than_a_block_plays_on_without_a_gap() {
         let frames = BLOCK_FRAMES * 2 + 10;
         let ramp: Vec<Pcm> = (0..frames).map(|i| i as Pcm / 1000.0).collect();
-        let (mut ends, mut renderer) = renderer(1);
-        let _voice = play(&mut ends, &ramp);
+        let (mut pool, mut renderer) = renderer(1);
+        let _voice = play(&mut pool, &ramp);
         let mut out = vec![0.0; frames * 2];
         renderer.render(&[], &mut out);
         let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
@@ -183,8 +155,8 @@ mod tests {
 
     #[test]
     fn periods_shorter_than_a_block_play_on_without_a_gap() {
-        let (mut ends, mut renderer) = renderer(1);
-        let _voice = play(&mut ends, &[0.1, 0.2, 0.3, 0.4]);
+        let (mut pool, mut renderer) = renderer(1);
+        let _voice = play(&mut pool, &[0.1, 0.2, 0.3, 0.4]);
         let mut out = vec![0.0; 2 * 2];
         renderer.render(&[], &mut out);
         renderer.render(&[], &mut out);
@@ -192,29 +164,30 @@ mod tests {
     }
 
     #[test]
-    fn a_voice_that_plays_out_ends() {
-        let (mut ends, mut renderer) = renderer(1);
-        let (state, _audio, _voice) = play(&mut ends, &[0.5; 4]);
-        renderer.render(&[], &mut [0.0; 8 * 2]);
-        assert!(ended(&state));
+    fn a_voice_that_plays_out_falls_silent() {
+        let (mut pool, mut renderer) = renderer(1);
+        let _voice = play(&mut pool, &[0.5; 4]);
+        let mut out = vec![0.0; 8 * 2];
+        renderer.render(&[], &mut out);
+        assert_eq!(out[..4 * 2], [0.5; 4 * 2]);
+        assert_eq!(out[4 * 2..], [0.0; 4 * 2]);
     }
 
     #[test]
-    fn a_stopped_voice_ends_and_falls_silent() {
-        let (mut ends, mut renderer) = renderer(1);
-        let (state, _audio, voice) = play(&mut ends, &[0.5; 64]);
+    fn a_stopped_voice_falls_silent() {
+        let (mut pool, mut renderer) = renderer(1);
+        let (_audio, voice) = play(&mut pool, &[0.5; 64]);
         let mut out = vec![0.0; 4 * 2];
         renderer.render(&[], &mut out);
         drop(voice);
         renderer.render(&[], &mut out);
         assert_eq!(out, vec![0.0; 4 * 2]);
-        assert!(ended(&state));
     }
 
     #[test]
     fn a_play_with_every_voice_busy_starts_again_from_the_top() {
-        let (mut ends, mut renderer) = renderer(1);
-        let (_state, mut audio, _first) = play(&mut ends, &[0.1, 0.2, 0.3, 0.4]);
+        let (mut pool, mut renderer) = renderer(1);
+        let (mut audio, _first) = play(&mut pool, &[0.1, 0.2, 0.3, 0.4]);
         let mut out = vec![0.0; 2 * 2];
         renderer.render(&[], &mut out);
 

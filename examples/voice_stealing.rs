@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             0.2 * (TAU * phase).sin()
         })
         .collect();
-    let mut audio = control.load(sweep, ChannelLayout::Mono)?;
+    let mut audio = control.audio().load(sweep, ChannelLayout::Mono)?;
 
     println!("two voices of one sweep, a second apart");
     let _first = audio.play();

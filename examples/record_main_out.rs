@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 0.5 * (TAU * pitch * t).sin() * (-6.0 * t).exp()
             })
             .collect();
-        plucks.push(control.load(pluck, ChannelLayout::Mono)?);
+        plucks.push(control.audio().load(pluck, ChannelLayout::Mono)?);
     }
 
     let (recorder, mut drain) = control.recorders().arm()?;
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let recording = collector.join().expect("the drain thread ran");
 
     println!("playing back {} frames", recording.len() / 2);
-    let mut played = control.load(recording, ChannelLayout::Stereo)?;
+    let mut played = control.audio().load(recording, ChannelLayout::Stereo)?;
     played.play().detach();
     sleep(Duration::from_millis(2200));
 
