@@ -517,5 +517,11 @@ pub(crate) mod realtime {
                 audio.unload();
             }
         }
+
+        pub(crate) fn render(&mut self, scratch: &mut [Frame]) {
+            for audio in &mut self.audio {
+                audio.render(scratch);
+            }
+        }
     }
 }
