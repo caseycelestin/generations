@@ -157,7 +157,7 @@ struct Slot {
 #[derive(Debug)]
 pub struct Recorders {
     /// By id.
-    slots: Vec<Slot>,
+    slots: Box<[Slot]>,
     return_consumer: SyncSender<(usize, Consumer<Frame>)>,
     returned_consumers: Receiver<(usize, Consumer<Frame>)>,
 }
@@ -254,7 +254,7 @@ pub(crate) fn create(count: usize, ring_frames: usize) -> (Recorders, realtime::
     // Each recorder's consumer is out at most once, so a return never waits.
     let (return_consumer, returned_consumers) = mpsc::sync_channel(count);
     let recorders = Recorders {
-        slots,
+        slots: slots.into_boxed_slice(),
         return_consumer,
         returned_consumers,
     };
