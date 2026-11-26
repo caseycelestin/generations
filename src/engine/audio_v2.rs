@@ -161,7 +161,7 @@ struct AudioState {
 
 #[derive(Debug)]
 #[must_use = "dropping it stops the voice"]
-pub(crate) struct Voice {
+pub struct Voice {
     state: Arc<AudioState>,
     /// Which of the audio's voices it plays in.
     slot: usize,
@@ -174,7 +174,7 @@ pub(crate) struct Voice {
 impl Voice {
     /// Gives up the handle without stopping the voice, so it plays to its
     /// end; nothing can stop it after.
-    pub(crate) fn detach(mut self) {
+    pub fn detach(mut self) {
         // A flag, not `mem::forget`: forgetting would keep the state's
         // count up, so its place could never be loaded again.
         self.detached = true;
@@ -191,7 +191,7 @@ impl Drop for Voice {
 
 #[derive(Debug)]
 #[must_use = "dropping it unloads the audio"]
-pub(crate) struct Audio {
+pub struct Audio {
     state: Arc<AudioState>,
     /// Voices started so far, by this handle alone; the next one's number
     /// is this plus one, so none is 0 and the smallest is the oldest.
@@ -199,7 +199,7 @@ pub(crate) struct Audio {
 }
 
 impl Audio {
-    pub(crate) fn play(&mut self) -> Voice {
+    pub fn play(&mut self) -> Voice {
         let voices = &self.state.voices;
         // Acquire: pairs with the renderer's store when a voice ends.
         let free = voices.iter().position(|voice| {
@@ -242,7 +242,7 @@ impl Drop for Audio {
 
 /// Nothing was loaded; the buffer comes back in it.
 #[derive(Debug, Error)]
-pub(crate) enum LoadError {
+pub enum LoadError {
     #[error("every place for loaded audio is held")]
     Full(AudioBuffer),
 }
@@ -256,7 +256,7 @@ struct Place {
 }
 
 #[derive(Debug)]
-pub(crate) struct AudioPool {
+pub struct AudioPool {
     places: Box<[Place]>,
     producer: Producer<(usize, Arc<AudioBuffer>)>,
 }
@@ -273,7 +273,7 @@ impl AudioPool {
         Self { places, producer }
     }
 
-    pub(crate) fn load(&mut self, buffer: AudioBuffer) -> Result<Audio, LoadError> {
+    pub fn load(&mut self, buffer: AudioBuffer) -> Result<Audio, LoadError> {
         // Free once no `Audio` holds the state, so only the two sides'
         // lists do, and the renderer has dropped its clone of the buffer.
         let free = self.places.iter_mut().enumerate().find(|(_, place)| {

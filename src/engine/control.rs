@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rtrb::Producer;
 
 use crate::engine::audio::{self, AudioBuffer, AudioState, LoadError};
+use crate::engine::audio_v2::AudioPool;
 use crate::engine::inputs::Inputs;
 use crate::engine::pool::Pool;
 use crate::engine::recording::Recorders;
@@ -15,6 +16,7 @@ pub struct Control {
     inputs: Inputs,
     audio: Producer<Arc<AudioState>>,
     audio_places: Pool<AudioState>,
+    pool: AudioPool,
     recorders: Recorders,
 }
 
@@ -23,12 +25,14 @@ impl Control {
         inputs: Inputs,
         audio: Producer<Arc<AudioState>>,
         audio_places: Pool<AudioState>,
+        pool: AudioPool,
         recorders: Recorders,
     ) -> Self {
         Self {
             inputs,
             audio,
             audio_places,
+            pool,
             recorders,
         }
     }
@@ -71,6 +75,10 @@ impl Control {
             .push(Arc::clone(&state))
             .expect("the ring holds one message per place");
         Ok(audio::Audio::load(state))
+    }
+
+    pub fn audio(&mut self) -> &mut AudioPool {
+        &mut self.pool
     }
 
     pub fn inputs(&mut self) -> &mut Inputs {
