@@ -322,6 +322,7 @@ impl AudioPool {
 }
 
 pub(crate) fn create(count: usize, voices: usize) -> (AudioPool, realtime::AudioPool) {
+    assert!(voices > 0, "an audio needs at least one voice");
     let states: Vec<Arc<AudioState>> = (0..count)
         .map(|_| {
             Arc::new(AudioState {

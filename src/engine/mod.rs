@@ -42,6 +42,10 @@ pub use renderer::{OUTPUT_CHANNELS, Renderer};
 /// at once; `audio`, how many can be loaded at once, each with `voices`
 /// voices of its own; `recorders`, how many can be armed at once, each
 /// holding `ring_frames` frames its drain has yet to take.
+///
+/// # Panics
+///
+/// If `voices` is zero.
 pub fn create(
     capture_channels: usize,
     inputs: usize,
