@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
-use crate::engine::audio::AudioBuffer;
+use crate::layout::ChannelLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -150,6 +150,13 @@ impl VoiceState {
                 Some(Self::pack(number, next))
             });
     }
+}
+
+/// The control side keeps a clone, so the renderer never frees it.
+#[derive(Debug)]
+pub(crate) struct AudioBuffer {
+    pub(crate) samples: Vec<f32>,
+    pub(crate) layout: ChannelLayout,
 }
 
 #[derive(Debug)]
@@ -323,8 +330,8 @@ pub(crate) mod realtime {
 
     use rtrb::Consumer;
 
+    use super::AudioBuffer;
     use super::{AudioState, Lifecycle, VoiceLifecycle};
-    use crate::engine::audio::AudioBuffer;
     use crate::engine::renderer::Frame;
     use crate::layout::ChannelLayout;
 

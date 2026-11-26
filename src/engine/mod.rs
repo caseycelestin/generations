@@ -24,22 +24,17 @@
 //! left. Nothing comes home to the renderer's side; a recorder's consumer
 //! comes home between control threads.
 
-mod audio;
 mod audio_v2;
 mod control;
 mod inputs;
 mod math;
-mod pool;
 mod recording;
 mod renderer;
-mod voice;
 
-pub use audio::{Audio, LoadError};
 pub use control::Control;
 pub use inputs::{Input, InputChannels, InputError, Inputs};
 pub use recording::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::{OUTPUT_CHANNELS, Renderer};
-pub use voice::Voice;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `capture_channels` is the width of the capture `render` is handed each
@@ -57,22 +52,10 @@ pub fn create(
 ) -> (Control, Renderer) {
     let (recorders_control, recorders_realtime) = recording::create(recorders, ring_frames);
     let (inputs_control, inputs_realtime) = inputs::create(inputs, capture_channels);
-    let (audio_control, _audio_realtime) = audio::channel(audio);
     let (pool_control, pool) = audio_v2::create(audio);
     (
-        Control::new(
-            inputs_control,
-            audio_control,
-            pool::Pool::new(audio, || audio::AudioState::new(voices)),
-            pool_control,
-            recorders_control,
-        ),
-        Renderer::new(
-            inputs_realtime,
-            pool,
-            recorders_realtime,
-            capture_channels,
-        ),
+        Control::new(inputs_control, pool_control, recorders_control),
+        Renderer::new(inputs_realtime, pool, recorders_realtime, capture_channels),
     )
 }
 
