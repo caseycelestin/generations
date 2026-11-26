@@ -123,6 +123,14 @@ impl VoiceState {
             });
     }
 
+    /// The renderer's, once its audio is unloaded: frees the slot whatever it
+    /// held. No `play` can race it then, since the `LoadedAudio` is gone.
+    /// Release: pairs with `play`'s Acquire load.
+    fn set_unloaded(&self) {
+        let packed = Self::pack(0, VoiceLifecycle::Idle);
+        self.packed.store(packed, Ordering::Release);
+    }
+
     /// Only while the slot still holds voice `number`, so a stale `Voice`
     /// never stops a newer one. Relaxed: nothing is published through it.
     fn set_stop_requested(&self, number: u64) {
@@ -334,6 +342,12 @@ pub(crate) mod realtime {
     }
 
     impl Voice {
+        /// Drops its buffer, never the last clone, and frees its slot.
+        fn unload(&mut self) {
+            self.buffer = None;
+            self.state.voices[self.slot].set_unloaded();
+        }
+
         /// Acts on what voice `number` was asked; true if it plays this
         /// block.
         fn update_lifecycle(&mut self, number: u64, lifecycle: VoiceLifecycle) -> bool {
@@ -439,6 +453,24 @@ pub(crate) mod realtime {
             );
         }
 
+        /// Drops its buffer and frees its voices, if its handle asked.
+        fn unload(&mut self) {
+            let lifecycle = self.state.lifecycle.load(Ordering::Relaxed);
+            if lifecycle != Lifecycle::UnloadRequested as u8 {
+                return;
+            }
+            for voice in &mut self.voices {
+                voice.unload();
+            }
+            // Never the last clone: the control side keeps one.
+            self.buffer = None;
+            // Release: the control side sees the buffers dropped and the
+            // voices free before it sees the audio free.
+            self.state
+                .lifecycle
+                .store(Lifecycle::Idle as u8, Ordering::Release);
+        }
+
         fn render(&mut self, scratch: &mut [Frame]) {
             // Every voice is idle while there is no buffer: unload frees them.
             if self.buffer.is_none() {
@@ -482,18 +514,7 @@ pub(crate) mod realtime {
         /// so one unloaded before it arrived goes in the same block.
         pub(crate) fn unload(&mut self) {
             for audio in &mut self.audio {
-                let lifecycle = audio.state.lifecycle.load(Ordering::Relaxed);
-                if lifecycle != Lifecycle::UnloadRequested as u8 {
-                    continue;
-                }
-                // Never the last clone: the control side keeps one.
-                audio.buffer = None;
-                // Release: the control side sees the buffer dropped before it
-                // sees the audio free.
-                audio
-                    .state
-                    .lifecycle
-                    .store(Lifecycle::Idle as u8, Ordering::Release);
+                audio.unload();
             }
         }
     }
