@@ -52,7 +52,7 @@ pub fn create(
 ) -> (Control, Renderer) {
     let (recorders_control, recorders_realtime) = recording::create(recorders, ring_frames);
     let (inputs_control, inputs_realtime) = inputs::create(inputs, capture_channels);
-    let (pool_control, pool) = audio_v2::create(audio);
+    let (pool_control, pool) = audio_v2::create(audio, voices);
     (
         Control::new(inputs_control, pool_control, recorders_control),
         Renderer::new(inputs_realtime, pool, recorders_realtime, capture_channels),

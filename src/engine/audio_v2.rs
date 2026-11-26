@@ -321,12 +321,16 @@ impl AudioPool {
     }
 }
 
-pub(crate) fn create(count: usize) -> (AudioPool, realtime::AudioPool) {
+pub(crate) fn create(count: usize, voices: usize) -> (AudioPool, realtime::AudioPool) {
     let states: Vec<Arc<AudioState>> = (0..count)
         .map(|_| {
             Arc::new(AudioState {
                 lifecycle: AtomicU8::new(Lifecycle::Idle as u8),
-                voices: Box::new([]),
+                voices: (0..voices)
+                    .map(|_| VoiceState {
+                        packed: AtomicU64::new(VoiceState::pack(0, VoiceLifecycle::Idle)),
+                    })
+                    .collect(),
             })
         })
         .collect();
