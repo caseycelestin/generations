@@ -2,7 +2,7 @@
 //! output. An offline bounce runs the same code with no deadline.
 
 use crate::config::Pcm;
-use crate::engine::audio_v2::realtime::AudioPool;
+use crate::engine::audio::realtime::AudioPool;
 use crate::engine::inputs::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::Recorders;
@@ -103,14 +103,14 @@ fn blocks<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::audio_v2::{self, Audio, Voice};
+    use crate::engine::audio::{self, Audio, Voice};
     use crate::engine::{inputs, recording};
     use crate::layout::ChannelLayout;
 
     /// A renderer with room for `places` loaded audio of one voice each, and
     /// the control side of its pool.
-    fn renderer(places: usize) -> (audio_v2::AudioPool, Renderer) {
-        let (pool, pool_realtime) = audio_v2::create(places, 1);
+    fn renderer(places: usize) -> (audio::AudioPool, Renderer) {
+        let (pool, pool_realtime) = audio::create(places, 1);
         let (_, recorders_realtime) = recording::create(0, 0);
         let (_, inputs_realtime) = inputs::create(0, 0);
         let renderer = Renderer::new(inputs_realtime, pool_realtime, recorders_realtime, 0);
@@ -118,7 +118,7 @@ mod tests {
     }
 
     /// Loads mono `samples`, then plays them.
-    fn play(pool: &mut audio_v2::AudioPool, samples: &[Pcm]) -> (Audio, Voice) {
+    fn play(pool: &mut audio::AudioPool, samples: &[Pcm]) -> (Audio, Voice) {
         let mut audio = pool.load(samples.to_vec(), ChannelLayout::Mono).unwrap();
         let voice = audio.play();
         (audio, voice)
