@@ -156,7 +156,6 @@ pub(crate) mod realtime {
     use std::sync::atomic::Ordering;
 
     use super::{InputState, Lifecycle};
-    use crate::config::Pcm;
     use crate::engine::renderer::Frame;
 
     #[derive(Debug)]
@@ -186,7 +185,7 @@ pub(crate) mod realtime {
 
         /// Called every block, so opens and closes land on block boundaries.
         /// Silence unless open, so a stale `scratch` is never heard.
-        pub(crate) fn render(&self, capture: &[Pcm], scratch: &mut [Frame]) {
+        pub(crate) fn render(&self, capture: &[f32], scratch: &mut [Frame]) {
             if !self.advance_lifecycle() {
                 scratch.fill([0.0; 2]);
                 return;

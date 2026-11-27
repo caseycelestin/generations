@@ -1,7 +1,6 @@
 //! The audio thread: turns what the control side sends into periods of
 //! output. An offline bounce runs the same code with no deadline.
 
-use crate::config::Pcm;
 use crate::engine::audio::realtime::AudioPool;
 use crate::engine::inputs::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
@@ -14,7 +13,7 @@ pub const OUTPUT_CHANNELS: usize = 2;
 /// grows.
 const BLOCK_FRAMES: usize = 64;
 
-pub(crate) type Frame = [Pcm; OUTPUT_CHANNELS];
+pub(crate) type Frame = [f32; OUTPUT_CHANNELS];
 
 /// A stream drops the callback that owns it, so to survive a stream
 /// restart the callback must hand the renderer back when dropped.
@@ -50,7 +49,7 @@ impl Renderer {
     /// One period, interleaved stereo, replacing what `out` held: every
     /// playing voice and monitored input, summed and clipped. `capture` is
     /// the input device's frames for the same period, interleaved.
-    pub fn render(&mut self, capture: &[Pcm], out: &mut [Pcm]) {
+    pub fn render(&mut self, capture: &[f32], out: &mut [f32]) {
         debug_assert_eq!(out.len() % OUTPUT_CHANNELS, 0, "output is not whole frames");
         debug_assert_eq!(
             capture.len(),
@@ -82,10 +81,10 @@ impl Renderer {
 
 /// A period cut into blocks, each output block with its capture.
 fn blocks<'a>(
-    out: &'a mut [Pcm],
-    capture: &'a [Pcm],
+    out: &'a mut [f32],
+    capture: &'a [f32],
     capture_channels: usize,
-) -> impl Iterator<Item = (&'a mut [Frame], &'a [Pcm])> {
+) -> impl Iterator<Item = (&'a mut [Frame], &'a [f32])> {
     let (frames, _) = out.as_chunks_mut::<{ OUTPUT_CHANNELS }>();
     frames
         .chunks_mut(BLOCK_FRAMES)
@@ -101,8 +100,8 @@ fn blocks<'a>(
 mod tests {
     use super::*;
     use crate::engine::audio::{self, Audio, Voice};
-    use crate::engine::{inputs, recording};
     use crate::engine::layout::ChannelLayout;
+    use crate::engine::{inputs, recording};
 
     /// A renderer with room for `places` loaded audio of one voice each, and
     /// the control side of its pool.
@@ -115,7 +114,7 @@ mod tests {
     }
 
     /// Loads mono `samples`, then plays them.
-    fn play(pool: &mut audio::AudioPool, samples: &[Pcm]) -> (Audio, Voice) {
+    fn play(pool: &mut audio::AudioPool, samples: &[f32]) -> (Audio, Voice) {
         let mut audio = pool.load(samples.to_vec(), ChannelLayout::Mono).unwrap();
         let voice = audio.play();
         (audio, voice)
@@ -144,12 +143,12 @@ mod tests {
     #[test]
     fn a_period_longer_than_a_block_plays_on_without_a_gap() {
         let frames = BLOCK_FRAMES * 2 + 10;
-        let ramp: Vec<Pcm> = (0..frames).map(|i| i as Pcm / 1000.0).collect();
+        let ramp: Vec<f32> = (0..frames).map(|i| i as f32 / 1000.0).collect();
         let (mut pool, mut renderer) = renderer(1);
         let _voice = play(&mut pool, &ramp);
         let mut out = vec![0.0; frames * 2];
         renderer.render(&[], &mut out);
-        let heard: Vec<Pcm> = out.chunks(2).map(|frame| frame[0]).collect();
+        let heard: Vec<f32> = out.chunks(2).map(|frame| frame[0]).collect();
         assert_eq!(heard, ramp);
     }
 
@@ -201,8 +200,8 @@ mod tests {
     fn blocks_cut_the_capture_at_the_same_frames_as_the_output() {
         let frames = BLOCK_FRAMES + 3;
         let mut out = vec![0.0; frames * 2];
-        let capture: Vec<Pcm> = (0..frames * 3).map(|i| i as Pcm).collect();
-        let cut: Vec<(usize, Vec<Pcm>)> = blocks(&mut out, &capture, 3)
+        let capture: Vec<f32> = (0..frames * 3).map(|i| i as f32).collect();
+        let cut: Vec<(usize, Vec<f32>)> = blocks(&mut out, &capture, 3)
             .map(|(out_block, capture_block)| (out_block.len(), capture_block.to_vec()))
             .collect();
         let split = BLOCK_FRAMES * 3;
