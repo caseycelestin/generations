@@ -3,11 +3,9 @@
 
 use thiserror::Error;
 
-use crate::config::MAX_CHANNELS;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ChannelLayoutError {
-    #[error("channel count {0} is not in 1..={MAX_CHANNELS}")]
+    #[error("channel count {0} is neither mono nor stereo")]
     BadChannelCount(u16),
 }
 

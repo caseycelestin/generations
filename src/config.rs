@@ -7,5 +7,3 @@ pub type Pcm = f32;
 
 /// In Hz.
 pub const SAMPLE_RATE: u32 = 48_000;
-
-pub const MAX_CHANNELS: u16 = 2;
