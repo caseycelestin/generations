@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
-use crate::layout::ChannelLayout;
+use crate::engine::layout::ChannelLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -364,7 +364,7 @@ pub(crate) mod realtime {
     use super::AudioBuffer;
     use super::{AudioState, Lifecycle, VoiceLifecycle};
     use crate::engine::renderer::Frame;
-    use crate::layout::ChannelLayout;
+    use crate::engine::layout::ChannelLayout;
 
     #[derive(Debug)]
     struct Voice {

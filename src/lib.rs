@@ -29,6 +29,5 @@
 
 pub mod config;
 pub mod engine;
-mod layout;
 
-pub use layout::{ChannelLayout, ChannelLayoutError};
+pub use engine::{ChannelLayout, ChannelLayoutError};

@@ -102,7 +102,7 @@ mod tests {
     use super::*;
     use crate::engine::audio::{self, Audio, Voice};
     use crate::engine::{inputs, recording};
-    use crate::layout::ChannelLayout;
+    use crate::engine::layout::ChannelLayout;
 
     /// A renderer with room for `places` loaded audio of one voice each, and
     /// the control side of its pool.
