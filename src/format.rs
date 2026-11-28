@@ -1,13 +1,21 @@
-//! Audio in this crate is mono or stereo. A raw channel count exists only
-//! where a file hands one over, and becomes a layout there or is refused.
+//! The one sample format everything runs at, so nothing between the file
+//! and the device converts or checks. Audio is mono or stereo; a raw channel
+//! count exists only where a file hands one over, and becomes a layout there
+//! or is refused.
 
 use thiserror::Error;
 
-use crate::config::MAX_CHANNELS;
+/// In Hz.
+pub const SAMPLE_RATE: u32 = 48_000;
+
+/// Always stereo.
+pub const OUTPUT_CHANNELS: usize = 2;
+
+pub(crate) type Frame = [f32; OUTPUT_CHANNELS];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ChannelLayoutError {
-    #[error("channel count {0} is not in 1..={MAX_CHANNELS}")]
+    #[error("channel count {0} is neither mono nor stereo")]
     BadChannelCount(u16),
 }
 

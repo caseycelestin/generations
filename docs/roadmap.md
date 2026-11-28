@@ -64,7 +64,9 @@ might be tried again.
 - **One format: 48 kHz `f32`,** in RAM and on the render path;
   each buffer is mono or stereo. `i16` storage was rejected: it loses
   24-bit sources at every generation, and the render path should read
-  samples, not convert them.
+  samples, not convert them. It is written as plain `f32`: a sample-type
+  alias was dropped, since an `i16` build would rework the mix, not swap a
+  type.
 
 ### Memory
 
@@ -168,7 +170,11 @@ might be tried again.
   threshold, on a beat, or with pre-roll kept from before the press would
   be the renderer moving an armed recorder on. Not built.
 - **One file per feature.** A feature's data, handle and audio-thread part
-  sit together; the audio-thread part in a `mod realtime`.
+  sit together; the audio-thread part in a `mod realtime`. The format is
+  one file too, and the crate is the engine, flat under `src/`.
+- **A count of frames gets a type of its own,** `Frames`, in a `time.rs`
+  that later holds ticks and tempo, so a frame count cannot be mixed with
+  another number. Not built; whether it wraps `u64` or `usize` is open.
 
 ### Process
 

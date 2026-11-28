@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use rtrb::{Producer, RingBuffer};
 use thiserror::Error;
 
-use crate::layout::ChannelLayout;
+use crate::format::ChannelLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -286,10 +286,10 @@ impl AudioPool {
     /// load hands them back.
     ///
     /// ```no_run
-    /// use generations::{ChannelLayout, engine};
+    /// use generations::ChannelLayout;
     ///
     /// // Room to load one audio, with eight voices of its own.
-    /// let (mut control, mut renderer) = engine::create(0, 0, 1, 8, 0, 0);
+    /// let (mut control, mut renderer) = generations::create(0, 0, 1, 8, 0, 0);
     /// let mut pluck = control
     ///     .audio()
     ///     .load(vec![0.5; 48_000], ChannelLayout::Mono)?;
@@ -363,8 +363,8 @@ pub(crate) mod realtime {
 
     use super::AudioBuffer;
     use super::{AudioState, Lifecycle, VoiceLifecycle};
-    use crate::engine::renderer::Frame;
-    use crate::layout::ChannelLayout;
+    use crate::format::ChannelLayout;
+    use crate::format::Frame;
 
     #[derive(Debug)]
     struct Voice {

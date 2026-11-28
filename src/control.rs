@@ -1,6 +1,6 @@
-use crate::engine::audio::AudioPool;
-use crate::engine::inputs::Inputs;
-use crate::engine::recording::Recorders;
+use crate::audio::AudioPool;
+use crate::inputs::Inputs;
+use crate::recording::Recorders;
 
 /// One per renderer; an app shares it its own way. Everything done here or
 /// on a handle takes effect at the renderer's next block.

@@ -99,10 +99,10 @@ impl Inputs {
     /// Inputs may read the same channels; each gets its own copy.
     ///
     /// ```no_run
-    /// use generations::engine::{self, InputChannels};
+    /// use generations::InputChannels;
     ///
     /// // A mono device, with one input.
-    /// let (mut control, mut renderer) = engine::create(1, 1, 0, 8, 0, 0);
+    /// let (mut control, mut renderer) = generations::create(1, 1, 0, 8, 0, 0);
     /// // Mono: the same channel on both sides.
     /// let mut input = control.inputs().open(InputChannels { left: 0, right: 0 })?;
     /// // Heard through the main out until closed.
@@ -156,8 +156,7 @@ pub(crate) mod realtime {
     use std::sync::atomic::Ordering;
 
     use super::{InputState, Lifecycle};
-    use crate::config::Pcm;
-    use crate::engine::renderer::Frame;
+    use crate::format::Frame;
 
     #[derive(Debug)]
     pub(crate) struct Input {
@@ -186,7 +185,7 @@ pub(crate) mod realtime {
 
         /// Called every block, so opens and closes land on block boundaries.
         /// Silence unless open, so a stale `scratch` is never heard.
-        pub(crate) fn render(&self, capture: &[Pcm], scratch: &mut [Frame]) {
+        pub(crate) fn render(&self, capture: &[f32], scratch: &mut [Frame]) {
             if !self.advance_lifecycle() {
                 scratch.fill([0.0; 2]);
                 return;

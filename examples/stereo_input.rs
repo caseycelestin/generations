@@ -8,7 +8,7 @@ use std::error::Error;
 use std::thread::sleep;
 use std::time::Duration;
 
-use generations::engine::{self, InputChannels};
+use generations::InputChannels;
 
 mod device;
 use device::Device;
@@ -16,7 +16,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // One input; nothing loaded.
-    let (mut control, mut renderer) = engine::create(device.capture_channels(), 1, 0, 8, 0, 0);
+    let (mut control, mut renderer) = generations::create(device.capture_channels(), 1, 0, 8, 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     let mut input = control.inputs().open(InputChannels { left: 0, right: 1 })?;
