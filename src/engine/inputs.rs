@@ -156,7 +156,7 @@ pub(crate) mod realtime {
     use std::sync::atomic::Ordering;
 
     use super::{InputState, Lifecycle};
-    use crate::engine::renderer::Frame;
+    use crate::engine::format::Frame;
 
     #[derive(Debug)]
     pub(crate) struct Input {

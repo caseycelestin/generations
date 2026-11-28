@@ -11,8 +11,8 @@ use cpal::{DeviceId, DuplexStreamConfig};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use generations::config::SAMPLE_RATE;
 use generations::engine::OUTPUT_CHANNELS;
+use generations::engine::SAMPLE_RATE;
 
 /// Stream errors kept for the control side before the oldest is dropped.
 const ERROR_CAPACITY: usize = 8;

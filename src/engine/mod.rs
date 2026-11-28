@@ -24,6 +24,7 @@
 
 mod audio;
 mod control;
+mod format;
 mod inputs;
 mod layout;
 mod math;
@@ -32,10 +33,11 @@ mod renderer;
 
 pub use audio::{Audio, AudioPool, LoadError, Voice};
 pub use control::Control;
+pub use format::{OUTPUT_CHANNELS, SAMPLE_RATE};
 pub use inputs::{Input, InputChannels, InputError, Inputs};
 pub use layout::{ChannelLayout, ChannelLayoutError};
 pub use recording::{ArmError, Drain, Recorder, Recorders};
-pub use renderer::{OUTPUT_CHANNELS, Renderer};
+pub use renderer::Renderer;
 
 /// The [`Renderer`] goes to the audio thread; the [`Control`] stays.
 /// `capture_channels` is the width of the capture `render` is handed each

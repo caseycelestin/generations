@@ -363,8 +363,8 @@ pub(crate) mod realtime {
 
     use super::AudioBuffer;
     use super::{AudioState, Lifecycle, VoiceLifecycle};
+    use crate::engine::format::Frame;
     use crate::engine::layout::ChannelLayout;
-    use crate::engine::renderer::Frame;
 
     #[derive(Debug)]
     struct Voice {

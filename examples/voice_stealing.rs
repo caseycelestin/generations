@@ -8,8 +8,8 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::ChannelLayout;
-use generations::config::SAMPLE_RATE;
 use generations::engine;
+use generations::engine::SAMPLE_RATE;
 
 mod device;
 use device::Device;

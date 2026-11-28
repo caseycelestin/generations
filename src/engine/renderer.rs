@@ -2,18 +2,14 @@
 //! output. An offline bounce runs the same code with no deadline.
 
 use crate::engine::audio::realtime::AudioPool;
+use crate::engine::format::{Frame, OUTPUT_CHANNELS};
 use crate::engine::inputs::realtime::Inputs;
 use crate::engine::math::{add, hard_clip};
 use crate::engine::recording::realtime::Recorders;
 
-/// Always stereo.
-pub const OUTPUT_CHANNELS: usize = 2;
-
 /// A period of any length is mixed in blocks this long, so scratch never
 /// grows.
 const BLOCK_FRAMES: usize = 64;
-
-pub(crate) type Frame = [f32; OUTPUT_CHANNELS];
 
 /// A stream drops the callback that owns it, so to survive a stream
 /// restart the callback must hand the renderer back when dropped.

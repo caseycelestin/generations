@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use crate::engine::renderer::Frame;
+use crate::engine::format::Frame;
 
 /// Where a recorder is in its life. Each side moves it only by
 /// `compare_exchange` from the state it expects, so neither overwrites the
@@ -268,7 +268,7 @@ pub(crate) mod realtime {
     use rtrb::Producer;
 
     use super::{Lifecycle, RecordingState};
-    use crate::engine::renderer::Frame;
+    use crate::engine::format::Frame;
 
     #[derive(Debug)]
     pub(crate) struct Recorder {

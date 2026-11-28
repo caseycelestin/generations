@@ -7,10 +7,10 @@
 //! # Architecture
 //!
 //! ```text
-//! config, layout   the one fixed format: 48 kHz f32, mono or stereo, in
-//!                  RAM and on the render path alike
 //! engine/          everything heard; create() makes both sides
 //!   control          Control, the door to one renderer
+//!   format, layout   the one fixed format: 48 kHz f32, mono or stereo, in
+//!                      RAM and on the render path alike
 //!   audio, inputs,   one file per feature: its shared state, its
 //!   recording          handles, and its real-time part; voices belong to
 //!                      loaded audio
@@ -27,7 +27,6 @@
 //! `examples/` for the engine on a device;
 //! `docs/roadmap.md` for the plan and the decisions behind it.
 
-pub mod config;
 pub mod engine;
 
 pub use engine::{ChannelLayout, ChannelLayoutError};
