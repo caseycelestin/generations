@@ -38,14 +38,11 @@ the hardware unit all sit on top of. It is responsible for:
 
 ## Status
 
-Early. A project lives on disk, durable across a power-down, and loads
-samples into RAM under one memory budget. A renderer, driven by whatever
-duplex device the caller gives it, plays them on a fixed pool of voices,
-hears inputs through the main out, and records the main out or an input
-as a take. The crate itself needs no audio device. Nothing prints yet, so
-generations are not recorded; lineage returns with the effects that print
-them. Timing comes next: requests stamped with the frame they land on,
-then sequencing.
+Early. A renderer, driven by whatever duplex device the caller gives it,
+plays loaded audio on voices of its own, hears inputs through the main
+out, and records the main out to a stream the caller drains. The crate
+itself needs no audio device. Nothing is stored on disk and nothing prints
+yet, so generations are not recorded. A sequencer clock comes next.
 
 - [docs/roadmap.md](docs/roadmap.md): the plan as it stands and the
   decisions that shape it.
@@ -60,7 +57,7 @@ audio dependency; the demos are examples.
 
 ```sh
 cargo test
-cargo run --example play     # needs a duplex device
+cargo run --example load     # needs a duplex device
 ```
 
 The examples build against ALSA through `cpal`, a dev-dependency, so they
