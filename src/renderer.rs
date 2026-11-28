@@ -1,11 +1,11 @@
 //! The audio thread: turns what the control side sends into periods of
 //! output. An offline bounce runs the same code with no deadline.
 
-use crate::engine::audio::realtime::AudioPool;
-use crate::engine::format::{Frame, OUTPUT_CHANNELS};
-use crate::engine::inputs::realtime::Inputs;
-use crate::engine::math::{add, hard_clip};
-use crate::engine::recording::realtime::Recorders;
+use crate::audio::realtime::AudioPool;
+use crate::format::{Frame, OUTPUT_CHANNELS};
+use crate::inputs::realtime::Inputs;
+use crate::math::{add, hard_clip};
+use crate::recording::realtime::Recorders;
 
 /// A period of any length is mixed in blocks this long, so scratch never
 /// grows.
@@ -95,9 +95,9 @@ fn blocks<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::audio::{self, Audio, Voice};
-    use crate::engine::format::ChannelLayout;
-    use crate::engine::{inputs, recording};
+    use crate::audio::{self, Audio, Voice};
+    use crate::format::ChannelLayout;
+    use crate::{inputs, recording};
 
     /// A renderer with room for `places` loaded audio of one voice each, and
     /// the control side of its pool.

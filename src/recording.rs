@@ -5,7 +5,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use crate::engine::format::Frame;
+use crate::format::Frame;
 
 /// Where a recorder is in its life. Each side moves it only by
 /// `compare_exchange` from the state it expects, so neither overwrites the
@@ -163,15 +163,14 @@ pub struct Recorders {
 }
 
 impl Recorders {
-    /// Arming one hands out a [`Recorder`](crate::engine::Recorder) that
-    /// starts and stops it and a [`Drain`](crate::engine::Drain) that
+    /// Arming one hands out a [`Recorder`](crate::Recorder) that
+    /// starts and stops it and a [`Drain`](crate::Drain) that
     /// collects what it recorded, usually on a thread of its own.
     ///
     /// ```no_run
-    /// use generations::engine;
     ///
     /// // One recorder, holding up to half a second its drain has yet to take.
-    /// let (mut control, mut renderer) = engine::create(0, 0, 0, 8, 1, 24_000);
+    /// let (mut control, mut renderer) = generations::create(0, 0, 0, 8, 1, 24_000);
     /// let (recorder, mut drain) = control.recorders().arm()?;
     ///
     /// // Recorded from the renderer's next block until its next block after
@@ -268,7 +267,7 @@ pub(crate) mod realtime {
     use rtrb::Producer;
 
     use super::{Lifecycle, RecordingState};
-    use crate::engine::format::Frame;
+    use crate::format::Frame;
 
     #[derive(Debug)]
     pub(crate) struct Recorder {

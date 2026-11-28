@@ -9,8 +9,7 @@ use std::thread::{self, sleep};
 use std::time::Duration;
 
 use generations::ChannelLayout;
-use generations::engine;
-use generations::engine::SAMPLE_RATE;
+use generations::SAMPLE_RATE;
 
 mod device;
 use device::Device;
@@ -21,7 +20,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // recorder whose ring holds half a second.
     let ring_frames = SAMPLE_RATE as usize / 2;
     let (mut control, mut renderer) =
-        engine::create(device.capture_channels(), 0, 4, 8, 1, ring_frames);
+        generations::create(device.capture_channels(), 0, 4, 8, 1, ring_frames);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // Half a second of each note, decaying from half scale.

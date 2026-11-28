@@ -11,8 +11,8 @@ use cpal::{DeviceId, DuplexStreamConfig};
 use rtrb::{Consumer, RingBuffer};
 use thiserror::Error;
 
-use generations::engine::OUTPUT_CHANNELS;
-use generations::engine::SAMPLE_RATE;
+use generations::OUTPUT_CHANNELS;
+use generations::SAMPLE_RATE;
 
 /// Stream errors kept for the control side before the oldest is dropped.
 const ERROR_CAPACITY: usize = 8;
@@ -54,7 +54,7 @@ impl Device {
         Ok(Self { device, config })
     }
 
-    /// The width of a capture frame, which `engine::create` is given.
+    /// The width of a capture frame, which `generations::create` is given.
     pub fn capture_channels(&self) -> usize {
         usize::from(self.config.input_channels)
     }

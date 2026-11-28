@@ -8,8 +8,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use generations::ChannelLayout;
-use generations::engine;
-use generations::engine::SAMPLE_RATE;
+use generations::SAMPLE_RATE;
 
 mod device;
 use device::Device;
@@ -17,7 +16,7 @@ use device::Device;
 fn main() -> Result<(), Box<dyn Error>> {
     let device = Device::default_duplex()?;
     // One audio with two voices of its own; no inputs.
-    let (mut control, mut renderer) = engine::create(device.capture_channels(), 0, 1, 2, 0, 0);
+    let (mut control, mut renderer) = generations::create(device.capture_channels(), 0, 1, 2, 0, 0);
     let mut stream = device.start(move |capture, out| renderer.render(capture, out))?;
 
     // A four-second sweep from A220 to A440 at a fifth of full scale, so
