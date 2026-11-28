@@ -26,16 +26,14 @@ mod audio;
 mod control;
 mod format;
 mod inputs;
-mod layout;
 mod math;
 mod recording;
 mod renderer;
 
 pub use audio::{Audio, AudioPool, LoadError, Voice};
 pub use control::Control;
-pub use format::{OUTPUT_CHANNELS, SAMPLE_RATE};
+pub use format::{ChannelLayout, ChannelLayoutError, OUTPUT_CHANNELS, SAMPLE_RATE};
 pub use inputs::{Input, InputChannels, InputError, Inputs};
-pub use layout::{ChannelLayout, ChannelLayoutError};
 pub use recording::{ArmError, Drain, Recorder, Recorders};
 pub use renderer::Renderer;
 
@@ -69,7 +67,7 @@ pub fn create(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::layout::ChannelLayout;
+    use crate::engine::format::ChannelLayout;
 
     fn mono(channel: usize) -> InputChannels {
         InputChannels {

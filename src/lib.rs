@@ -9,7 +9,7 @@
 //! ```text
 //! engine/          everything heard; create() makes both sides
 //!   control          Control, the door to one renderer
-//!   format, layout   the one fixed format: 48 kHz f32, mono or stereo, in
+//!   format           the one fixed format: 48 kHz f32, mono or stereo, in
 //!                      RAM and on the render path alike
 //!   audio, inputs,   one file per feature: its shared state, its
 //!   recording          handles, and its real-time part; voices belong to

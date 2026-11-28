@@ -96,7 +96,7 @@ fn blocks<'a>(
 mod tests {
     use super::*;
     use crate::engine::audio::{self, Audio, Voice};
-    use crate::engine::layout::ChannelLayout;
+    use crate::engine::format::ChannelLayout;
     use crate::engine::{inputs, recording};
 
     /// A renderer with room for `places` loaded audio of one voice each, and
